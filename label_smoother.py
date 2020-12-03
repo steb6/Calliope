@@ -1,6 +1,5 @@
 import torch
 from torch import nn
-from muspy_config import config
 
 
 class LabelSmoothing(nn.Module):
@@ -8,7 +7,7 @@ class LabelSmoothing(nn.Module):
     Implement label smoothing and apply given criterion.
     """
 
-    def __init__(self, size, padding_idx, smoothing=0.0):
+    def __init__(self, size, padding_idx, smoothing=0.0, device=None):
         super(LabelSmoothing, self).__init__()
         self.criterion = nn.KLDivLoss(size_average=False)
         self.padding_idx = padding_idx
@@ -16,6 +15,7 @@ class LabelSmoothing(nn.Module):
         self.smoothing = smoothing
         self.size = size
         self.true_dist = None
+        self.device = device
 
     def forward(self, x, target):
         assert x.size(1) == self.size
@@ -35,4 +35,4 @@ class LabelSmoothing(nn.Module):
         if mask.dim() > 0:
             true_dist.index_fill_(0, mask.squeeze(), 0.0)
         self.true_dist = true_dist
-        return self.criterion(x, true_dist.to(config.device))  # TODO mettere a posto in caso di multi gpu
+        return self.criterion(x, true_dist.to(self.device))  # TODO mettere a posto in caso di multi gpu

@@ -1,1 +1,228 @@
 Log of dataset_converter, to check if it is working right
+Song with weird time skipped: 5 / 4
+Song with weird time skipped: 3 / 4
+8 invalid song format
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 3 / 8
+Song with weird time skipped: 6 / 8
+Song with weird time skipped: 2 / 4
+26 invalid song format
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 6 / 8
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 2 / 4
+37 invalid song format
+Song with weird time skipped: 3 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 6 / 8
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 5 / 4
+81 invalid song format
+Song with weird time skipped: 3 / 4
+Song with weird time skipped: 7 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 2 / 4
+106 invalid song format
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 6 / 8
+Song with weird time skipped: 6 / 8
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 3 / 4
+Song with weird time skipped: 3 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 5 / 4
+Song with weird time skipped: 5 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 6 / 8
+Song with weird time skipped: 7 / 8
+Song with weird time skipped: 5 / 4
+Song with weird time skipped: 6 / 8
+Song with weird time skipped: 8 / 4
+Song with weird time skipped: 12 / 8
+Song with weird time skipped: 12 / 8
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 6 / 4
+Song with weird time skipped: 5 / 4
+Song with weird time skipped: 5 / 4
+Song with weird time skipped: 5 / 4
+209 invalid song format
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 3 / 4
+Song with weird time skipped: 5 / 4
+Song with weird time skipped: 5 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 5 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 6 / 8
+292 invalid song format
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 3 / 4
+Song with weird time skipped: 3 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 3 / 4
+343 invalid song format
+Song with weird time skipped: 2 / 4
+349 invalid song format
+Song with weird time skipped: 12 / 8
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 2 / 4
+377 invalid song format
+Song with weird time skipped: 3 / 4
+379 invalid song format
+Song with weird time skipped: 3 / 4
+Song with weird time skipped: 3 / 4
+380 invalid song format
+Song with weird time skipped: 1 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 6 / 8
+Song with weird time skipped: 3 / 4
+Song with weird time skipped: 3 / 4
+Song with weird time skipped: 3 / 4
+Song with weird time skipped: 3 / 4
+Song with weird time skipped: 6 / 8
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 2 / 4
+450 invalid song format
+451 invalid song format
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 6 / 4
+Song with weird time skipped: 6 / 4
+Song with weird time skipped: 5 / 4
+Song with weird time skipped: 5 / 4
+Song with weird time skipped: 6 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 6 / 4
+Song with weird time skipped: 2 / 4
+528 invalid song format
+Song with weird time skipped: 3 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 6 / 8
+Song with weird time skipped: 6 / 8
+Song with weird time skipped: 12 / 8
+Song with weird time skipped: 12 / 8
+Song with weird time skipped: 12 / 8
+Song with weird time skipped: 12 / 8
+Song with weird time skipped: 3 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 6 / 4
+Song with weird time skipped: 6 / 4
+Song with weird time skipped: 5 / 4
+Song with weird time skipped: 9 / 8
+Song with weird time skipped: 3 / 4
+Song with weird time skipped: 3 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 3 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 2 / 4
+617 invalid song format
+Song with weird time skipped: 6 / 8
+Song with weird time skipped: 8 / 4
+Song with weird time skipped: 2 / 4
+645 invalid song format
+Song with weird time skipped: 3 / 4
+Song with weird time skipped: 3 / 4
+647 invalid song format
+Song with weird time skipped: 3 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 6 / 8
+665 invalid song format
+Song with weird time skipped: 3 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 2 / 4
+684 invalid song format
+Song with weird time skipped: 3 / 4
+Song with weird time skipped: 3 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 1 / 4
+Song with weird time skipped: 6 / 8
+Song with weird time skipped: 6 / 8
+719 invalid song format
+Song with weird time skipped: 6 / 8
+Song with weird time skipped: 6 / 8
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 2 / 4
+731 invalid song format
+731 invalid song format
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 6 / 8
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 6 / 8
+Song with weird time skipped: 3 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 3 / 8
+Song with weird time skipped: 3 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 2 / 4
+818 invalid song format
+Song with weird time skipped: 5 / 4
+851 invalid song format
+851 invalid song format
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 3 / 4
+Song with weird time skipped: 3 / 4
+Song with weird time skipped: 5 / 4
+Song with weird time skipped: 5 / 4
+Song with weird time skipped: 3 / 4
+Song with weird time skipped: 3 / 4
+Song with weird time skipped: 3 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 6 / 8
+Song with weird time skipped: 3 / 4
+891 invalid song format
+Song with weird time skipped: 6 / 8
+Song with weird time skipped: 6 / 8
+Song with weird time skipped: 5 / 4
+Song with weird time skipped: 5 / 4
+Song with weird time skipped: 6 / 8
+908 invalid song format
+Song with weird time skipped: 12 / 8
+Song with weird time skipped: 6 / 4
+Song with weird time skipped: 6 / 4
+Song with weird time skipped: 6 / 4
+Song with weird time skipped: 2 / 4
+Song with weird time skipped: 6 / 8
+Song with weird time skipped: 6 / 8
+Song with weird time skipped: 6 / 8
+Song with weird time skipped: 6 / 8
+976 invalid song format
+Song with weird time skipped: 3 / 4
+Song with weird time skipped: 3 / 4
+Song with weird time skipped: 8 / 4
+Song with weird time skipped: 3 / 4
+Song with weird time skipped: 3 / 4
+Song with weird time skipped: 3 / 4

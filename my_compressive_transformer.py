@@ -13,7 +13,6 @@ from collections import namedtuple
 Memory = namedtuple('Memory', ['mem', 'compressed_mem'])
 
 # TODO add positional encoding coherent for encoder e decoder
-# TODO use easy library to upload dataset
 
 # TODO add all the other AE functionalities
 class TransformerAutoencoder(nn.Module):
@@ -34,6 +33,10 @@ class TransformerAutoencoder(nn.Module):
                  cmem_len=None,
                  cmem_ratio=None):
         super(TransformerAutoencoder, self).__init__()
+
+        assert mem_len >= seq_len, 'length of memory should be at least the sequence length'
+        assert cmem_len >= (
+                    mem_len // cmem_ratio), f'length of compressed memory should be at least the memory length divided by the compression ratio {int(mem_len // cmem_ratio)}'
 
         # Deepcopy creates new instances of the object, nothing is shared between layers
         c = copy.deepcopy
@@ -190,7 +193,7 @@ class EncoderLayer(nn.Module):
 
     def forward(self, x, mask, memories, pos_emb):
         "Follow Figure 1 (left) for connections."
-        x, new_memories, aux_loss = self.self_attn(x, memories=memories, input_mas=mask, pos_emb=pos_emb)
+        x, new_memories, aux_loss = self.self_attn(x, memories=memories, input_mask=mask, pos_emb=pos_emb)
         x, = self.feed_forward(x)
         # for memory in new_memories:
             # memory.detach()
@@ -317,19 +320,19 @@ class MultiHeadedAttention(nn.Module):
         aux_loss = torch.zeros(1, requires_grad=True, **to(q))
 
         # if seq_len > t means that the sequence is over, so no more memory update is needed
-        if self.seq_len > t or not calc_memory:
+        if self.seq_len > t or not calc_memory:  # TODO can cause problem if mem_len < seq_len
             return logits, Memory(new_mem, new_cmem), aux_loss
 
         # calculate memory and compressed memory
 
-        old_mem, new_mem = queue_fifo(mem, x, length=self.mem_len, dim=1)# TODO why old_mem has shape[1] != 0 the first time?
+        old_mem, new_mem = queue_fifo(mem, x, length=self.mem_len, dim=1)
 
         old_mem_padding = old_mem.shape[1] % self.cmem_ratio
 
         if old_mem_padding != 0:
             old_mem = F.pad(old_mem, (0, 0, old_mem_padding, 0), value=0.)
 
-        if old_mem.shape[1] == 0 or self.cmem_len <= 0:  # TODO why this condition is false in the case it does not work
+        if old_mem.shape[1] == 0 or self.cmem_len <= 0:
             return logits, Memory(new_mem, new_cmem), aux_loss
         # STOP GRADIENT DETACHING MEMORY
         old_mem = old_mem.detach()
@@ -352,10 +355,10 @@ class MultiHeadedAttention(nn.Module):
         # q, old_mem_k, old_mem_v, cmem_k, cmem_v = map(torch.detach, (q, old_mem_k, old_mem_v, cmem_k, cmem_v))
         q, old_mem_k, old_mem_v = map(torch.detach, (q, old_mem_k, old_mem_v))
 
-        attn_fn = partial(full_attn, dropout_fn=self.reconstruction_attn_dropout)
+        attn_fn = partial(full_attn, dropout=self.reconstruction_attn_dropout)
 
         aux_loss = F.mse_loss(
-            attn_fn(q, old_mem_k, old_mem_v),  # TODO why this does not work?
+            attn_fn(q, old_mem_k, old_mem_v),
             attn_fn(q, cmem_k, cmem_v)
         )
 
@@ -393,7 +396,7 @@ class DecoderMultiHeadedAttention(nn.Module):
                              for l, x in zip(self.linears, (query, key, value))]
 
         # 2) Apply attention on all the projected vectors in batch.
-        x, self.attn = attention(query, key, value, mask=mask, dropout=self.dropout)
+        x = full_attn(query, key, value, mask=mask, dropout=self.dropout)
 
         # 3) "Concat" using a view and apply a final linear.
         x = x.transpose(1, 2).contiguous().view(nbatches, -1, self.h * self.d_out)
@@ -425,6 +428,7 @@ class Residual(nn.Module):
         super().__init__()
         self.fn = fn
     # apply out = fn(x, **kwargs) and return out+x and other results from fn
+
     def forward(self, x, **kwargs):
         out = self.fn(x, **kwargs)
         out = cast_tuple(out)
@@ -486,76 +490,15 @@ class Embeddings(nn.Module):
         return aux * math.sqrt(self.d_model)
 
 
-class LabelSmoothing(nn.Module):
-    "Implement label smoothing."
-
-    def __init__(self, size, padding_idx, smoothing=0.0):
-        super(LabelSmoothing, self).__init__()
-        self.criterion = nn.KLDivLoss(size_average=False)
-        self.padding_idx = padding_idx
-        self.confidence = 1.0 - smoothing
-        self.smoothing = smoothing
-        self.size = size
-        self.true_dist = None
-
-    def forward(self, x, target):
-        assert x.size(1) == self.size
-        true_dist = x.data.clone()
-        # create a tensor with size (597, 1292) and fill it with this value
-        # size is token dimension, smoothing is 0.1
-        true_dist.fill_(self.smoothing / (self.size - 2))
-        # unsqueeze add a dimension in the specified position
-        # put self.confidence value (0.9) in true dist in the positions indicated by target
-        # so true_dist has the same size of x which have 0.9 in the right notes and a small value in all the others
-        true_dist.scatter_(1, target.data.unsqueeze(1), self.confidence)
-        # set all padding position to 0 (because we have a lot of them)
-        true_dist[:, self.padding_idx] = 0
-        # return position of padding of target
-        mask = torch.nonzero(target.data == self.padding_idx)
-        # substitute position of pad in true_dist with 0
-        if mask.dim() > 0:
-            true_dist.index_fill_(0, mask.squeeze(), 0.0)
-        self.true_dist = true_dist
-        return self.criterion(x, true_dist.to(config.device))  # TODO mettere a posto in caso di multi gpu
-
-
-class NoamOpt:
-    "Optim wrapper that implements rate."
-
-    def __init__(self, model_size, factor, warmup, optimizer):
-        self.optimizer = optimizer
-        self._step = 0
-        self.warmup = warmup
-        self.factor = factor
-        self.model_size = model_size
-        self._rate = 0
-
-    def step(self):
-        "Update parameters and rate"
-        self._step += 1
-        rate = self.rate()
-        for p in self.optimizer.param_groups:
-            p['lr'] = rate
-        self._rate = rate
-        self.optimizer.step()
-
-    def rate(self, step=None):
-        "Implement `lrate` above"
-        if step is None:
-            step = self._step
-        return self.factor * (self.model_size ** (-0.5) * min(step ** (-0.5), step * self.warmup ** (-1.5)))
-
-
-def attention(query, key, value, mask=None, dropout=None):
-    "Compute 'Scaled Dot Product Attention'"
-    d_k = query.size(-1)
-    scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(d_k)
+def full_attn(q, k, v, mask=None, dropout=None):
+    *_, dim = q.shape
+    dots = torch.einsum('bhid,bhjd->bhij', q, k) * (dim ** -0.5)  # Q K^T
     if mask is not None:
-        scores = scores.masked_fill(mask == 0, -1e9)
-    p_attn = F.softmax(scores, dim=-1)
+        dots = dots.masked_fill(mask == 0, -1e9)
+    attn = dots.softmax(dim=-1)
     if dropout is not None:
-        p_attn = dropout(p_attn)
-    return torch.matmul(p_attn, value), p_attn
+        attn = dropout(attn)
+    return torch.einsum('bhij,bhjd->bhid', attn, v)  # (Q K^T) V
 
 
 def clones(module, N):
@@ -615,92 +558,8 @@ def split_at_index(dim, index, t):
     return t[l], t[r]
 
 
-def full_attn(q, k, v, dropout_fn=None):
-    *_, dim = q.shape
-    dots = torch.einsum('bhid,bhjd->bhij', q, k) * (dim ** -0.5)  # Q K^T
-    attn = dots.softmax(dim=-1)
-    if dropout_fn is not None:
-        attn = dropout_fn(attn)
-    return torch.einsum('bhij,bhjd->bhid', attn, v)  # (Q K^T) V
-
-
 def cast_tuple(el):
     return el if isinstance(el, tuple) else (el,)
-
-
-# TODO USELESS?
-def get_std_opt(model):
-    return NoamOpt(model.src_embed[0].d_model, 2, 4000,
-                   torch.optim.Adam(model.parameters(), lr=0, betas=(0.9, 0.98), eps=1e-9))
-
-
-def calc_gradient_penalty(model, real_data, gen_data):
-    device = config.training["device"]
-    batch_size = config.training["batch_size"]
-    alpha = torch.rand(batch_size, 1)
-
-    alpha = alpha.expand(real_data.size()).to(device)
-
-    interpolates = alpha * real_data + ((1 - alpha) * gen_data)
-    interpolates = autograd.Variable(interpolates.to(device), requires_grad=True)
-    score_interpolates = model(interpolates)
-
-    gradients = autograd.grad(
-        outputs=score_interpolates,
-        inputs=interpolates,
-        grad_outputs=torch.ones(score_interpolates.size()).to(device),
-        create_graph=True,
-        retain_graph=True,
-        only_inputs=True
-    )[0]
-
-    gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean()
-
-    return gradient_penalty
-
-
-class SublayerConnection(nn.Module):
-    """
-    A residual connection followed by a layer norm.
-    Note for code simplicity the norm is first as opposed to last.
-    """
-
-    def __init__(self, size, dropout):
-        super(SublayerConnection, self).__init__()
-        self.norm = LayerNorm(size)
-        self.dropout = nn.Dropout(dropout)
-
-    def forward(self, x, sublayer):
-        "Apply residual connection to any sublayer with the same size."
-        return x + self.dropout(sublayer(self.norm(x)))
-
-
-class LayerNorm(nn.Module):
-    "Construct a layernorm module (See citation for details)."
-
-    def __init__(self, features, eps=1e-6):
-        super(LayerNorm, self).__init__()
-        self.a_2 = nn.Parameter(torch.ones(features))
-        self.b_2 = nn.Parameter(torch.zeros(features))
-        self.eps = eps
-
-    def forward(self, x):
-        mean = x.mean(-1, keepdim=True)
-        std = x.std(-1, keepdim=True)
-        return self.a_2 * (x - mean) / (std + self.eps) + self.b_2
-
-
-class PositionwiseFeedForward(nn.Module):
-    "Implements FFN equation."
-
-    def __init__(self, d_model, d_ff, dropout=0.1):
-        super(PositionwiseFeedForward, self).__init__()
-        self.w_1 = nn.Linear(d_model, d_ff)
-        self.w_2 = nn.Linear(d_ff, d_model)
-        self.dropout = nn.Dropout(dropout)
-
-    def forward(self, x):
-        return self.w_2(self.dropout(F.relu(self.w_1(x))))
 
 
 class PositionalEncoding(nn.Module):
@@ -722,3 +581,88 @@ class PositionalEncoding(nn.Module):
     def forward(self, x):
         x = x + Variable(self.pe[:, :x.size(1)], requires_grad=False) # TODO ERA FALSE
         return self.dropout(x)
+
+# TODO USELESS?
+# def attention(query, key, value, mask=None, dropout=None):
+#     "Compute 'Scaled Dot Product Attention'"
+#     d_k = query.size(-1)
+#     scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(d_k)
+#     if mask is not None:
+#         scores = scores.masked_fill(mask == 0, -1e9)
+#     p_attn = F.softmax(scores, dim=-1)
+#     if dropout is not None:
+#         p_attn = dropout(p_attn)
+#     return torch.matmul(p_attn, value)
+
+# def get_std_opt(model):
+#     return NoamOpt(model.src_embed[0].d_model, 2, 4000,
+#                    torch.optim.Adam(model.parameters(), lr=0, betas=(0.9, 0.98), eps=1e-9))
+
+
+# def calc_gradient_penalty(model, real_data, gen_data):
+#     device = config.training["device"]
+#     batch_size = config.training["batch_size"]
+#     alpha = torch.rand(batch_size, 1)
+#
+#     alpha = alpha.expand(real_data.size()).to(device)
+#
+#     interpolates = alpha * real_data + ((1 - alpha) * gen_data)
+#     interpolates = autograd.Variable(interpolates.to(device), requires_grad=True)
+#     score_interpolates = model(interpolates)
+#
+#     gradients = autograd.grad(
+#         outputs=score_interpolates,
+#         inputs=interpolates,
+#         grad_outputs=torch.ones(score_interpolates.size()).to(device),
+#         create_graph=True,
+#         retain_graph=True,
+#         only_inputs=True
+#     )[0]
+#
+#     gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean()
+#
+#     return gradient_penalty
+
+
+# class SublayerConnection(nn.Module):
+#     """
+#     A residual connection followed by a layer norm.
+#     Note for code simplicity the norm is first as opposed to last.
+#     """
+#
+#     def __init__(self, size, dropout):
+#         super(SublayerConnection, self).__init__()
+#         self.norm = LayerNorm(size)
+#         self.dropout = nn.Dropout(dropout)
+#
+#     def forward(self, x, sublayer):
+#         "Apply residual connection to any sublayer with the same size."
+#         return x + self.dropout(sublayer(self.norm(x)))
+
+
+# class LayerNorm(nn.Module):
+#     "Construct a layernorm module (See citation for details)."
+#
+#     def __init__(self, features, eps=1e-6):
+#         super(LayerNorm, self).__init__()
+#         self.a_2 = nn.Parameter(torch.ones(features))
+#         self.b_2 = nn.Parameter(torch.zeros(features))
+#         self.eps = eps
+#
+#     def forward(self, x):
+#         mean = x.mean(-1, keepdim=True)
+#         std = x.std(-1, keepdim=True)
+#         return self.a_2 * (x - mean) / (std + self.eps) + self.b_2
+
+
+# class PositionwiseFeedForward(nn.Module):
+#     "Implements FFN equation."
+#
+#     def __init__(self, d_model, d_ff, dropout=0.1):
+#         super(PositionwiseFeedForward, self).__init__()
+#         self.w_1 = nn.Linear(d_model, d_ff)
+#         self.w_2 = nn.Linear(d_ff, d_model)
+#         self.dropout = nn.Dropout(dropout)
+#
+#     def forward(self, x):
+#         return self.w_2(self.dropout(F.relu(self.w_1(x))))

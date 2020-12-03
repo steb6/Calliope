@@ -5,6 +5,63 @@ import pickle
 from torch.utils.data import SubsetRandomSampler
 import numpy as np
 
+
+class SongIterator:
+    def __init__(self, dataset_path=None, test_size=None, batch_size=None, n_workers=None):
+        self.dataset_path = dataset_path
+        self.test_size = test_size
+        self.batch_size = batch_size
+        self.n_workers = n_workers
+        self.n_songs = len([name for name in os.listdir(dataset_path)])
+        songs = list(range(self.n_songs))
+        random.shuffle(songs)
+        self.offset = int(self.n_songs*test_size) if int(self.n_songs*test_size) > batch_size else batch_size
+        if self.n_songs-self.offset < batch_size:
+            raise Exception("Not enough song provided w.r.t the batch size")
+        self.train_songs = songs[self.offset:]
+        self.test_songs = songs[:self.offset]
+        with open(os.path.join(self.dataset_path, str(0) + '.pickle'), 'rb') as f:
+            song = pickle.load(f)
+        self.n_tracks = song.shape[0]
+        self.max_track_length = song.shape[1]
+
+    def train_len(self):
+        return self.n_songs - self.offset
+
+    def test_len(self):
+        return self.offset
+
+    def get_train_elem(self):
+        empties = 0
+        mb = np.zeros((self.batch_size, self.n_tracks, self.max_track_length), dtype=np.int16)
+        for i in range(self.batch_size):
+            if len(self.train_songs) == 0:
+                empties += 1
+                continue
+            index = self.train_songs.pop()
+            with open(os.path.join(self.dataset_path, str(index) + '.pickle'), 'rb') as f:
+                song = pickle.load(f)
+            mb[i] = song
+        if empties == self.batch_size:
+            return None, 1
+        return mb, self.batch_size
+
+    def get_test_elem(self):
+        empties = 0
+        mb = np.zeros((self.batch_size, self.n_tracks, self.max_track_length), dtype=np.int16)
+        for i in range(self.batch_size):
+            if len(self.test_songs) == 0:
+                empties += 1
+                continue
+            index = self.test_songs.pop()
+            with open(os.path.join(self.dataset_path, str(index) + '.pickle'), 'rb') as f:
+                song = pickle.load(f)
+            mb[i] = song
+        if empties == self.batch_size:
+            return None, 1
+        return mb, self.batch_size
+
+
 # class DatasetIterator(torch.utils.data.Dataset):
 #     def __init__(self, dataset_path, test_size, batch_size=3, n_workers=1, n_elements=10):
 #         self.dataset_path = dataset_path
@@ -79,161 +136,95 @@ import numpy as np
     #     # return bar
 
 
-class DatasetIterator:  # iterates over bar
-    def __init__(self, dataset_path=None, test_size=None, batch_size=None, n_workers=None, n_songs=None, max_bars=None):
-        self.dataset_path = dataset_path
-        self.test_size = test_size
-        self.batch_size = batch_size
-        self.n_workers = n_workers
-        self.n_songs = n_songs
-        songs = list(range(n_songs))
-        random.shuffle(songs)
-        self.offset = int(n_songs*test_size) if int(n_songs*test_size) > 1 else 1
-        if n_songs-self.offset < batch_size:
-            raise Exception("Number of train song provided must be at least batch size!")
-        if self.offset < batch_size:
-            raise Exception("Number of test song provided must be at least batch size!")
-        self.test_remained = songs[:self.offset]
-        self.test_actual = []
-        self.train_remained = songs[self.offset:]
-        self.train_actual = []
-
-        while len(self.train_actual) < self.batch_size:  # it enters here just the first time
-            index = self.train_remained.pop()
-            with open(os.path.join(self.dataset_path, str(index)+'.pickle'), 'rb') as f:
-                song = pickle.load(f)
-            self.train_actual.append(song)
-
-        while len(self.test_actual) < self.batch_size:  # it enters here just the first time
-            index = self.test_remained.pop()
-            with open(os.path.join(self.dataset_path, str(index)+'.pickle'), 'rb') as f:
-                song = pickle.load(f)
-            self.test_actual.append(song)
-
-        self.bar_length = self.train_actual[0].shape[-1]
-        self.n_tracks = self.train_actual[0].shape[0]
-        self.max_bars = max_bars
-
-    def train_len(self):
-        return self.n_songs - self.offset
-
-    def test_len(self):
-        return self.offset
-
-
-    def get_train_elem(self):
-        empties = 0
-        song_over = 0
-        mb = np.zeros((self.batch_size, self.n_tracks, self.bar_length), dtype=np.int16)
-        for i in range(self.batch_size):
-            if self.train_actual[i] is None:  # song is over and there is no other to load, just continue
-                empties += 1
-                continue
-            if np.size(self.train_actual[i], 1) == 0:  # if song is over, load another one
-                song_over += 1
-                if len(self.train_remained) > 0:  # if there is a song to load
-                    index = self.train_remained.pop()
-                    with open(os.path.join(self.dataset_path, str(index)+'.pickle'), 'rb') as f:
-                        song = pickle.load(f)
-                    self.train_actual[i] = song
-                else:  # if no more songs left, just continue (pad is already present)
-                    self.train_actual[i] = None
-                    empties += 1
-                    continue
-            mb[i] = self.train_actual[i][:, 0, :]
-            self.train_actual[i] = self.train_actual[i][:, 1:, :]
-        if empties == self.batch_size:  # we do continue 3 times, so the elem is made only by padding
-            return None, 1
-        return mb, song_over
-
-    def get_test_elem(self):
-        empties = 0
-        song_over = 0
-        mb = np.zeros((self.batch_size, self.n_tracks, self.bar_length), dtype=np.int16)
-        for i in range(self.batch_size):
-            if self.test_actual[i] is None:  # song is over and there is no other to load, just continue
-                empties += 1
-                continue
-            if np.size(self.test_actual[i], 1) == 0:  # if song is over, load another one
-                song_over += 1
-                if len(self.test_remained) > 0:  # if there is a song to load
-                    index = self.test_remained.pop()
-                    with open(os.path.join(self.dataset_path, str(index)+'.pickle'), 'rb') as f:
-                        song = pickle.load(f)
-                    self.test_actual[i] = song
-                else:  # if no more songs left, just continue (pad is already present)
-                    self.test_actual[i] = None
-                    empties += 1
-                    continue
-            mb[i] = self.test_actual[i][:, 0, :]
-            self.test_actual[i] = self.test_actual[i][:, 1:, :]
-        if empties == self.batch_size:  # we do continue 3 times, so the elem is made only by padding
-            return None, 1
-        return mb, song_over
-
-
-class SongIterator:
-    def __init__(self, dataset_path=None, test_size=None, batch_size=None, n_workers=None, n_songs=None, max_bars=None):
-        self.dataset_path = dataset_path
-        self.test_size = test_size
-        self.batch_size = batch_size
-        self.n_workers = n_workers
-        self.n_songs = n_songs
-        songs = list(range(n_songs))
-        random.shuffle(songs)
-        self.offset = int(n_songs*test_size) if int(n_songs*test_size) > 1 else 1
-        if n_songs-self.offset < batch_size:
-            raise Exception("Number of train song provided must be at least batch size!")
-        if self.offset < batch_size:
-            raise Exception("Number of test song provided must be at least batch size!")
-
-        self.train_songs = songs[self.offset:]
-        self.test_songs = songs[:self.offset]
-        # self.bar_length = self.train_actual[0].shape[-1]
-        # self.n_tracks = self.train_actual[0].shape[0]
-        self.max_bars = max_bars
-
-    def train_len(self):
-        return self.n_songs - self.offset
-
-    def test_len(self):
-        return self.offset
-
-    def get_train_elem(self):  # TODO parametrize everything
-        empties = 0
-        mb = np.zeros((self.batch_size, 4, 384*self.max_bars), dtype=np.int16)
-        for i in range(self.batch_size):
-            if len(self.train_songs) == 0:
-                empties += 1
-                continue
-            index = self.train_songs.pop()
-            with open(os.path.join(self.dataset_path, str(index) + '.pickle'), 'rb') as f:
-                song = pickle.load(f)
-            while np.size(song, 1) < self.max_bars:
-                song = np.append(song, np.zeros((4, 1, 384)), 1)
-            song = song[:, :self.max_bars, :]
-            mb[i] = song.reshape(4, 384*self.max_bars)
-        if empties == 3:
-            return None, 1
-        return mb, self.batch_size
-
-    def get_test_elem(self):  # TODO parametrize everything
-        empties = 0
-        mb = np.zeros((self.batch_size, 4, 384*self.max_bars), dtype=np.int16)
-        for i in range(self.batch_size):
-            if len(self.test_songs) == 0:
-                empties += 1
-                continue
-            index = self.test_songs.pop()
-            with open(os.path.join(self.dataset_path, str(index) + '.pickle'), 'rb') as f:
-                song = pickle.load(f)
-            while np.size(song, 1) < self.max_bars:
-                song = np.append(song, np.zeros((4, 1, 384)), 1)
-            song = song[:, :self.max_bars, :]
-            mb[i] = song.reshape(4, 384*self.max_bars)
-        if empties == 3:
-            return None, 1
-        return mb, self.batch_size
-
-
-
+# class DatasetIterator:  # iterates over bar
+#     def __init__(self, dataset_path=None, test_size=None, batch_size=None, n_workers=None, n_songs=None, max_bars=None):
+#         self.dataset_path = dataset_path
+#         self.test_size = test_size
+#         self.batch_size = batch_size
+#         self.n_workers = n_workers
+#         self.n_songs = n_songs
+#         songs = list(range(n_songs))
+#         random.shuffle(songs)
+#         self.offset = int(n_songs*test_size) if int(n_songs*test_size) > 1 else 1
+#         if n_songs-self.offset < batch_size:
+#             raise Exception("Number of train song provided must be at least batch size!")
+#         if self.offset < batch_size:
+#             raise Exception("Number of test song provided must be at least batch size!")
+#         self.test_remained = songs[:self.offset]
+#         self.test_actual = []
+#         self.train_remained = songs[self.offset:]
+#         self.train_actual = []
+#
+#         while len(self.train_actual) < self.batch_size:  # it enters here just the first time
+#             index = self.train_remained.pop()
+#             with open(os.path.join(self.dataset_path, str(index)+'.pickle'), 'rb') as f:
+#                 song = pickle.load(f)
+#             self.train_actual.append(song)
+#
+#         while len(self.test_actual) < self.batch_size:  # it enters here just the first time
+#             index = self.test_remained.pop()
+#             with open(os.path.join(self.dataset_path, str(index)+'.pickle'), 'rb') as f:
+#                 song = pickle.load(f)
+#             self.test_actual.append(song)
+#
+#         self.bar_length = self.train_actual[0].shape[-1]
+#         self.n_tracks = self.train_actual[0].shape[0]
+#         self.max_bars = max_bars
+#
+#     def train_len(self):
+#         return self.n_songs - self.offset
+#
+#     def test_len(self):
+#         return self.offset
+#
+#     def get_train_elem(self):
+#         empties = 0
+#         song_over = 0
+#         mb = np.zeros((self.batch_size, self.n_tracks, self.bar_length), dtype=np.int16)
+#         for i in range(self.batch_size):
+#             if self.train_actual[i] is None:  # song is over and there is no other to load, just continue
+#                 empties += 1
+#                 continue
+#             if np.size(self.train_actual[i], 1) == 0:  # if song is over, load another one
+#                 song_over += 1
+#                 if len(self.train_remained) > 0:  # if there is a song to load
+#                     index = self.train_remained.pop()
+#                     with open(os.path.join(self.dataset_path, str(index)+'.pickle'), 'rb') as f:
+#                         song = pickle.load(f)
+#                     self.train_actual[i] = song
+#                 else:  # if no more songs left, just continue (pad is already present)
+#                     self.train_actual[i] = None
+#                     empties += 1
+#                     continue
+#             mb[i] = self.train_actual[i][:, 0, :]
+#             self.train_actual[i] = self.train_actual[i][:, 1:, :]
+#         if empties == self.batch_size:  # we do continue 3 times, so the elem is made only by padding
+#             return None, 1
+#         return mb, song_over
+#
+#     def get_test_elem(self):
+#         empties = 0
+#         song_over = 0
+#         mb = np.zeros((self.batch_size, self.n_tracks, self.bar_length), dtype=np.int16)
+#         for i in range(self.batch_size):
+#             if self.test_actual[i] is None:  # song is over and there is no other to load, just continue
+#                 empties += 1
+#                 continue
+#             if np.size(self.test_actual[i], 1) == 0:  # if song is over, load another one
+#                 song_over += 1
+#                 if len(self.test_remained) > 0:  # if there is a song to load
+#                     index = self.test_remained.pop()
+#                     with open(os.path.join(self.dataset_path, str(index)+'.pickle'), 'rb') as f:
+#                         song = pickle.load(f)
+#                     self.test_actual[i] = song
+#                 else:  # if no more songs left, just continue (pad is already present)
+#                     self.test_actual[i] = None
+#                     empties += 1
+#                     continue
+#             mb[i] = self.test_actual[i][:, 0, :]
+#             self.test_actual[i] = self.test_actual[i][:, 1:, :]
+#         if empties == self.batch_size:  # we do continue 3 times, so the elem is made only by padding
+#             return None, 1
+#         return mb, song_over
+#
+#

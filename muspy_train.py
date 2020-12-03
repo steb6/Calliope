@@ -5,7 +5,7 @@ from datetime import datetime
 from tqdm.auto import tqdm
 from my_compressive_transformer import TransformerAutoencoder
 from muspy_config import config
-from iterate_dataset import DatasetIterator, SongIterator
+from iterate_dataset import SongIterator
 from optimizer import NoamOpt
 from label_smoother import LabelSmoothing
 from loss_computer import SimpleLossCompute
@@ -15,12 +15,12 @@ import shutil
 
 
 # TO CONNECT: ssh berti@131.114.137.168
-
+# TO VISUALIZE GPUs STATUS: watch -n 0.5 nvidia-smi
 
 class Trainer:
-    def __init__(self, save_path=None, pad_token=512, device="cpu", dataset_path="dataset", test_size=0.1,
-                 batch_size=3, n_workers=1, vocab_size=513, n_epochs=140, model_name="checkpoint", plot_name="plot",
-                 model=None, dataset=None, max_bars=None):
+    def __init__(self, save_path=None, pad_token=None, device=None, dataset_path=None, test_size=None,
+                 batch_size=None, n_workers=None, vocab_size=None, n_epochs=None, model_name="checkpoint",
+                 plot_name="plot", model=None, max_bars=None, label_smoothing=None):
         self.epoch = 0
         self.save_path = save_path
         self.model = None
@@ -37,8 +37,8 @@ class Trainer:
         self.model_name = model_name
         self.plot_name = plot_name
         self.model = model
-        self.dataset = dataset
         self.max_bars = max_bars
+        self.label_smoothing = label_smoothing
 
     def plot(self, tr, ts, tr_aux, ts_aux, plot_path):
         if self.epoch == 0:
@@ -130,7 +130,8 @@ class Trainer:
         self.optimizer = NoamOpt(self.model.src_embed[0].d_model, 1, 2000,
                                  torch.optim.Adam(self.model.parameters(), lr=0, betas=(0.9, 0.98), eps=1e-9))
         # Loss
-        criterion = LabelSmoothing(size=self.vocab_size, padding_idx=self.pad_token, smoothing=0.1)
+        criterion = LabelSmoothing(size=self.vocab_size, padding_idx=self.pad_token, smoothing=self.label_smoothing,
+                                   device=self.device)
         criterion.to(self.device)
         self.loss_computer = SimpleLossCompute(criterion)
         tr_losses = []
@@ -142,10 +143,8 @@ class Trainer:
         # Train
         for self.epoch in range(self.n_epochs):
             # print("Epoch ", epoch, " over ", n_epochs)
-            # TODO just need to change between DatsetIterator and SongIterator to test 2 different approach
             dataset = SongIterator(dataset_path=self.dataset_path, test_size=self.test_size,
-                                      batch_size=self.batch_size, n_workers=self.n_workers, n_songs=config.early_stop,
-                                      max_bars=self.max_bars)
+                                   batch_size=self.batch_size, n_workers=self.n_workers)
             self.model.train()
             tr_loss, tr_aux_loss, memories = self.run_epoch(dataset, memories)
             self.model.eval()
@@ -166,7 +165,7 @@ class Trainer:
                 os.remove(os.path.join(self.save_path, self.model_name + '_' + str(self.epoch - 1) + '.pt'))
                 os.remove(os.path.join(self.save_path, self.plot_name + '_' + str(self.epoch - 1) + '.png'))
 
-    def generate(self, checkpoint_path=None, sampled_dir=None):
+    def generate(self, checkpoint_path=None, sampled_dir=None, note_manager=None):
         if self.model is None:
             assert checkpoint_path
             assert sampled_dir
@@ -184,11 +183,8 @@ class Trainer:
             shutil.rmtree(sampled_dir)
             os.makedirs(sampled_dir)
         # Load data
-        dataset = DatasetIterator(dataset_path=self.dataset_path, test_size=self.test_size,
-                                  batch_size=self.batch_size, n_workers=self.n_workers, n_songs=config.early_stop)
-        for i in range(5):  # skip first 5 bar, that could be empty, to better test the model
-            _, _ = dataset.get_test_elem()
-        src, _ = dataset.get_test_elem()
+        src, _ = SongIterator(dataset_path=self.dataset_path, test_size=self.test_size,
+                              batch_size=self.batch_size, n_workers=self.n_workers).get_test_elem()
         src, tgt_x, tgt_y, src_mask, tgt_mask = self.make_masks(src)
 
         out, _, _ = model.forward(src, tgt_x, src_mask, tgt_mask)
@@ -196,69 +192,23 @@ class Trainer:
         song = np.array(tracks_tokens.cpu()).swapaxes(1, 2)
 
         # Experiment
-        def append_song(m1, m2):
-            for i in range(4):
-                for note in m2.tracks[i].notes:
-                    m1.tracks[i].notes.append(note)
-            return m1
-
-        created1 = self.dataset.reconstruct_music(np.expand_dims(song[0], 1), time_offset=0)
-        created2 = self.dataset.reconstruct_music(np.expand_dims(song[1], 1), time_offset=1)
-        created3 = self.dataset.reconstruct_music(np.expand_dims(song[2], 1), time_offset=2)
-        original1 = self.dataset.reconstruct_music(np.expand_dims(np.array(src[0].cpu()).swapaxes(0, 1), 1),
-                                                   time_offset=0)
-        original2 = self.dataset.reconstruct_music(np.expand_dims(np.array(src[1].cpu()).swapaxes(0, 1), 1),
-                                                   time_offset=1)
-        original3 = self.dataset.reconstruct_music(np.expand_dims(np.array(src[2].cpu()).swapaxes(0, 1), 1),
-                                                   time_offset=2)
-        append_song(append_song(original1, original2), original3).write_midi(os.path.join(sampled_dir, "before.mid"))
-        append_song(append_song(created1, created2), created3).write_midi(os.path.join(sampled_dir, "after.mid"))
+        created = note_manager.reconstruct_music(song[0])
+        original = note_manager.reconstruct_music(np.array(src[0].cpu()).swapaxes(0, 1))
+        created.write_midi(os.path.join(sampled_dir, "after.mid"))
+        original.write_midi(os.path.join(sampled_dir, "before.mid"))
 
 
 if __name__ == "__main__":
-    data = NoteRepresentationManager(resolution=config.resolution,
-                                     tempo=config.tempo,
-                                     pad_token=config.pad_token,
-                                     sos_token=config.sos_token,
-                                     bar_token=config.bar_token,
-                                     eos_token=config.eos_token,
-                                     num_values=config.num_values,
-                                     time_first_token=config.time_first_token,
-                                     pitch_first_token=config.pitch_first_token,
-                                     duration_first_token=config.duration_first_token,
-                                     velocity_first_token=config.velocity_first_token,
-                                     use_velocity=config.use_velocity,
-                                     log_file=config.dataset_converter_log_file,
-                                     reconstruct_programs=config.reconstruct_programs,
-                                     max_bar_length=config.max_bar_length
-                                     )
-    shutil.rmtree(config.dataset_path, ignore_errors=True)
-    data.convert_dataset(raw_midi=config.raw_midi_path, dataset_path=config.dataset_path, early_stop=config.early_stop)
+    note_manager = NoteRepresentationManager(**config["tokens"], **config["data"], **config["paths"])
 
-    m = TransformerAutoencoder(d_model=config.d_model,
-                               n_tracks=config.n_tracks,
-                               heads=config.n_heads,
-                               d_ff=config.d_ff,
-                               dropout=config.dropout,
-                               layers=config.layers,
-                               vocab_size=config.vocab_size,
-                               seq_len=config.seq_len,
-                               mem_len=config.mem_len,
-                               cmem_len=config.cmem_len,
-                               cmem_ratio=config.cmem_ratio)
+    shutil.rmtree(config["paths"]["dataset_path"], ignore_errors=True)
+    note_manager.convert_dataset()
+
+    m = TransformerAutoencoder(**config["model"])
 
     trainer = Trainer(model=m,
-                      pad_token=config.pad_token,
-                      device=config.device,
-                      dataset_path=config.dataset_path,
-                      test_size=config.test_size,
-                      batch_size=config.batch_size,
-                      n_workers=config.n_workers,
-                      vocab_size=config.vocab_size,
-                      n_epochs=config.n_epochs,
-                      model_name=config.model_name,
-                      plot_name=config.plot_name,
-                      dataset=data,
-                      max_bars=config.max_bars)
+                      pad_token=config["tokens"]["pad_token"],
+                      dataset_path=config["paths"]["dataset_path"],
+                      **config["train"])
     trainer.train()
-    trainer.generate()
+    trainer.generate(note_manager=note_manager)
