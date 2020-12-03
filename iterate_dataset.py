@@ -79,8 +79,8 @@ import numpy as np
     #     # return bar
 
 
-class DatasetIterator:
-    def __init__(self, dataset_path=None, test_size=None, batch_size=None, n_workers=None, n_songs=None):
+class DatasetIterator:  # iterates over bar
+    def __init__(self, dataset_path=None, test_size=None, batch_size=None, n_workers=None, n_songs=None, max_bars=None):
         self.dataset_path = dataset_path
         self.test_size = test_size
         self.batch_size = batch_size
@@ -112,12 +112,14 @@ class DatasetIterator:
 
         self.bar_length = self.train_actual[0].shape[-1]
         self.n_tracks = self.train_actual[0].shape[0]
+        self.max_bars = max_bars
 
     def train_len(self):
         return self.n_songs - self.offset
 
     def test_len(self):
         return self.offset
+
 
     def get_train_elem(self):
         empties = 0
@@ -168,3 +170,70 @@ class DatasetIterator:
         if empties == self.batch_size:  # we do continue 3 times, so the elem is made only by padding
             return None, 1
         return mb, song_over
+
+
+class SongIterator:
+    def __init__(self, dataset_path=None, test_size=None, batch_size=None, n_workers=None, n_songs=None, max_bars=None):
+        self.dataset_path = dataset_path
+        self.test_size = test_size
+        self.batch_size = batch_size
+        self.n_workers = n_workers
+        self.n_songs = n_songs
+        songs = list(range(n_songs))
+        random.shuffle(songs)
+        self.offset = int(n_songs*test_size) if int(n_songs*test_size) > 1 else 1
+        if n_songs-self.offset < batch_size:
+            raise Exception("Number of train song provided must be at least batch size!")
+        if self.offset < batch_size:
+            raise Exception("Number of test song provided must be at least batch size!")
+
+        self.train_songs = songs[self.offset:]
+        self.test_songs = songs[:self.offset]
+        # self.bar_length = self.train_actual[0].shape[-1]
+        # self.n_tracks = self.train_actual[0].shape[0]
+        self.max_bars = max_bars
+
+    def train_len(self):
+        return self.n_songs - self.offset
+
+    def test_len(self):
+        return self.offset
+
+    def get_train_elem(self):  # TODO parametrize everything
+        empties = 0
+        mb = np.zeros((self.batch_size, 4, 384*self.max_bars), dtype=np.int16)
+        for i in range(self.batch_size):
+            if len(self.train_songs) == 0:
+                empties += 1
+                continue
+            index = self.train_songs.pop()
+            with open(os.path.join(self.dataset_path, str(index) + '.pickle'), 'rb') as f:
+                song = pickle.load(f)
+            while np.size(song, 1) < self.max_bars:
+                song = np.append(song, np.zeros((4, 1, 384)), 1)
+            song = song[:, :self.max_bars, :]
+            mb[i] = song.reshape(4, 384*self.max_bars)
+        if empties == 3:
+            return None, 1
+        return mb, self.batch_size
+
+    def get_test_elem(self):  # TODO parametrize everything
+        empties = 0
+        mb = np.zeros((self.batch_size, 4, 384*self.max_bars), dtype=np.int16)
+        for i in range(self.batch_size):
+            if len(self.test_songs) == 0:
+                empties += 1
+                continue
+            index = self.test_songs.pop()
+            with open(os.path.join(self.dataset_path, str(index) + '.pickle'), 'rb') as f:
+                song = pickle.load(f)
+            while np.size(song, 1) < self.max_bars:
+                song = np.append(song, np.zeros((4, 1, 384)), 1)
+            song = song[:, :self.max_bars, :]
+            mb[i] = song.reshape(4, 384*self.max_bars)
+        if empties == 3:
+            return None, 1
+        return mb, self.batch_size
+
+
+

@@ -15,7 +15,7 @@ class NoteRepresentationManager:
     """
     Tokens are expected one after the other and should be the greatest admissible values
     """
-    def __init__(self, resolution=None, tempo=None, time_first_token=None, pitch_first_token=None,
+    def  __init__(self, resolution=None, tempo=None, time_first_token=None, pitch_first_token=None,
                  duration_first_token=None, velocity_first_token=None, pad_token=None, num_values=None,
                  use_velocity=None, log_file=None, bar_token=None, sos_token=None, eos_token=None,
                  reconstruct_programs=None, max_bar_length=None):
@@ -44,7 +44,7 @@ class NoteRepresentationManager:
     def filter_song(self, s):
         """
         Get a muspy.Music object
-        return the song with the 4 instruments with more notes, with resolution of 32 and tempo of 120
+        return the song with the 4 instruments with more notes, with resolution of 24 and tempo of 120
         or None if the song does not have enough instruments
         """
         old_stdout = sys.stdout  # backup current stdout

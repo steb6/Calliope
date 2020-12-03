@@ -5,7 +5,7 @@ from datetime import datetime
 from tqdm.auto import tqdm
 from my_compressive_transformer import TransformerAutoencoder
 from muspy_config import config
-from iterate_dataset import DatasetIterator
+from iterate_dataset import DatasetIterator, SongIterator
 from optimizer import NoamOpt
 from label_smoother import LabelSmoothing
 from loss_computer import SimpleLossCompute
@@ -20,7 +20,7 @@ import shutil
 class Trainer:
     def __init__(self, save_path=None, pad_token=512, device="cpu", dataset_path="dataset", test_size=0.1,
                  batch_size=3, n_workers=1, vocab_size=513, n_epochs=140, model_name="checkpoint", plot_name="plot",
-                 model=None, dataset=None):
+                 model=None, dataset=None, max_bars=None):
         self.epoch = 0
         self.save_path = save_path
         self.model = None
@@ -38,6 +38,7 @@ class Trainer:
         self.plot_name = plot_name
         self.model = model
         self.dataset = dataset
+        self.max_bars = max_bars
 
     def plot(self, tr, ts, tr_aux, ts_aux, plot_path):
         if self.epoch == 0:
@@ -92,6 +93,7 @@ class Trainer:
             src, tgt_x, tgt_y, src_mask, tgt_mask = self.make_masks(src)
             n_tokens = torch.sum(src_mask)
             if n_tokens == 0:  # All tracks are empty, it can happen because first bar usually is empty
+                # src, new = loader.get_train_elem() if self.model.training else loader.get_test_elem()
                 src, new = loader.get_train_elem() if self.model.training else loader.get_test_elem()
                 continue
             # Step
@@ -109,6 +111,8 @@ class Trainer:
             src, new = loader.get_train_elem() if self.model.training else loader.get_test_elem()
             progbar.update(new)
         progbar.close()
+        if i == 0:
+            i = 1  # TODO why sometimes is 0? check the loader
         return total_loss / i, total_aux_loss / i, memories
 
     def train(self):
@@ -138,8 +142,10 @@ class Trainer:
         # Train
         for self.epoch in range(self.n_epochs):
             # print("Epoch ", epoch, " over ", n_epochs)
-            dataset = DatasetIterator(dataset_path=self.dataset_path, test_size=self.test_size,
-                                      batch_size=self.batch_size, n_workers=self.n_workers, n_songs=config.early_stop)
+            # TODO just need to change between DatsetIterator and SongIterator to test 2 different approach
+            dataset = SongIterator(dataset_path=self.dataset_path, test_size=self.test_size,
+                                      batch_size=self.batch_size, n_workers=self.n_workers, n_songs=config.early_stop,
+                                      max_bars=self.max_bars)
             self.model.train()
             tr_loss, tr_aux_loss, memories = self.run_epoch(dataset, memories)
             self.model.eval()
@@ -252,6 +258,7 @@ if __name__ == "__main__":
                       n_epochs=config.n_epochs,
                       model_name=config.model_name,
                       plot_name=config.plot_name,
-                      dataset=data)
+                      dataset=data,
+                      max_bars=config.max_bars)
     trainer.train()
     trainer.generate()

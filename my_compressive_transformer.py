@@ -22,17 +22,17 @@ class TransformerAutoencoder(nn.Module):
     """
 
     def __init__(self,
-                 d_model=256,
-                 n_tracks=4,
-                 heads=4,
-                 d_ff=512,
-                 dropout=0.0,
-                 layers=3,
-                 vocab_size=128 + 128 + 1000 + 32 + 1 + 1 + 1 + 1,
-                 seq_len=200,
-                 mem_len=200,
-                 cmem_len=32,
-                 cmem_ratio=4):
+                 d_model=None,
+                 n_tracks=None,
+                 heads=None,
+                 d_ff=None,
+                 dropout=None,
+                 layers=None,
+                 vocab_size=None,
+                 seq_len=None,
+                 mem_len=None,
+                 cmem_len=None,
+                 cmem_ratio=None):
         super(TransformerAutoencoder, self).__init__()
 
         # Deepcopy creates new instances of the object, nothing is shared between layers
@@ -43,7 +43,7 @@ class TransformerAutoencoder(nn.Module):
         # dec_ff = PositionwiseFeedForward(d_model, d_ff, dropout)
         # x = x + norm(ff())
         ff = Residual(PreNorm(d_model, FeedForward(d_model, d_ff, dropout=0.1)))
-        position = PositionalEncoding(d_model, dropout)
+        position = PositionalEncoding(d_model, dropout, max_len=seq_len)
         encoder = Encoder(EncoderLayer(d_model, c(attn), c(ff), dropout), layers)
         decoder = Decoder(DecoderLayer(d_model, c(dec_attn), c(dec_attn), c(ff), dropout), layers)
 
@@ -322,14 +322,14 @@ class MultiHeadedAttention(nn.Module):
 
         # calculate memory and compressed memory
 
-        old_mem, new_mem = queue_fifo(mem, x, length=self.mem_len, dim=1)
+        old_mem, new_mem = queue_fifo(mem, x, length=self.mem_len, dim=1)# TODO why old_mem has shape[1] != 0 the first time?
 
         old_mem_padding = old_mem.shape[1] % self.cmem_ratio
 
         if old_mem_padding != 0:
             old_mem = F.pad(old_mem, (0, 0, old_mem_padding, 0), value=0.)
 
-        if old_mem.shape[1] == 0 or self.cmem_len <= 0:
+        if old_mem.shape[1] == 0 or self.cmem_len <= 0:  # TODO why this condition is false in the case it does not work
             return logits, Memory(new_mem, new_cmem), aux_loss
         # STOP GRADIENT DETACHING MEMORY
         old_mem = old_mem.detach()
@@ -355,7 +355,7 @@ class MultiHeadedAttention(nn.Module):
         attn_fn = partial(full_attn, dropout_fn=self.reconstruction_attn_dropout)
 
         aux_loss = F.mse_loss(
-            attn_fn(q, old_mem_k, old_mem_v),
+            attn_fn(q, old_mem_k, old_mem_v),  # TODO why this does not work?
             attn_fn(q, cmem_k, cmem_v)
         )
 
@@ -482,10 +482,7 @@ class Embeddings(nn.Module):
         self.d_model = d_model
 
     def forward(self, x):
-        try:
-            aux = self.lut(x)
-        except:
-            print(torch.max(x))
+        aux = self.lut(x)
         return aux * math.sqrt(self.d_model)
 
 
@@ -620,11 +617,11 @@ def split_at_index(dim, index, t):
 
 def full_attn(q, k, v, dropout_fn=None):
     *_, dim = q.shape
-    dots = torch.einsum('bhid,bhjd->bhij', q, k) * (dim ** -0.5)
+    dots = torch.einsum('bhid,bhjd->bhij', q, k) * (dim ** -0.5)  # Q K^T
     attn = dots.softmax(dim=-1)
     if dropout_fn is not None:
         attn = dropout_fn(attn)
-    return torch.einsum('bhij,bhjd->bhid', attn, v)
+    return torch.einsum('bhij,bhjd->bhid', attn, v)  # (Q K^T) V
 
 
 def cast_tuple(el):

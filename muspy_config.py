@@ -19,12 +19,13 @@ config = {
     "device": "cuda",
     # Vocab and seq len
     "vocab_size": 516,
-    "seq_len": 102,
+    "seq_len": 200,  # resolution x 4 (quarter note) x token for each note x number of max_bars
+    "max_bars": 5,
     # Train
     "batch_size": 3,
     "test_size": 0.3,
     "n_workers": 1,
-    "n_epochs": 50,
+    "n_epochs": 150,
     "label_smoothing": 0.1,
     # Model
     "d_model": 64,
@@ -33,8 +34,8 @@ config = {
     "d_ff": 256,
     "layers": 1,
     "dropout": 0.0,
-    "mem_len": 512,
-    "cmem_len": 128,
+    "mem_len": 200, # 512, before was 512
+    "cmem_len": 32,
     "cmem_ratio": 4,
     # Tokens, change this value is not enough for change the representation
     "pad_token": 0,
