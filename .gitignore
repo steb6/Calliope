@@ -3,3 +3,4 @@ training*
 __pycache__
 1*
 dataset_converter_log.txt
+*.mid

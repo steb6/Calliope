@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 import os
 max_track_length = 1000
-vocab_size = 516
+vocab_size = 19 + 128*4 + 32*2 + 1 #TODO check  # 579 token + tempos + time*2, pitch, duration + velocities
 config = {
     "data": {  # Parameters to create and listen the note representation
         "max_track_length": max_track_length,  # because of the histogram of the lengths and the memory limits
@@ -10,10 +10,14 @@ config = {
         "early_stop": 1000,
         "resolution": 24,
         "tempo": 120,
+        "velocities_interval": (0, 127),
+        "velocities_values": 32,
+        "tempos_interval": (60, 180),
+        "tempos_values": 32
     },
     "train": {
         "vocab_size": vocab_size,
-        "device": "cuda",
+        "device": "cpu",
         "batch_size": 1,
         "test_size": 0.3,
         "n_workers": 1,
@@ -25,11 +29,31 @@ config = {
         "bar_token": 1,
         "sos_token": 2,
         "eos_token": 3,
+        # Time signature
+        "two_two_token": 4,
+        # x/4
+        "one_four_token": 5,
+        "two_four_token": 6,
+        "three_four_token": 7,
+        "four_four_token": 8,
+        "five_four_token": 9,
+        "six_four_token": 10,
+        "seven_four_token": 11,
+        "eight_four_token": 12,
+        # x/8
+        "three_eight_token": 13,
+        "five_eight_token": 14,
+        "six_eight_token": 15,
+        "seven_eight_token": 16,
+        "nine_eight_token": 17,
+        "twelve_eight_token": 18,
+        # Values
         "num_values": 128,
-        "time_first_token": 4,  # 4-131
-        "pitch_first_token": 4 + 128,  # 132-259
-        "duration_first_token": 4 + 128 + 128,  # 260-387
-        "velocity_first_token": 4 + 128 + 128 + 128,  # 388-515
+        "tempos_first_token": 19,
+        "time_first_token":     19 + 32,  # it has 128*2 values, because of 8/4 time signature
+        "pitch_first_token":    19 + 32 + 128*2,  # 132-259
+        "duration_first_token": 19 + 32 + 128*2 + 128,  # 260-387
+        "velocity_first_token": 19 + 32 + 128*2 + 128 + 128,  # this has 32 values
     },
     "model": {
         "vocab_size": vocab_size,  # this depends by config.tokens

@@ -486,7 +486,11 @@ class Embeddings(nn.Module):
         self.d_model = d_model
 
     def forward(self, x):
-        aux = self.lut(x)
+        try:
+            aux = self.lut(x)
+        except:
+            print(torch.max(x))
+            exit()
         return aux * math.sqrt(self.d_model)
 
 
