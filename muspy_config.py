@@ -1,13 +1,15 @@
 from types import SimpleNamespace
 import os
-max_track_length = 1000
+max_track_length = 10000
+max_bars = 100
+max_bar_length = 100
 vocab_size = 19 + 128*4 + 32*2 + 1 #TODO check  # 579 token + tempos + time*2, pitch, duration + velocities
 config = {
     "data": {  # Parameters to create and listen the note representation
         "max_track_length": max_track_length,  # because of the histogram of the lengths and the memory limits
         "use_velocity": True,
         "reconstruct_programs": [0, 0, 32, 40],
-        "early_stop": 1000,
+        "early_stop": 10,
         "resolution": 24,
         "tempo": 120,
         "velocities_interval": (0, 127),
@@ -17,7 +19,7 @@ config = {
     },
     "train": {
         "vocab_size": vocab_size,
-        "device": "cpu",
+        "device": "cuda",
         "batch_size": 1,
         "test_size": 0.3,
         "n_workers": 1,
@@ -63,10 +65,11 @@ config = {
         "d_ff": 256,
         "layers": 1,
         "dropout": 0.0,
-        "mem_len": max_track_length,  # 512, before was 512
-        "cmem_len": 100,
-        "cmem_ratio": 10,
-        "seq_len": max_track_length
+        "mem_len": 100,  # 512, before was 512
+        "cmem_len": 25,
+        "cmem_ratio": 4,
+        "seq_len": 100,
+        "pad_token": 0
     },
     "paths": {
         "raw_midi_path": "D:",

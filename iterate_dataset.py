@@ -24,6 +24,9 @@ class SongIterator:
             song = pickle.load(f)
         self.n_tracks = song.shape[0]
         self.max_track_length = song.shape[1]
+        self.max_bars = 100
+        self.max_bar_length = 100
+        self.bar_token = 1
 
     def train_len(self):
         return self.n_songs - self.offset
@@ -31,32 +34,41 @@ class SongIterator:
     def test_len(self):
         return self.offset
 
-    def get_train_elem(self):
+    def get_elem(self, train):
+        if train:
+            songs = self.train_songs
+        else:
+            songs = self.test_songs
         empties = 0
-        mb = np.zeros((self.batch_size, self.n_tracks, self.max_track_length), dtype=np.int16)
-        for i in range(self.batch_size):
-            if len(self.train_songs) == 0:
+        # mb = np.zeros((self.batch_size, self.n_tracks, self.max_track_length), dtype=np.int16)
+        mb = np.zeros((self.batch_size, self.n_tracks, self.max_bars, self.max_bar_length), dtype=np.int16)
+        for b in range(self.batch_size):
+            if len(songs) == 0:
                 empties += 1
                 continue
-            index = self.train_songs.pop()
+            index = songs.pop()
             with open(os.path.join(self.dataset_path, str(index) + '.pickle'), 'rb') as f:
                 song = pickle.load(f)
-            mb[i] = song
-        if empties == self.batch_size:
-            return None, 1
-        return mb, self.batch_size
+            processed_song = np.zeros((self.n_tracks, self.max_bars, self.max_bar_length), dtype=np.int16)
+            for t, track in enumerate(song):  # iterate over
+                processed_track = np.zeros((self.max_bars, self.max_bar_length), dtype=np.int16)
+                i = 0
+                j = 0
+                for tok in track:
+                    if j == self.max_bars:  # too many bars
+                        break
+                    if i == self.max_bar_length:  # to many token
+                        break
+                    if tok == self.bar_token:
+                        processed_track[i][j] = tok
+                        i += 1
+                        j = 0
+                    else:
+                        processed_track[i][j] = tok
+                        j += 1
+                processed_song[t] = processed_track
+            mb[b] = processed_song
 
-    def get_test_elem(self):
-        empties = 0
-        mb = np.zeros((self.batch_size, self.n_tracks, self.max_track_length), dtype=np.int16)
-        for i in range(self.batch_size):
-            if len(self.test_songs) == 0:
-                empties += 1
-                continue
-            index = self.test_songs.pop()
-            with open(os.path.join(self.dataset_path, str(index) + '.pickle'), 'rb') as f:
-                song = pickle.load(f)
-            mb[i] = song
         if empties == self.batch_size:
             return None, 1
         return mb, self.batch_size

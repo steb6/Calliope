@@ -31,12 +31,16 @@ class TransformerAutoencoder(nn.Module):
                  seq_len=None,
                  mem_len=None,
                  cmem_len=None,
-                 cmem_ratio=None):
+                 cmem_ratio=None,
+                 pad_token=None):
         super(TransformerAutoencoder, self).__init__()
 
-        assert mem_len >= seq_len, 'length of memory should be at least the sequence length'
-        assert cmem_len >= (
-                    mem_len // cmem_ratio), f'length of compressed memory should be at least the memory length divided by the compression ratio {int(mem_len // cmem_ratio)}'
+        # assert mem_len >= seq_len, 'length of memory should be at least the sequence length'
+        # assert cmem_len >= (
+                    # mem_len // cmem_ratio), f'length of compressed memory should be at least the memory length divided by the compression ratio {int(mem_len // cmem_ratio)}'
+
+        max_bar_length = 100
+        max_latents = 100
 
         # Deepcopy creates new instances of the object, nothing is shared between layers
         c = copy.deepcopy
@@ -47,8 +51,8 @@ class TransformerAutoencoder(nn.Module):
         # x = x + norm(ff())
         ff = Residual(PreNorm(d_model, FeedForward(d_model, d_ff, dropout=0.1)))
         position = PositionalEncoding(d_model, dropout, max_len=seq_len)
-        encoder = Encoder(EncoderLayer(d_model, c(attn), c(ff), dropout), layers)
-        decoder = Decoder(DecoderLayer(d_model, c(dec_attn), c(dec_attn), c(ff), dropout), layers)
+        encoder = Encoder(EncoderLayer(d_model, c(attn), c(ff), dropout), layers, max_bar_length, max_latents, vocab_size, d_model, pad_token)
+        decoder = Decoder(DecoderLayer(d_model, c(dec_attn), c(dec_attn), c(ff), dropout), layers, max_bar_length, max_latents, vocab_size, d_model, pad_token)
 
         # need one encoder and one decoder for each of the four tracks
         self.drums_encoder = c(encoder)
@@ -86,43 +90,45 @@ class TransformerAutoencoder(nn.Module):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
-    def forward(self, src, tgt, src_mask, tgt_mask, memories=None):
+    # def forward(self, src, tgt, src_mask, tgt_mask, memories=None):
+    def forward(self, src, memories=None):
         "Take in and process masked src and target sequences."
         # Check if memories are empty, in the case create new memories
-        b, t, d = src.shape
+        n_track, n_bar, n_batch, n_tok = src.shape
         if memories is None:
             memories = (None, None)
         mem, cmem = memories
         # every memory has size n_tracks * n_layer * b * 0 * d
         if mem is None:
-            mem = torch.empty(self.n_tracks, self.layers, b, 0, self.d_model, **to(src))
+            mem = torch.empty(self.n_tracks, self.layers, n_batch, 0, self.d_model, **to(src))
         if cmem is None:
-            cmem = torch.empty(self.n_tracks, self.layers, b, 0, self.d_model, **to(src))
+            cmem = torch.empty(self.n_tracks, self.layers, n_batch, 0, self.d_model, **to(src))
         # positional embeddings
-        total_len = mem.shape[3] + cmem.shape[3] + self.seq_len
+        # total_len = mem.shape[3] + cmem.shape[3] + self.seq_len
         # pos_emb = self.pos_emb[:, (self.seq_len - t):total_len]
-        pos_emb = None # TODO CORREGGERE
+        # pos_emb = None # TODO CORREGGERE
         # Set up new memories and loss
         # aux_loss = torch.tensor(0., requires_grad=True, **to(src))
-        latents, next_memories, aux_loss = self.encode(src, src_mask, (mem, cmem), pos_emb)
+        latents, next_memories, aux_loss = self.encode(src, (mem, cmem))
         # detach memories
         next_mem, next_cmem = next_memories
         next_mem, next_cmem = map(torch.detach, (next_mem, next_cmem))
-        output = self.decode(latents, src_mask, tgt, tgt_mask)
+        # output = self.decode(latents, src_mask, tgt, tgt_mask)
+        output = self.decode(latents, src)
         return output, (next_mem, next_cmem), aux_loss
 
-    def encode(self, src, src_mask, memories, pos_emb):
+    def encode(self, src, memories):
         mem, cmem = memories
         # For every track, encode
-        drums_z, drums_mem, drums_cmem, drums_l = self.drums_encoder(self.src_embed(src[:, :, 0]), src_mask[:, :, 0], (mem[0], cmem[0]), pos_emb)
-        bass_z, bass_mem, bass_cmem, bass_l = self.bass_encoder(self.src_embed(src[:, :, 1]), src_mask[:, :, 1],(mem[1], cmem[1]), pos_emb)
-        guitar_z, guitar_mem, guitar_cmem, guitar_l = self.guitar_encoder(self.src_embed(src[:, :, 2]), src_mask[:, :, 2], (mem[2], cmem[2]), pos_emb)
-        strings_z, strings_mem, strings_cmem, strings_l = self.strings_encoder(self.src_embed(src[:, :, 3]), src_mask[:, :, 3], (mem[3], cmem[3]), pos_emb)
+        drums_z, drums_mem, drums_cmem, drums_l = self.drums_encoder(src[0, :, :, :], (mem[0], cmem[0]))
+        bass_z, bass_mem, bass_cmem, bass_l = self.bass_encoder(src[1, :, :, :], (mem[0], cmem[0]))
+        guitar_z, guitar_mem, guitar_cmem, guitar_l = self.guitar_encoder(src[2, :, :, :], (cmem[0], mem[0]))
+        strings_z, strings_mem, strings_cmem, strings_l = self.strings_encoder(src[3, :, :, :], (cmem[0], mem[0]))
         # Stack memories
-        drums_mem, drums_cmem = map(torch.stack, (drums_mem, drums_cmem))
-        bass_mem, bass_cmem = map(torch.stack, (bass_mem, bass_cmem))
-        guitar_mem, guitar_cmem = map(torch.stack, (guitar_mem, guitar_cmem))
-        strings_mem, strings_cmem = map(torch.stack, (strings_mem, strings_cmem))
+        # drums_mem, drums_cmem = map(torch.stack, (drums_mem, drums_cmem))
+        # bass_mem, bass_cmem = map(torch.stack, (bass_mem, bass_cmem))
+        # guitar_mem, guitar_cmem = map(torch.stack, (guitar_mem, guitar_cmem))
+        # strings_mem, strings_cmem = map(torch.stack, (strings_mem, strings_cmem))
         new_mem = torch.stack((drums_mem, bass_mem, guitar_mem, strings_mem))
         new_cmem = torch.stack((drums_cmem, bass_cmem, guitar_cmem, strings_cmem))
         # Sum up losses
@@ -130,16 +136,15 @@ class TransformerAutoencoder(nn.Module):
         aux_loss = torch.stack((drums_l, bass_l, guitar_l, strings_l))
         aux_loss = torch.mean(aux_loss)
         # Concatenate latents of every track
-        latents = torch.cat([drums_z, bass_z, guitar_z, strings_z], dim=2)
+        latents = torch.cat([drums_z, bass_z, guitar_z, strings_z], dim=-1)
         latents = self.linear_encoder(latents)  # TODO non aggregare
         return latents, (new_mem, new_cmem), aux_loss
 
-    def decode(self, memory, src_mask, tgt, tgt_mask):
-        drums_out = self.drums_decoder(self.tgt_embed(tgt[:, :, 0]), memory, src_mask[:, :, 0], tgt_mask[:, :, :, 0])
-        bass_out = self.bass_decoder(self.tgt_embed(tgt[:, :, 1]), memory, src_mask[:, :, 1], tgt_mask[:, :, :, 1])
-        guitar_out = self.guitar_decoder(self.tgt_embed(tgt[:, :, 2]), memory, src_mask[:, :, 2], tgt_mask[:, :, :, 2])
-        strings_out = self.strings_decoder(self.tgt_embed(tgt[:, :, 3]), memory, src_mask[:, :, 3],
-                                           tgt_mask[:, :, :, 3])
+    def decode(self, latents, src):
+        drums_out = self.drums_decoder(latents, src[0])
+        bass_out = self.bass_decoder(latents, src[1])
+        guitar_out = self.guitar_decoder(latents, src[2])
+        strings_out = self.strings_decoder(latents, src[3])
         output = torch.stack([drums_out, bass_out, guitar_out, strings_out], dim=-1)
         return self.generator(output)
 
@@ -147,38 +152,71 @@ class TransformerAutoencoder(nn.Module):
 class Encoder(nn.Module):
     "Core encoder is a stack of N layers"
 
-    def __init__(self, layer, N):
+    def __init__(self, layer, N, bar_length, max_latents, vocab_size, d_model, pad_token):
         super(Encoder, self).__init__()
         self.layers = clones(layer, N)
         # self.norm = LayerNorm(layer.size)
+        self.embed = nn.Embedding(vocab_size, d_model)
+        self.position = PositionalEncoding(d_model, 0.1)
         self.N = N
+        # self.bar_length = bar_length
+        # self.max_latents = max_latents
+        self.pad_token = pad_token
 
-    def forward(self, x, mask, memories, pos_emb):
+    def forward(self, x, memories):
         "Pass the input (and mask) through each layer in turn."
         mems, cmems = memories
-        new_mem = []
-        new_cmem = []
-        aux_loss = torch.tensor(0., requires_grad=True, **to(x))
-        for layer, mem, cmem in zip(self.layers, mems, cmems):
-            x, new_memory, layer_loss = layer(x, mask, (mem, cmem), pos_emb)
-            new_mem.append(new_memory[0])
-            new_cmem.append(new_memory[1])
-            aux_loss = aux_loss + layer_loss
-        return x, new_mem, new_cmem, aux_loss
+        aux_loss = torch.tensor(0., requires_grad=True, device=x.device, dtype=torch.float32)
+        latents = []
+        # memories have dimensions: layer, batch, size, dim
+        for bar in x:
+            input_mask = bar != self.pad_token
+            embedded = self.embed(bar)
+            latent = self.position(embedded)
+            bar_mems = []
+            bar_cmems = []
+            for layer, mem, cmem in zip(self.layers, mems, cmems):
+                latent, new_memory, layer_loss = layer(latent, (mem, cmem), input_mask)
+                # NEW_MEMORY[0] 1, 100, 64 NEW MEMORY[1] 1, 0, 64
+                latents.append(latent)
+                bar_mems.append(new_memory[0])
+                bar_cmems.append(new_memory[1])
+                aux_loss = aux_loss + layer_loss
+            # TODO prepare memories for next bar
+            mems = torch.stack(bar_mems)
+            cmems = torch.stack(bar_cmems)
+        latents = torch.stack(latents)
+        aux_loss = aux_loss / len(self.layers)  # normalize w.r.t number of layers
+        aux_loss = aux_loss / len(x)  # normalize w.r.t. number of bars
+        return latents, mems, cmems, aux_loss
 
 
 class Decoder(nn.Module):
     "Generic N layer decoder with masking."
 
-    def __init__(self, layer, N):
+    def __init__(self, layer, N, bar_length, max_latents, vocab_size, d_model, pad_token):
         super(Decoder, self).__init__()
         self.layers = clones(layer, N)
-        # self.norm = LayerNorm(layer.size)
+        self.pad_token = pad_token
+        self.embed = nn.Embedding(vocab_size, d_model)
+        self.position = PositionalEncoding(d_model, 0.1)
 
-    def forward(self, x, memory, src_mask, tgt_mask):
-        for layer in self.layers:
-            x = layer(x, memory, src_mask, tgt_mask)
-        return x
+    def forward(self, latents, src):
+        outs = []
+        for bar, src in zip(latents, src):  # For each bar
+            n_batch = src.shape[0]
+            input_mask = src != self.pad_token
+            target = src[:, 1:]
+            target_mask = torch.triu(torch.ones(target.shape[-1], target.shape[-1])).to(latents.device)
+            target_mask = ~target_mask.repeat(n_batch, 1, 1).bool()  # TODO check, f,f,f -> t,f,f -> t,t,f etc.
+            target_mask = (target != self.pad_token) & target_mask
+            embed = self.embed(target)
+            out = self.position(embed)
+            for layer in self.layers:
+                out = layer(out, bar, input_mask, target_mask)
+            outs.append(out)
+        outs = torch.stack(outs)
+        return outs
 
 
 class EncoderLayer(nn.Module):
@@ -191,9 +229,9 @@ class EncoderLayer(nn.Module):
         # self.sublayer = clones(SublayerConnection(size, dropout), 2)
         self.size = size
 
-    def forward(self, x, mask, memories, pos_emb):
+    def forward(self, x, memories, input_mask):
         "Follow Figure 1 (left) for connections."
-        x, new_memories, aux_loss = self.self_attn(x, memories=memories, input_mask=mask, pos_emb=pos_emb)
+        x, new_memories, aux_loss = self.self_attn(x, memories=memories, input_mask=input_mask)
         x, = self.feed_forward(x)
         # for memory in new_memories:
             # memory.detach()
@@ -459,11 +497,20 @@ class Generator(nn.Module):
 
     def forward(self, x):
         # x is (3, 199, 512), it is projected to (3, 199, 1292) and then softmax
-        out_drums = F.log_softmax(self.proj_drums(x[:, :, :, 0]), dim=-1)
-        out_bass = F.log_softmax(self.proj_bass(x[:, :, :, 1]), dim=-1)
-        out_guitar = F.log_softmax(self.proj_guitar(x[:, :, :, 2]), dim=-1)
-        out_strings = F.log_softmax(self.proj_strings(x[:, :, :, 3]), dim=-1)
-        # at the end, for each time step we have one-hot of token
+        out_drums = []
+        out_bass = []
+        out_guitar = []
+        out_strings = []
+        for bar in x:
+            out_drums.append(F.log_softmax(self.proj_drums(bar[:, :, :, 0]), dim=-1))
+            out_bass.append(F.log_softmax(self.proj_bass(bar[:, :, :, 1]), dim=-1))
+            out_guitar.append(F.log_softmax(self.proj_guitar(bar[:, :, :, 2]), dim=-1))
+            out_strings.append(F.log_softmax(self.proj_strings(bar[:, :, :, 3]), dim=-1))
+            # at the end, for each time step we have one-hot of token
+        out_drums = torch.stack(out_strings)
+        out_bass = torch.stack(out_bass)
+        out_guitar = torch.stack(out_guitar)
+        out_strings = torch.stack(out_strings)
         out = torch.stack([out_drums, out_bass, out_guitar, out_strings], dim=-1)
         return out
 

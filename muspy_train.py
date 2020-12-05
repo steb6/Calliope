@@ -83,22 +83,26 @@ class Trainer:
     def run_epoch(self, loader, memories):
         total_loss = 0
         total_aux_loss = 0
-        tokens = 0
+        # tokens = 0
         i = 0
         description = ("Train" if self.model.training else "Eval ") + " epoch " + str(self.epoch)
         length = loader.train_len() if self.model.training else loader.test_len()
         progbar = tqdm(total=length, desc=description, leave=True, position=0)
-        src, new = loader.get_train_elem() if self.model.training else loader.get_test_elem()
+        src, new = loader.get_elem(self.model.training)
         while src is not None:  # for each batch in the epoch
-            src, tgt_x, tgt_y, src_mask, tgt_mask = self.make_masks(src)
-            n_tokens = torch.sum(src_mask)
+            # src, tgt_x, tgt_y, src_mask, tgt_mask = self.make_masks(src)
+            src = np.swapaxes(src, 0, 1)
+            src = np.swapaxes(src, 1, 2)
+            n_tokens = np.count_nonzero(src)
+            src = torch.LongTensor(src).to(self.device)
             if n_tokens == 0:  # All tracks are empty, it can happen because first bar usually is empty
                 # src, new = loader.get_train_elem() if self.model.training else loader.get_test_elem()
-                src, new = loader.get_train_elem() if self.model.training else loader.get_test_elem()
+                src, new = loader.get_elem(self.model.training)
                 continue
             # Step
-            out, memories, aux_loss = self.model.forward(src, tgt_x, src_mask, tgt_mask, memories=memories)
-            loss = self.loss_computer(out, tgt_y, n_tokens)
+            # out, memories, aux_loss = self.model.forward(src, tgt_x, src_mask, tgt_mask, memories=memories)
+            out, memories, aux_loss = self.model.forward(src, memories=memories)
+            loss = self.loss_computer(out, src[:, :, :, 1:], n_tokens)
             if self.optimizer is not None:
                 self.optimizer.optimizer.zero_grad()
                 (aux_loss + loss).backward()
@@ -106,9 +110,9 @@ class Trainer:
 
             total_loss += loss.item()
             total_aux_loss += aux_loss.item()
-            tokens += n_tokens.sum().item()
+            # tokens += n_tokens.sum().item()
             i += 1
-            src, new = loader.get_train_elem() if self.model.training else loader.get_test_elem()
+            src, new = loader.get_elem(self.model.training)
             progbar.update(new)
         progbar.close()
         if i == 0:
@@ -184,16 +188,19 @@ class Trainer:
             os.makedirs(sampled_dir)
         # Load data
         src, _ = SongIterator(dataset_path=self.dataset_path, test_size=self.test_size,
-                              batch_size=self.batch_size, n_workers=self.n_workers).get_test_elem()
-        src, tgt_x, tgt_y, src_mask, tgt_mask = self.make_masks(src)
-
-        out, _, _ = model.forward(src, tgt_x, src_mask, tgt_mask)
+                              batch_size=self.batch_size, n_workers=self.n_workers).get_elem(False)
+        src = np.swapaxes(src, 0, 1)
+        src = np.swapaxes(src, 1, 2)
+        src = torch.LongTensor(src).to(self.device)
+        out, _, _ = model.forward(src)
         tracks_tokens = torch.max(out, dim=-2).indices
         song = np.array(tracks_tokens.cpu()).swapaxes(1, 2)
 
         # Experiment
-        created = note_manager.reconstruct_music(song[0])
-        original = note_manager.reconstruct_music(np.array(src[0].cpu()).swapaxes(0, 1))
+        song_one = np.reshape(song[:, :, 0, :], (-1, 4)).swapaxes(0, 1)
+        song_two = np.reshape(np.array(src[:, :, 0, :].cpu()), (-1, 4)).swapaxes(0, 1)
+        created = note_manager.reconstruct_music(song_one)
+        original = note_manager.reconstruct_music(song_two)
         created.write_midi(os.path.join(sampled_dir, "after.mid"))
         original.write_midi(os.path.join(sampled_dir, "before.mid"))
 
@@ -201,8 +208,8 @@ class Trainer:
 if __name__ == "__main__":
     note_manager = NoteRepresentationManager(**config["tokens"], **config["data"], **config["paths"])
 
-    shutil.rmtree(config["paths"]["dataset_path"], ignore_errors=True)
-    note_manager.convert_dataset()
+    # shutil.rmtree(config["paths"]["dataset_path"], ignore_errors=True)
+    # note_manager.convert_dataset()
 
     m = TransformerAutoencoder(**config["model"])
 
