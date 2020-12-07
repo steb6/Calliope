@@ -198,6 +198,11 @@ class Trainer:
 
 
 if __name__ == "__main__":
+    from muspy_config import remote
+    if remote:
+        print("Remote execution")
+    else:
+        print("Local execution")
     notes = NoteRepresentationManager(**config["tokens"], **config["data"], **config["paths"])
 
     shutil.rmtree(config["paths"]["dataset_path"], ignore_errors=True)

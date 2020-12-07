@@ -83,7 +83,7 @@ class NoteRepresentationManager:
             for tk in tokens:
                 t[i][j] = tk
                 j += 1
-        elif i < self.max_bars:  # if adding a row, we are in limits
+        elif i + 1 < self.max_bars:  # if adding a row, we are in limits
             t[i][j] = self.eob_token
             i += 1
             j = 0
@@ -135,8 +135,7 @@ class NoteRepresentationManager:
                     track, row, col = self.add_tokens(track, row, col, (tok,))
             for tempo in tempos:  # if time is activated, min-max scaling and print token
                 if tempo.time == 0:
-                    t = self.min_max_scaling(tempo.qpm, self.tempos_total[0], self.tempos_total[1],
-                                             self.tempos_compat[0], self.tempos_compat[1])
+                    t = self.min_max_scaling(tempo.qpm, self.tempos_total, self.tempos_compat)
                     tempos.remove(tempo)
                     tok = self.tempos_first_token + t
                     track, row, col = self.add_tokens(track, row, col, (tok,))
@@ -209,7 +208,7 @@ class NoteRepresentationManager:
                     note = muspy.Note(notes[0] + time - self.time_first_token,
                                       notes[1] - self.pitch_first_token,
                                       notes[2] - self.duration_first_token,
-                                      self.min_max_scaling(notes[3], self.velcities_compat, self.velocities_total))
+                                      self.min_max_scaling(notes[3], self.velocities_compat, self.velocities_total))
                     track.append(note)
                     notes = notes[4:]
                 elif notes[0] == self.bar_token:  # if it is a bar
@@ -222,7 +221,7 @@ class NoteRepresentationManager:
                     time_signature, n, d = self.time_signature_manager.from_token_to_time_and_fraction(notes[0])
                     music.time_signatures.append(muspy.TimeSignature(time=time, numerator=n, denominator=d))
                     notes = notes[1:]
-                elif self.tempos_first_token <= notes[0] < self.tempos_first_token + self.tempos_values:  # tempo
+                elif self.tempos_first_token <= notes[0] < self.tempos_first_token + self.tempos_compat[1]+1:  # tempo
                     tempo = self.min_max_scaling(notes[0], self.tempos_compat, self.tempos_total)
                     music.tempos.append(muspy.Tempo(time=time, qpm=tempo))
                     notes = notes[1:]

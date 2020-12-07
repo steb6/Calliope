@@ -1,10 +1,8 @@
 import os
 
 if os.getcwd() == 'C:\\Users\\berti\\PycharmProjects\\MusAE':
-    print("Local execution")
     remote = False
 else:
-    print("Remote execution")
     remote = True
 
 max_bars = 100
