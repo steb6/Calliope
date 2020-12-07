@@ -1,12 +1,15 @@
-from types import SimpleNamespace
 import os
-max_track_length = 10000
+
+remote = True
+
 max_bars = 100
 max_bar_length = 100
-vocab_size = 19 + 128*4 + 32*2 + 1 #TODO check  # 579 token + tempos + time*2, pitch, duration + velocities
+vocab_size = 21 + 128*4 + 32*2 + 1 #TODO check  # 579 token + tempos + time*2, pitch, duration + velocities
+
 config = {
     "data": {  # Parameters to create and listen the note representation
-        "max_track_length": max_track_length,  # because of the histogram of the lengths and the memory limits
+        "max_bars": max_bars,  # because of the histogram of the lengths and the memory limits
+        "max_bar_length": max_bar_length,
         "use_velocity": True,
         "reconstruct_programs": [0, 0, 32, 40],
         "early_stop": 10,
@@ -31,31 +34,33 @@ config = {
         "bar_token": 1,
         "sos_token": 2,
         "eos_token": 3,
+        "sob_token": 4,
+        "eob_token" : 5,
         # Time signature
-        "two_two_token": 4,
+        "two_two_token": 6,
         # x/4
-        "one_four_token": 5,
-        "two_four_token": 6,
-        "three_four_token": 7,
-        "four_four_token": 8,
-        "five_four_token": 9,
-        "six_four_token": 10,
-        "seven_four_token": 11,
-        "eight_four_token": 12,
+        "one_four_token": 7,
+        "two_four_token": 8,
+        "three_four_token": 9,
+        "four_four_token": 10,
+        "five_four_token": 11,
+        "six_four_token": 12,
+        "seven_four_token": 13,
+        "eight_four_token": 14,
         # x/8
-        "three_eight_token": 13,
-        "five_eight_token": 14,
-        "six_eight_token": 15,
-        "seven_eight_token": 16,
-        "nine_eight_token": 17,
-        "twelve_eight_token": 18,
+        "three_eight_token": 15,
+        "five_eight_token": 16,
+        "six_eight_token": 17,
+        "seven_eight_token": 18,
+        "nine_eight_token": 19,
+        "twelve_eight_token": 20,
         # Values
         "num_values": 128,
-        "tempos_first_token": 19,
-        "time_first_token":     19 + 32,  # it has 128*2 values, because of 8/4 time signature
-        "pitch_first_token":    19 + 32 + 128*2,  # 132-259
-        "duration_first_token": 19 + 32 + 128*2 + 128,  # 260-387
-        "velocity_first_token": 19 + 32 + 128*2 + 128 + 128,  # this has 32 values
+        "tempos_first_token": 21,
+        "time_first_token":     21 + 32,  # it has 128*2 values, because of 8/4 time signature
+        "pitch_first_token":    21 + 32 + 128*2,  # 132-259
+        "duration_first_token": 21 + 32 + 128*2 + 128,  # 260-387
+        "velocity_first_token": 21 + 32 + 128*2 + 128 + 128,  # this has 32 values
     },
     "model": {
         "vocab_size": vocab_size,  # this depends by config.tokens
@@ -65,15 +70,15 @@ config = {
         "d_ff": 256,
         "layers": 1,
         "dropout": 0.0,
-        "mem_len": 100,  # 512, before was 512
+        "mem_len": max_bar_length,  # 512, before was 512
         "cmem_len": 25,
         "cmem_ratio": 4,
-        "seq_len": 100,
+        "seq_len": max_bar_length,
         "pad_token": 0
     },
     "paths": {
-        "raw_midi_path": "D:",
-        "dataset_path": "D:" + os.sep + "dataset",
+        "raw_midi_path": "/data" if remote else "D:",
+        "dataset_path": ("/data" if remote else "D:") + os.sep + "dataset",
     },
     "names": {
         "dataset_converter_log_file": "dataset_converter_log.txt",

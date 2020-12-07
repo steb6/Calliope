@@ -12,6 +12,7 @@ from loss_computer import SimpleLossCompute
 import numpy as np
 from create_dataset import NoteRepresentationManager
 import shutil
+import sys
 
 
 # TO CONNECT: ssh berti@131.114.137.168
@@ -142,21 +143,27 @@ class Trainer:
         ts_losses = []
         tr_aux_losses = []
         ts_aux_losses = []
-        # Init empty memories
+        best_ts_loss = sys.float_info.max
         memories = None
+        dataset = SongIterator(dataset_path=self.dataset_path, test_size=self.test_size,
+                               batch_size=self.batch_size, n_workers=self.n_workers)
+        tr_loader, ts_loader = dataset.get_loaders()
         # Train
         for self.epoch in range(self.n_epochs):
             # print("Epoch ", epoch, " over ", n_epochs)
-            dataset = SongIterator(dataset_path=self.dataset_path, test_size=self.test_size,
-                                   batch_size=self.batch_size, n_workers=self.n_workers)
             self.model.train()
-            tr_loss, tr_aux_loss, memories = self.run_epoch(dataset, memories)
+            tr_loss, tr_aux_loss, memories = self.run_epoch(tr_loader, memories)
             self.model.eval()
-            ts_loss, ts_aux_loss, _ = self.run_epoch(dataset, memories)
+            ts_loss, ts_aux_loss, _ = self.run_epoch(ts_loader, memories)
             print("Epoch {}: TR loss: {:.4f}, TS loss: {:.4f}, Aux TR loss: {:.4f}, Aux TS loss: {:.2f}".format(
                 self.epoch, tr_loss, ts_loss, tr_aux_loss, ts_aux_loss, end="\n"))
-            # Save model TODO keep only best model
-            torch.save(self.model, os.path.join(self.save_path, self.model_name + '_' + str(self.epoch) + '.pt'))
+            # Save model if best and erase all others
+            if ts_loss < best_ts_loss:
+                best_ts_loss = ts_loss
+                torch.save(self.model, os.path.join(self.save_path, self.model_name + '_' + str(self.epoch) + '.pt'))
+                import glob
+                for filename in glob.glob(os.path.join(self.save_path, self.model_name+'*')):
+                    os.remove(filename)
             # Plot learning curve and save it
             tr_losses.append(tr_loss)
             ts_losses.append(ts_loss)
@@ -164,9 +171,8 @@ class Trainer:
             ts_aux_losses.append(ts_aux_loss)
             plot_path = os.path.join(self.save_path, self.plot_name + '_' + str(self.epoch) + '.png')
             self.plot(tr_losses, ts_losses, tr_aux_losses, ts_aux_losses, plot_path=plot_path)
-            # Remove old files  TODO keep only best model
+            # Remove old plot
             if self.epoch > 0:
-                os.remove(os.path.join(self.save_path, self.model_name + '_' + str(self.epoch - 1) + '.pt'))
                 os.remove(os.path.join(self.save_path, self.plot_name + '_' + str(self.epoch - 1) + '.png'))
 
     def generate(self, checkpoint_path=None, sampled_dir=None, note_manager=None):
@@ -187,29 +193,47 @@ class Trainer:
             shutil.rmtree(sampled_dir)
             os.makedirs(sampled_dir)
         # Load data
-        src, _ = SongIterator(dataset_path=self.dataset_path, test_size=self.test_size,
-                              batch_size=self.batch_size, n_workers=self.n_workers).get_elem(False)
-        src = np.swapaxes(src, 0, 1)
+        _, ts_loader = SongIterator(dataset_path=self.dataset_path, test_size=self.test_size,
+                                    batch_size=self.batch_size, n_workers=self.n_workers).get_loaders()
+        original_song = ts_loader.__iter__().next()
+        original_song = np.array(original_song)
+        src = np.swapaxes(original_song, 0, 1)
         src = np.swapaxes(src, 1, 2)
-        src = torch.LongTensor(src).to(self.device)
+        src = torch.LongTensor(src.astype(np.long)).to(self.device)
         out, _, _ = model.forward(src)
         tracks_tokens = torch.max(out, dim=-2).indices
-        song = np.array(tracks_tokens.cpu()).swapaxes(1, 2)
-
-        # Experiment
-        song_one = np.reshape(song[:, :, 0, :], (-1, 4)).swapaxes(0, 1)
+        song = np.array(tracks_tokens.cpu()).swapaxes(0, 1)
+        song = song[0, :, :, :]
+        final = np.zeros((4, 100, 99), dtype=np.int16)
+        final[0] = song[:, :, 0]
+        final[1] = song[:, :, 1]
+        final[2] = song[:, :, 2]
+        final[3] = song[:, :, 3]
+        # song = np.swapaxes(song, 0, 1)
+        # song = np.swapaxes(song, 0, 3)
+        # song = np.reshape(song, (-1, 4))
+        # song = np.swapaxes(song, 0, 1)
+        final = note_manager.reconstruct_music(final)
+        final.write_midi(os.path.join(sampled_dir, "after.mid"))
+        # Experiment  # TODO save song in right format to be listened
+        # song_one = np.reshape(song[:, :, 0, :], (-1, 4)).swapaxes(0, 1)
+        original_song = original_song[0]
+        original_song = original_song.reshape(4, -1)
+        original_song = note_manager.reconstruct_music(original_song)
+        original_song.write_midi(os.path.join(sampled_dir, "before.mid"))
         song_two = np.reshape(np.array(src[:, :, 0, :].cpu()), (-1, 4)).swapaxes(0, 1)
-        created = note_manager.reconstruct_music(song_one)
-        original = note_manager.reconstruct_music(song_two)
-        created.write_midi(os.path.join(sampled_dir, "after.mid"))
-        original.write_midi(os.path.join(sampled_dir, "before.mid"))
+        # created = note_manager.reconstruct_music(song_one)
+        # original = note_manager.reconstruct_music(song_two)
+        # created.write_midi(os.path.join(sampled_dir, "after.mid"))
+        # original.write_midi(os.path.join(sampled_dir, "before.mid"))
+        print("Songs generated in " + sampled_dir)
 
 
 if __name__ == "__main__":
     note_manager = NoteRepresentationManager(**config["tokens"], **config["data"], **config["paths"])
 
-    # shutil.rmtree(config["paths"]["dataset_path"], ignore_errors=True)
-    # note_manager.convert_dataset()
+    shutil.rmtree(config["paths"]["dataset_path"], ignore_errors=True)
+    note_manager.convert_dataset()
 
     m = TransformerAutoencoder(**config["model"])
 

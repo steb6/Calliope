@@ -3,83 +3,109 @@ import os
 import random
 import pickle
 from torch.utils.data import SubsetRandomSampler
-import numpy as np
 
 
-class SongIterator:
-    def __init__(self, dataset_path=None, test_size=None, batch_size=None, n_workers=None):
+class SongIterator(torch.utils.data.Dataset):
+    def __init__(self, dataset_path, test_size, batch_size=3, n_workers=1):
         self.dataset_path = dataset_path
-        self.test_size = test_size
+        _, _, songs = next(os.walk(self.dataset_path))
+        self.songs = [x.split(".")[0] for x in songs]
+        random.shuffle(self.songs)
+        ts_length = int(len(songs) * test_size)
+        self.ts_set = self.songs[:ts_length]
+        self.tr_set = self.songs[ts_length:]
         self.batch_size = batch_size
         self.n_workers = n_workers
-        self.n_songs = len([name for name in os.listdir(dataset_path)])
-        songs = list(range(self.n_songs))
-        random.shuffle(songs)
-        self.offset = int(self.n_songs*test_size) if int(self.n_songs*test_size) > batch_size else batch_size
-        if self.n_songs-self.offset < batch_size:
-            raise Exception("Not enough song provided w.r.t the batch size")
-        self.train_songs = songs[self.offset:]
-        self.test_songs = songs[:self.offset]
-        with open(os.path.join(self.dataset_path, str(0) + '.pickle'), 'rb') as f:
-            song = pickle.load(f)
-        self.n_tracks = song.shape[0]
-        self.max_track_length = song.shape[1]
-        self.max_bars = 100
-        self.max_bar_length = 100
-        self.bar_token = 1
 
-    def train_len(self):
-        return self.n_songs - self.offset
+    def __getitem__(self, idx):
+        with open(os.path.join(self.dataset_path, idx+str('.pickle')), 'rb') as file:
+            song = pickle.load(file)
+        return song
 
-    def test_len(self):
-        return self.offset
-
-    def get_elem(self, train):
+    def __len__(self, train=None):
         if train:
-            songs = self.train_songs
+            return len(self.tr_set)
         else:
-            songs = self.test_songs
-        empties = 0
-        # mb = np.zeros((self.batch_size, self.n_tracks, self.max_track_length), dtype=np.int16)
-        mb = np.zeros((self.batch_size, self.n_tracks, self.max_bars, self.max_bar_length), dtype=np.int16)
-        for b in range(self.batch_size):
-            if len(songs) == 0:
-                empties += 1
-                continue
-            index = songs.pop()
-            with open(os.path.join(self.dataset_path, str(index) + '.pickle'), 'rb') as f:
-                song = pickle.load(f)
-            processed_song = np.zeros((self.n_tracks, self.max_bars, self.max_bar_length), dtype=np.int16)
-            for t, track in enumerate(song):  # iterate over
-                processed_track = np.zeros((self.max_bars, self.max_bar_length), dtype=np.int16)
-                i = 0
-                j = 0
-                for tok in track:
-                    if j == self.max_bars:  # too many bars
-                        break
-                    if i == self.max_bar_length:  # to many token
-                        break
-                    if tok == self.bar_token:
-                        processed_track[i][j] = tok
-                        i += 1
-                        j = 0
-                    else:
-                        processed_track[i][j] = tok
-                        j += 1
-                processed_song[t] = processed_track
-            mb[b] = processed_song
+            return len(self.ts_set)
 
-        if empties == self.batch_size:
-            return None, 1
-        return mb, self.batch_size
+    def get_loaders(self):
+        tr_sampler = SubsetRandomSampler(self.tr_set)  # TODO random sampling does not ruins flow of a song?
+        ts_sampler = SubsetRandomSampler(self.ts_set)
+
+        tr_loader = torch.utils.data.DataLoader(
+            self,
+            batch_size=self.batch_size,
+            sampler=tr_sampler,
+            num_workers=self.n_workers,
+            drop_last=False  # if dataset length is not divisible by batch_size, drop last batch
+        )
+
+        ts_loader = torch.utils.data.DataLoader(
+            self,
+            batch_size=self.batch_size,
+            sampler=ts_sampler,
+            num_workers=self.n_workers,
+            drop_last=False
+        )
+        return tr_loader, ts_loader
+
+
+# class SongIterator:
+#     def __init__(self, dataset_path=None, test_size=None, batch_size=None, n_workers=None):
+#         self.dataset_path = dataset_path
+#         self.test_size = test_size
+#         self.batch_size = batch_size
+#         self.n_workers = n_workers
+#         self.n_songs = len([name for name in os.listdir(dataset_path)])
+#         songs = list(range(self.n_songs))
+#         random.shuffle(songs)
+#         self.offset = int(self.n_songs*test_size) if int(self.n_songs*test_size) > batch_size else batch_size
+#         if self.n_songs-self.offset < batch_size:
+#             raise Exception("Not enough song provided w.r.t the batch size")
+#         self.train_songs = songs[self.offset:]
+#         self.test_songs = songs[:self.offset]
+#         with open(os.path.join(self.dataset_path, str(0) + '.pickle'), 'rb') as f:
+#             song = pickle.load(f)
+#         self.n_tracks = song.shape[0]
+#         self.max_track_length = song.shape[1]
+#         self.max_bars = 100
+#         self.max_bar_length = 100
+#         self.bar_token = 1
+#
+#     def train_len(self):
+#         return self.n_songs - self.offset
+#
+#     def test_len(self):
+#         return self.offset
+#
+#     def get_elem(self, train):
+#         if train:
+#             songs = self.train_songs
+#         else:
+#             songs = self.test_songs
+#         empties = 0
+#         # mb = np.zeros((self.batch_size, self.n_tracks, self.max_track_length), dtype=np.int16)
+#         mb = np.zeros((self.batch_size, self.n_tracks, self.max_bars, self.max_bar_length), dtype=np.int16)
+#         for b in range(self.batch_size):
+#             if len(songs) == 0:
+#                 empties += 1
+#                 continue
+#             index = songs.pop()
+#             with open(os.path.join(self.dataset_path, str(index) + '.pickle'), 'rb') as f:
+#                 song = pickle.load(f)
+#             mb[b] = song
+#
+#         if empties == self.batch_size:
+#             return None, 1
+#         return mb, self.batch_size
 
 
 # class DatasetIterator(torch.utils.data.Dataset):
-#     def __init__(self, dataset_path, test_size, batch_size=3, n_workers=1, n_elements=10):
+#     def __init__(self, dataset_path, test_size, batch_size=3, n_workers=1):
 #         self.dataset_path = dataset_path
 #         _, _, songs = next(os.walk(self.dataset_path))
 #         self.songs = [x.split(".")[0] for x in songs]
-#         # random.shuffle(self.songs)
+#         random.shuffle(self.songs)
 #         ts_length = int(len(songs) * test_size)
 #         self.ts_set = self.songs[:ts_length]
 #         self.tr_set = self.songs[ts_length:]
@@ -89,8 +115,6 @@ class SongIterator:
 #     def __getitem__(self, idx):
 #         # with open(os.path.join(self.dataset_path, idx+str('.pickle')), 'rb') as file:
 #             # bar = pickle.load(file)
-#         with open(os.path.join(self.dataset_path, '0-0.pickle'), 'rb') as file:
-#             bar = pickle.load(file)
 #         return bar
 #
 #     def __len__(self, train=None):

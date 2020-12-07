@@ -1,27 +1,11 @@
 class TimeSignatureManager:
-    def __init__(self, one_four_token=None, two_four_token=None, three_four_token=None, four_four_token=None,
-                 five_four_token=None, six_four_token=None, seven_four_token=None, eight_four_token=None,
-                 three_eight_token=None, five_eight_token=None, six_eight_token=None, seven_eight_token=None,
-                 nine_eight_token=None, twelve_eight_token=None, two_two_token=None):
-        self.two_two_token = two_two_token
+    def __init__(self, **kwargs):
+        for key in kwargs:
+            setattr(self, key, kwargs[key])
+        self.log = None
 
-        self.one_four_token = one_four_token
-        self.two_four_token = two_four_token
-        self.three_four_token = three_four_token
-        self.four_four_token = four_four_token
-        self.five_four_token = five_four_token
-        self.six_four_token = six_four_token
-        self.seven_four_token = seven_four_token
-        self.eight_four_token = eight_four_token
-
-        self.three_eight_token = three_eight_token
-        self.five_eight_token = five_eight_token
-        self.six_eight_token = six_eight_token
-        self.seven_eight_token = seven_eight_token
-        self.nine_eight_token = nine_eight_token
-        self.twelve_eight_token = twelve_eight_token
-
-    def is_valid_time_signature(self, n, d):
+    @staticmethod
+    def is_valid_time_signature(n, d):
         return (d == 2 and n in [2]) or \
                (d == 4 and n in [1, 2, 3, 4, 5, 6, 7, 8]) or \
                (d == 8 and n in [3, 5, 6, 7, 9, 12])
