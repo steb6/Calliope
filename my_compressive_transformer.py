@@ -5,7 +5,6 @@ from torch.nn import functional as F
 from torch.autograd import Variable
 from torch import autograd
 import copy
-from muspy_config import config
 from functools import partial
 from collections import namedtuple
 
@@ -13,8 +12,9 @@ from collections import namedtuple
 Memory = namedtuple('Memory', ['mem', 'compressed_mem'])
 
 # TODO add positional encoding coherent for encoder e decoder
-
 # TODO add all the other AE functionalities
+
+
 class TransformerAutoencoder(nn.Module):
     """
     A standard Encoder-Decoder architecture. Base for this and many other models.
@@ -533,11 +533,7 @@ class Embeddings(nn.Module):
         self.d_model = d_model
 
     def forward(self, x):
-        try:
-            aux = self.lut(x)
-        except:
-            print(torch.max(x))
-            exit()
+        aux = self.lut(x)
         return aux * math.sqrt(self.d_model)
 
 

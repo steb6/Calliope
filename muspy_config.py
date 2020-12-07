@@ -1,10 +1,15 @@
 import os
 
-remote = True
+if os.getcwd() == 'C:\\Users\\berti\\PycharmProjects\\MusAE':
+    print("Local execution")
+    remote = False
+else:
+    print("Remote execution")
+    remote = True
 
 max_bars = 100
 max_bar_length = 100
-vocab_size = 21 + 128*4 + 32*2 + 1 #TODO check  # 579 token + tempos + time*2, pitch, duration + velocities
+vocab_size = 21 + 128*4 + 32*2  # TODO check  # tokens (21) + time*2, pitch, duration (128) + velocities, tempos (32)
 
 config = {
     "data": {  # Parameters to create and listen the note representation
@@ -12,13 +17,13 @@ config = {
         "max_bar_length": max_bar_length,
         "use_velocity": True,
         "reconstruct_programs": [0, 0, 32, 40],
-        "early_stop": 10,
+        "early_stop": 10,  # set this to 0 to disable early stop
         "resolution": 24,
         "tempo": 120,
-        "velocities_interval": (0, 127),
-        "velocities_values": 32,
-        "tempos_interval": (60, 180),
-        "tempos_values": 32
+        "velocities_total": (0, 127),  # using min max scaling, limits are inclusive
+        "velocities_compat": (0, 31),  # using min max scaling, limits are inclusive
+        "tempos_total": (60, 180),  # using min max scaling, limits are inclusive
+        "tempos_compat": (0, 31)  # using min max scaling, limits are inclusive
     },
     "train": {
         "vocab_size": vocab_size,
@@ -78,7 +83,7 @@ config = {
     },
     "paths": {
         "raw_midi_path": "/data" if remote else "D:",
-        "dataset_path": ("/data" if remote else "D:") + os.sep + "dataset",
+        "dataset_path": ("/data" if remote else "D:") + os.sep + "lmd_matched_converted",
     },
     "names": {
         "dataset_converter_log_file": "dataset_converter_log.txt",
@@ -86,65 +91,3 @@ config = {
         "model_name": "checkpoint_epoch",
     }
 }
-
-# config["data"] = SimpleNamespace(**config["data"])
-# config["model"] = SimpleNamespace(**config["model"])
-# config["tokens"] = SimpleNamespace(**config["tokens"])
-# config["train"] = SimpleNamespace(**config["train"])
-# config["paths"] = SimpleNamespace(**config["paths"])
-# config["names"] = SimpleNamespace(**config["names"])
-# config = SimpleNamespace(**config)
-
-# config = {
-#     # Where to download Lakh Midi dataset and where to save extracted songs
-#     "raw_midi_path": "D:",
-#     "dataset_path": "D:" + os.sep + "dataset",
-#     # To create and use dataset
-#     "early_stop": 1000,
-#     "resolution": 24,
-#     "tempo": 120,
-#     "max_bar_length": 24*4*4,  # number of time steps x number of quarter note in bar x note representation length
-#     "max_track_length": 1000,  # because of the histogram of the lengths and the memory limits
-#     "use_velocity": True,
-#     "reconstruct_programs": [0, 0, 32, 40],
-#     # Generation
-#     "trained_model": os.path.join("new_musae", "checkpoint.pt"),
-#     "sampled_path": "new_musae",
-#     # Device
-#     "device": "cuda",
-#     # Vocab and seq len
-#     "vocab_size": 516,
-#     "seq_len": 200,  # resolution x 4 (quarter note) x token for each note x number of max_bars
-#     "max_bars": 5,
-#     # Train
-#     "batch_size": 1,
-#     "test_size": 0.3,
-#     "n_workers": 1,
-#     "n_epochs": 250,
-#     "label_smoothing": 0.1,
-#     # Model
-#     "d_model": 64,
-#     "n_tracks": 4,
-#     "n_heads": 4,
-#     "d_ff": 256,
-#     "layers": 1,
-#     "dropout": 0.0,
-#     "mem_len": 200, # 512, before was 512
-#     "cmem_len": 32,
-#     "cmem_ratio": 4,
-#     # Tokens, change this value is not enough for change the representation
-#     "pad_token": 0,
-#     "bar_token": 1,
-#     "sos_token": 2,
-#     "eos_token": 3,
-#     "num_values": 128,
-#     "time_first_token":     4,  # 4-131
-#     "pitch_first_token":    4 + 128,  # 132-259
-#     "duration_first_token": 4 + 128 + 128,  # 260-387
-#     "velocity_first_token": 4 + 128 + 128 + 128,  # 388-515
-#     # File names
-#     "dataset_converter_log_file": "dataset_converter_log.txt",
-#     "plot_name": "learning_curve",
-#     "model_name": "checkpoint_epoch",
-# }
-# config = SimpleNamespace(**config)

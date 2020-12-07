@@ -13,10 +13,16 @@ import numpy as np
 from create_dataset import NoteRepresentationManager
 import shutil
 import sys
+import glob
 
 
 # TO CONNECT: ssh berti@131.114.137.168
-# TO VISUALIZE GPUs STATUS: watch -n 0.5 nvidia-smi
+# TO COPY: scp -r C:\Users\berti\PycharmProjects\MusAE berti@131.114.137.168:
+# TO ATTACH TO TMUX: tmux attach -t Training
+# TO SWITCH WINDOW ctrl+b 0-1-2
+# TO SEE SESSION: tmux ls
+# TO DETACH ctrl+b d
+# TO VISUALIZE GPUs STATUS: nvidia-smi
 
 class Trainer:
     def __init__(self, save_path=None, pad_token=None, device=None, dataset_path=None, test_size=None,
@@ -55,55 +61,21 @@ class Trainer:
         plt.savefig(plot_path)
         plt.clf()
 
-    def make_masks(self, s):
-        tx = s[:, :, :-1]
-        ty = s[:, :, 1:]
-        sm = s != self.pad_token
-        # Create tgt_mask (must be lower diagonal with pad set to false
-        mask_subsequent = np.triu(np.ones((tx.shape[-1], tx.shape[-1])), k=1) == 0
-        masks_subsequent = np.full((tx.shape[0], tx.shape[1], tx.shape[-1], tx.shape[-1]), True)
-        masks_subsequent[:, :] = mask_subsequent  # each track and batch are lower diagonal
-        tgt_mask_helper = tx != self.pad_token
-        tgt_mask_helper = np.tile(tgt_mask_helper, (1, 1, tx.shape[-1]))
-        tgt_mask_helper = np.reshape(tgt_mask_helper, (tx.shape[0], tx.shape[1], tx.shape[-1], tx.shape[-1]))
-        tm = masks_subsequent & tgt_mask_helper
-        # Adapt dimension
-        s = np.swapaxes(s, 1, 2)
-        tx = np.swapaxes(tx, 1, 2)
-        ty = np.swapaxes(ty, 1, 2)
-        sm = np.swapaxes(sm, 1, 2)
-        tm = np.swapaxes(tm, 1, 3)
-        # Transfer on device
-        s = torch.LongTensor(s).to(self.device)  # cant use IntTensor for embedding
-        tx = torch.LongTensor(tx).to(self.device)
-        ty = torch.LongTensor(ty).to(self.device)
-        sm = torch.BoolTensor(sm).to(self.device)
-        tm = torch.BoolTensor(tm).to(self.device)
-        return s, tx, ty, sm, tm
-
     def run_epoch(self, loader, memories):
         total_loss = 0
         total_aux_loss = 0
-        # tokens = 0
         i = 0
         description = ("Train" if self.model.training else "Eval ") + " epoch " + str(self.epoch)
-        length = loader.train_len() if self.model.training else loader.test_len()
-        progbar = tqdm(total=length, desc=description, leave=True, position=0)
-        src, new = loader.get_elem(self.model.training)
-        while src is not None:  # for each batch in the epoch
-            # src, tgt_x, tgt_y, src_mask, tgt_mask = self.make_masks(src)
-            src = np.swapaxes(src, 0, 1)
-            src = np.swapaxes(src, 1, 2)
+        for src in tqdm(loader, desc=description, leave=True, position=0):
+            src = np.swapaxes(src, 0, 1)  # swap batch, tracks -> tracks, batch
+            src = np.swapaxes(src, 1, 2)  # swap batch, bars -> bars, batch
             n_tokens = np.count_nonzero(src)
-            src = torch.LongTensor(src).to(self.device)
-            if n_tokens == 0:  # All tracks are empty, it can happen because first bar usually is empty
-                # src, new = loader.get_train_elem() if self.model.training else loader.get_test_elem()
-                src, new = loader.get_elem(self.model.training)
+            src = torch.LongTensor(src.long()).to(self.device)
+            if n_tokens == 0:  # All tracks are empty
                 continue
             # Step
-            # out, memories, aux_loss = self.model.forward(src, tgt_x, src_mask, tgt_mask, memories=memories)
             out, memories, aux_loss = self.model.forward(src, memories=memories)
-            loss = self.loss_computer(out, src[:, :, :, 1:], n_tokens)
+            loss = self.loss_computer(out, src[:, :, :, 1:], n_tokens)  # skip first elem of each bars
             if self.optimizer is not None:
                 self.optimizer.optimizer.zero_grad()
                 (aux_loss + loss).backward()
@@ -111,13 +83,9 @@ class Trainer:
 
             total_loss += loss.item()
             total_aux_loss += aux_loss.item()
-            # tokens += n_tokens.sum().item()
             i += 1
-            src, new = loader.get_elem(self.model.training)
-            progbar.update(new)
-        progbar.close()
         if i == 0:
-            i = 1  # TODO why sometimes is 0? check the loader
+            exit("i is zero for some kind of mystery")
         return total_loss / i, total_aux_loss / i, memories
 
     def train(self):
@@ -159,9 +127,9 @@ class Trainer:
                 self.epoch, tr_loss, ts_loss, tr_aux_loss, ts_aux_loss, end="\n"))
             # Save model if best and erase all others
             if ts_loss < best_ts_loss:
+                print("Saving best model")
                 best_ts_loss = ts_loss
                 torch.save(self.model, os.path.join(self.save_path, self.model_name + '_' + str(self.epoch) + '.pt'))
-                import glob
                 for filename in glob.glob(os.path.join(self.save_path, self.model_name+'*')):
                     os.remove(filename)
             # Plot learning curve and save it
@@ -230,10 +198,10 @@ class Trainer:
 
 
 if __name__ == "__main__":
-    note_manager = NoteRepresentationManager(**config["tokens"], **config["data"], **config["paths"])
+    notes = NoteRepresentationManager(**config["tokens"], **config["data"], **config["paths"])
 
     shutil.rmtree(config["paths"]["dataset_path"], ignore_errors=True)
-    note_manager.convert_dataset()
+    notes.convert_dataset()
 
     m = TransformerAutoencoder(**config["model"])
 
@@ -242,4 +210,30 @@ if __name__ == "__main__":
                       dataset_path=config["paths"]["dataset_path"],
                       **config["train"])
     trainer.train()
-    trainer.generate(note_manager=note_manager)
+    trainer.generate(note_manager=notes)
+
+    # def make_masks(self, s):
+    #     tx = s[:, :, :-1]
+    #     ty = s[:, :, 1:]
+    #     sm = s != self.pad_token
+    #     # Create tgt_mask (must be lower diagonal with pad set to false
+    #     mask_subsequent = np.triu(np.ones((tx.shape[-1], tx.shape[-1])), k=1) == 0
+    #     masks_subsequent = np.full((tx.shape[0], tx.shape[1], tx.shape[-1], tx.shape[-1]), True)
+    #     masks_subsequent[:, :] = mask_subsequent  # each track and batch are lower diagonal
+    #     tgt_mask_helper = tx != self.pad_token
+    #     tgt_mask_helper = np.tile(tgt_mask_helper, (1, 1, tx.shape[-1]))
+    #     tgt_mask_helper = np.reshape(tgt_mask_helper, (tx.shape[0], tx.shape[1], tx.shape[-1], tx.shape[-1]))
+    #     tm = masks_subsequent & tgt_mask_helper
+    #     # Adapt dimension
+    #     s = np.swapaxes(s, 1, 2)
+    #     tx = np.swapaxes(tx, 1, 2)
+    #     ty = np.swapaxes(ty, 1, 2)
+    #     sm = np.swapaxes(sm, 1, 2)
+    #     tm = np.swapaxes(tm, 1, 3)
+    #     # Transfer on device
+    #     s = torch.LongTensor(s).to(self.device)  # cant use IntTensor for embedding
+    #     tx = torch.LongTensor(tx).to(self.device)
+    #     ty = torch.LongTensor(ty).to(self.device)
+    #     sm = torch.BoolTensor(sm).to(self.device)
+    #     tm = torch.BoolTensor(tm).to(self.device)
+    #     return s, tx, ty, sm, tm
