@@ -271,23 +271,23 @@ class NoteRepresentationManager:
                 if tensor_song is None:
                     continue
                 tensor_song = np.array(tensor_song).astype(np.int16)
-                reconstructed_music = self.reconstruct_music(tensor_song)
+                # reconstructed_music = self.reconstruct_music(tensor_song)
                 # TODO to save length
                 # for elem in tensor_song:
                 # lengths.append(len(elem))
                 # TODO test
-                try:
-                    song.write_midi("before.mid")
-                except Exception as e:
-                    self.log.write(e.__str__()+'\n')
-                try:
-                    filtered_song.write_midi("middle.mid")
-                except Exception as e:
-                    self.log.write(e.__str__()+'\n')
-                try:
-                    reconstructed_music.write_midi("after.mid")
-                except Exception as e:
-                    self.log.write(e.__str__()+'\n')
+                # try:
+                #     song.write_midi("before.mid")
+                # except Exception as e:
+                #     self.log.write(e.__str__()+'\n')
+                # try:
+                #     filtered_song.write_midi("middle.mid")
+                # except Exception as e:
+                #     self.log.write(e.__str__()+'\n')
+                # try:
+                #     reconstructed_music.write_midi("after.mid")
+                # except Exception as e:
+                #     self.log.write(e.__str__()+'\n')
                 with open(os.path.join(self.dataset_path, str(count) + '.pickle'), 'wb') as f:
                     pickle.dump(tensor_song, f)
                 count += 1

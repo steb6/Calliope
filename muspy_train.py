@@ -4,7 +4,7 @@ import torch
 from datetime import datetime
 from tqdm.auto import tqdm
 from my_compressive_transformer import TransformerAutoencoder
-from muspy_config import config
+from muspy_config import config, set_freer_gpu
 from iterate_dataset import SongIterator
 from optimizer import NoamOpt
 from label_smoother import LabelSmoothing
@@ -74,7 +74,8 @@ class Trainer:
             if n_tokens == 0:  # All tracks are empty
                 continue
             # Step
-            out, memories, aux_loss = self.model.forward(src, memories=memories)
+            out, memories, aux_loss = self.model.forward(src, memories=memories)  # TODO why out is none on remote?
+            # print("out: ", out)
             loss = self.loss_computer(out, src[:, :, :, 1:], n_tokens)  # skip first elem of each bars
             if self.optimizer is not None:
                 self.optimizer.optimizer.zero_grad()
@@ -100,7 +101,7 @@ class Trainer:
         self.model.to(self.device)
 
         # Optimizer
-        self.optimizer = NoamOpt(self.model.src_embed[0].d_model, 1, 2000,
+        self.optimizer = NoamOpt(config["model"]["d_model"], 1, 2000,
                                  torch.optim.Adam(self.model.parameters(), lr=0, betas=(0.9, 0.98), eps=1e-9))
         # Loss
         criterion = LabelSmoothing(size=self.vocab_size, padding_idx=self.pad_token, smoothing=self.label_smoothing,
@@ -198,15 +199,12 @@ class Trainer:
 
 
 if __name__ == "__main__":
-    from muspy_config import remote
-    if remote:
-        print("Remote execution")
-    else:
-        print("Local execution")
+
+    set_freer_gpu()
     notes = NoteRepresentationManager(**config["tokens"], **config["data"], **config["paths"])
 
-    shutil.rmtree(config["paths"]["dataset_path"], ignore_errors=True)
-    notes.convert_dataset()
+    # shutil.rmtree(config["paths"]["dataset_path"], ignore_errors=True)
+    # notes.convert_dataset()
 
     m = TransformerAutoencoder(**config["model"])
 
@@ -216,29 +214,3 @@ if __name__ == "__main__":
                       **config["train"])
     trainer.train()
     trainer.generate(note_manager=notes)
-
-    # def make_masks(self, s):
-    #     tx = s[:, :, :-1]
-    #     ty = s[:, :, 1:]
-    #     sm = s != self.pad_token
-    #     # Create tgt_mask (must be lower diagonal with pad set to false
-    #     mask_subsequent = np.triu(np.ones((tx.shape[-1], tx.shape[-1])), k=1) == 0
-    #     masks_subsequent = np.full((tx.shape[0], tx.shape[1], tx.shape[-1], tx.shape[-1]), True)
-    #     masks_subsequent[:, :] = mask_subsequent  # each track and batch are lower diagonal
-    #     tgt_mask_helper = tx != self.pad_token
-    #     tgt_mask_helper = np.tile(tgt_mask_helper, (1, 1, tx.shape[-1]))
-    #     tgt_mask_helper = np.reshape(tgt_mask_helper, (tx.shape[0], tx.shape[1], tx.shape[-1], tx.shape[-1]))
-    #     tm = masks_subsequent & tgt_mask_helper
-    #     # Adapt dimension
-    #     s = np.swapaxes(s, 1, 2)
-    #     tx = np.swapaxes(tx, 1, 2)
-    #     ty = np.swapaxes(ty, 1, 2)
-    #     sm = np.swapaxes(sm, 1, 2)
-    #     tm = np.swapaxes(tm, 1, 3)
-    #     # Transfer on device
-    #     s = torch.LongTensor(s).to(self.device)  # cant use IntTensor for embedding
-    #     tx = torch.LongTensor(tx).to(self.device)
-    #     ty = torch.LongTensor(ty).to(self.device)
-    #     sm = torch.BoolTensor(sm).to(self.device)
-    #     tm = torch.BoolTensor(tm).to(self.device)
-    #     return s, tx, ty, sm, tm

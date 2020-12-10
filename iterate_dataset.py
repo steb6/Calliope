@@ -15,6 +15,10 @@ class SongIterator(torch.utils.data.Dataset):
         self.ts_set = self.songs[:ts_length]
         self.tr_set = self.songs[ts_length:]
         self.batch_size = batch_size
+        if len(self.tr_set) < batch_size:
+            raise Exception("Training set is too little w.r.t. the batch size")
+        if len(self.ts_set) < batch_size:
+            raise Exception("Testing set is too little w.r.t. the batch size")
         self.n_workers = n_workers
 
     def __getitem__(self, idx):
@@ -37,7 +41,7 @@ class SongIterator(torch.utils.data.Dataset):
             batch_size=self.batch_size,
             sampler=tr_sampler,
             num_workers=self.n_workers,
-            drop_last=False  # if dataset length is not divisible by batch_size, drop last batch
+            drop_last=True  # if dataset length is not divisible by batch_size, drop last batch
         )
 
         ts_loader = torch.utils.data.DataLoader(
@@ -45,7 +49,7 @@ class SongIterator(torch.utils.data.Dataset):
             batch_size=self.batch_size,
             sampler=ts_sampler,
             num_workers=self.n_workers,
-            drop_last=False
+            drop_last=True
         )
         return tr_loader, ts_loader
 

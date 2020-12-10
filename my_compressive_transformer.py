@@ -45,14 +45,15 @@ class TransformerAutoencoder(nn.Module):
         # Deepcopy creates new instances of the object, nothing is shared between layers
         c = copy.deepcopy
         # x + norm(attention())
-        attn = Residual(PreNorm(d_model, MultiHeadedAttention(heads, d_model, seq_len, mem_len, cmem_len, cmem_ratio)))
-        dec_attn = Residual(PreNorm(d_model, DecoderMultiHeadedAttention(heads, d_model)))
+        mem_attn = Residual(PreNorm(d_model, MemoryMultiHeadedAttention(heads, d_model, seq_len, mem_len, cmem_len, cmem_ratio)))
+        # TODO check dropout, bias
+        mh_attn = DecResidual(DecPreNorm(d_model, nn.MultiheadAttention(d_model, heads, 0.0)))
         # dec_ff = PositionwiseFeedForward(d_model, d_ff, dropout)
         # x = x + norm(ff())
         ff = Residual(PreNorm(d_model, FeedForward(d_model, d_ff, dropout=0.1)))
         position = PositionalEncoding(d_model, dropout, max_len=seq_len)
-        encoder = Encoder(EncoderLayer(d_model, c(attn), c(ff), dropout), layers, max_bar_length, max_latents, vocab_size, d_model, pad_token)
-        decoder = Decoder(DecoderLayer(d_model, c(dec_attn), c(dec_attn), c(ff), dropout), layers, max_bar_length, max_latents, vocab_size, d_model, pad_token)
+        encoder = Encoder(EncoderLayer(d_model, c(mem_attn), c(ff), dropout), layers, vocab_size, d_model, pad_token)
+        decoder = Decoder(DecoderLayer(d_model, c(mh_attn), c(mh_attn), c(ff), dropout, heads), layers, vocab_size, d_model, pad_token)
 
         # need one encoder and one decoder for each of the four tracks
         self.drums_encoder = c(encoder)
@@ -66,8 +67,8 @@ class TransformerAutoencoder(nn.Module):
         self.strings_decoder = c(decoder)
 
         # TODO un embedding per ogni traccia o basta un emebdding layer unico ?
-        self.src_embed = nn.Sequential(Embeddings(vocab_size, d_model), c(position))
-        self.tgt_embed = nn.Sequential(Embeddings(vocab_size, d_model), c(position))
+        # self.src_embed = nn.Sequential(Embeddings(vocab_size, d_model), c(position))
+        # self.tgt_embed = nn.Sequential(Embeddings(vocab_size, d_model), c(position))
         # self.src_embed = Embeddings(src_vocab, d_model)
         # self.tgt_embed = Embeddings(src_vocab, d_model)
 
@@ -152,15 +153,13 @@ class TransformerAutoencoder(nn.Module):
 class Encoder(nn.Module):
     "Core encoder is a stack of N layers"
 
-    def __init__(self, layer, N, bar_length, max_latents, vocab_size, d_model, pad_token):
+    def __init__(self, layer, N, vocab_size, d_model, pad_token):
         super(Encoder, self).__init__()
         self.layers = clones(layer, N)
         # self.norm = LayerNorm(layer.size)
         self.embed = nn.Embedding(vocab_size, d_model)
         self.position = PositionalEncoding(d_model, 0.1)
         self.N = N
-        # self.bar_length = bar_length
-        # self.max_latents = max_latents
         self.pad_token = pad_token
 
     def forward(self, x, memories):
@@ -194,26 +193,28 @@ class Encoder(nn.Module):
 class Decoder(nn.Module):
     "Generic N layer decoder with masking."
 
-    def __init__(self, layer, N, bar_length, max_latents, vocab_size, d_model, pad_token):
+    def __init__(self, layer, N, vocab_size, d_model, pad_token):
         super(Decoder, self).__init__()
         self.layers = clones(layer, N)
         self.pad_token = pad_token
         self.embed = nn.Embedding(vocab_size, d_model)
         self.position = PositionalEncoding(d_model, 0.1)
 
-    def forward(self, latents, src):
+    def forward(self, latents, srcs):
         outs = []
-        for bar, src in zip(latents, src):  # For each bar
+        for latent, src in zip(latents, srcs):  # For each bar
             n_batch = src.shape[0]
             input_mask = src != self.pad_token
             target = src[:, 1:]
-            target_mask = torch.triu(torch.ones(target.shape[-1], target.shape[-1])).to(latents.device)
-            target_mask = ~target_mask.repeat(n_batch, 1, 1).bool()  # TODO check, f,f,f -> t,f,f -> t,t,f etc.
-            target_mask = (target != self.pad_token) & target_mask
+            sub_mask = torch.triu(torch.ones(target.shape[-1], target.shape[-1])).to(latents.device)
+            sub_mask = ~sub_mask.repeat(n_batch, 1, 1).bool()  # TODO check, f,f,f -> t,f,f -> t,t,f etc.
+            target_mask = torch.reshape(target.repeat(1, target.shape[-1]),
+                                        (sub_mask.shape[0], sub_mask.shape[-1], sub_mask.shape[-1]))
+            target_mask = (target_mask != self.pad_token) & sub_mask
             embed = self.embed(target)
             out = self.position(embed)
             for layer in self.layers:
-                out = layer(out, bar, input_mask, target_mask)
+                out = layer(out, latent, input_mask, target_mask)
             outs.append(out)
         outs = torch.stack(outs)
         return outs
@@ -242,29 +243,35 @@ class EncoderLayer(nn.Module):
 class DecoderLayer(nn.Module):
     "Decoder is made of self-attn, src-attn, and feed forward (defined below)"
 
-    def __init__(self, size, self_attn, src_attn, feed_forward, dropout):
+    def __init__(self, size, self_attn, src_attn, feed_forward, dropout, heads):
         super(DecoderLayer, self).__init__()
         self.size = size
         self.self_attn = self_attn
         self.src_attn = src_attn
         self.feed_forward = feed_forward
+        self.heads = heads
         # self.sublayer = clones(SublayerConnection(size, dropout), 3)
 
     def forward(self, x, memory, src_mask, tgt_mask):
         m = memory
         # self_attn è Residual(Prenorm(MultiHeadAttention))
         # quindi Reisdual prende x e gli altri argomenti che riceve e li passa a PreNorm
-        x, = self.self_attn(x, key=x, value=x, mask=tgt_mask)
-        x, = self.src_attn(x, key=m, value=m, mask=src_mask)
+        x = x.transpose(0, 1)
+        m = m.transpose(0, 1)
+        tgt_mask = tgt_mask.repeat((self.heads, 1, 1))
+        # to_append = torch.zeros((4, tgt_mask.shape[-2])).bool().unsqueeze(2).to(x.device)
+        # tgt_mask = torch.cat((tgt_mask, to_append), -1)
+        x, attn_weights = self.self_attn(x, x, x, attn_mask=tgt_mask)
+        x, attn_weights = self.src_attn(x, m, m, key_padding_mask=src_mask)
         x, = self.feed_forward(x)
         return x
 
 
-class MultiHeadedAttention(nn.Module):
+class MemoryMultiHeadedAttention(nn.Module):
     def __init__(self, h, dim, seq_len, mem_len, cmem_len, cmem_ratio, dropout=0.1, attn_dropout=0.1,
                  reconstruction_attn_dropout=0.1):
         "Take in model size and number of heads."
-        super(MultiHeadedAttention, self).__init__()
+        super(MemoryMultiHeadedAttention, self).__init__()
         assert dim % h == 0
         # We assume d_v always equals d_k
         self.dim_head = dim // h
@@ -403,46 +410,6 @@ class MultiHeadedAttention(nn.Module):
         return logits, Memory(new_mem, new_cmem), aux_loss
 
 
-class DecoderMultiHeadedAttention(nn.Module):
-    def __init__(self, h, d_model, dropout=0.1):
-        "Take in model size and number of heads."
-        super(DecoderMultiHeadedAttention, self).__init__()
-        assert d_model % h == 0
-        # We assume d_v always equals d_k
-        self.d_out = d_model // h
-        self.h = h
-        # 4 projection layers: 1 for query, 2 for keys, 3 for values, and final at the end
-        self.linears = (clones(nn.Linear(d_model, d_model), 4))
-        self.attn = None
-        self.dropout = nn.Dropout(p=dropout)
-
-    def forward(self, query, key=None, value=None, mask=None):
-        if mask is not None:
-            # Same mask applied to all h heads.
-            mask = mask.unsqueeze(1)
-            # src_mask happends to be on one dimension. so we unsqueeze it to be applied to each attention result
-            # but tgt mask is going to be of 2 dimension so se have no need to unsqueeze, and apply it directly
-            # TODO: check if we should compute a square src_mask outside the model
-            if len(mask.shape) == 3:
-                mask = mask.unsqueeze(-2)
-
-        nbatches = query.size(0)
-
-        # 1) Do all the linear projections in batch from d_model => h x d_k
-        # here we use first three projection layers
-        query, key, value = [l(x).view(nbatches, -1, self.h, self.d_out).transpose(1, 2)
-                             for l, x in zip(self.linears, (query, key, value))]
-
-        # 2) Apply attention on all the projected vectors in batch.
-        x = full_attn(query, key, value, mask=mask, dropout=self.dropout)
-
-        # 3) "Concat" using a view and apply a final linear.
-        x = x.transpose(1, 2).contiguous().view(nbatches, -1, self.h * self.d_out)
-
-        # here we use final projection layer
-        return self.linears[-1](x)
-
-
 class FeedForward(nn.Module):
     def __init__(self, dim, hidden, dropout=0.):
         super().__init__()
@@ -474,6 +441,19 @@ class Residual(nn.Module):
         return ret
 
 
+class DecResidual(nn.Module):
+    def __init__(self, fn):
+        super().__init__()
+        self.fn = fn
+    # apply out = fn(x, **kwargs) and return out+x and other results from fn
+
+    def forward(self, x, y, z, **kwargs):
+        out = self.fn(x, y, z, **kwargs)
+        out = cast_tuple(out)
+        ret = (out[0] + x), *out[1:]
+        return ret
+
+
 class PreNorm(nn.Module):
     def __init__(self, dim, fn):
         super().__init__()
@@ -483,6 +463,19 @@ class PreNorm(nn.Module):
     def forward(self, x, **kwargs):
         x = self.norm(x)
         return self.fn(x, **kwargs)
+
+
+class DecPreNorm(nn.Module):
+    def __init__(self, dim, fn):
+        super().__init__()
+        self.norm = nn.LayerNorm(dim)
+        self.fn = fn
+
+    def forward(self, x, y, z, **kwargs):
+        x = self.norm(x)
+        y = self.norm(y)
+        z = self.norm(z)
+        return self.fn(x, y, z, **kwargs)
 
 
 class Generator(nn.Module):
@@ -630,6 +623,45 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x)
 
 # TODO USELESS?
+
+# class DecoderMultiHeadedAttention(nn.Module):
+#     def __init__(self, h, d_model, dropout=0.1):
+#         "Take in model size and number of heads."
+#         super(DecoderMultiHeadedAttention, self).__init__()
+#         assert d_model % h == 0
+#         # We assume d_v always equals d_k
+#         self.d_out = d_model // h
+#         self.h = h
+#         # 4 projection layers: 1 for query, 2 for keys, 3 for values, and final at the end
+#         self.linears = (clones(nn.Linear(d_model, d_model), 4))
+#         self.attn = None
+#         self.dropout = nn.Dropout(p=dropout)
+#
+#     def forward(self, query, key=None, value=None, mask=None):
+#         if mask is not None:
+#             # Same mask applied to all h heads.
+#             mask = mask.unsqueeze(1)
+#             # src_mask happends to be on one dimension. so we unsqueeze it to be applied to each attention result
+#             # but tgt mask is going to be of 2 dimension so se have no need to unsqueeze, and apply it directly
+#             # TODO: check if we should compute a square src_mask outside the model
+#             if len(mask.shape) == 3:
+#                 mask = mask.unsqueeze(-2)
+#
+#         nbatches = query.size(0)
+#
+#         # 1) Do all the linear projections in batch from d_model => h x d_k
+#         # here we use first three projection layers
+#         query, key, value = [l(x).view(nbatches, -1, self.h, self.d_out).transpose(1, 2)  # TODO fix this
+#                              for l, x in zip(self.linears, (query, key, value))]
+#
+#         # 2) Apply attention on all the projected vectors in batch.
+#         x = full_attn(query, key, value, mask=mask, dropout=self.dropout)
+#
+#         # 3) "Concat" using a view and apply a final linear.
+#         x = x.transpose(1, 2).contiguous().view(nbatches, -1, self.h * self.d_out)
+#
+#         # here we use final projection layer
+#         return self.linears[-1](x)
 # def attention(query, key, value, mask=None, dropout=None):
 #     "Compute 'Scaled Dot Product Attention'"
 #     d_k = query.size(-1)
