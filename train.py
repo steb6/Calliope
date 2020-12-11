@@ -3,8 +3,8 @@ import os
 import torch
 from datetime import datetime
 from tqdm.auto import tqdm
-from my_compressive_transformer import TransformerAutoencoder
-from muspy_config import config, set_freer_gpu
+from compressive_transformer import TransformerAutoencoder
+from config import config, set_freer_gpu
 from iterate_dataset import SongIterator
 from optimizer import NoamOpt
 from label_smoother import LabelSmoothing
@@ -16,8 +16,8 @@ import sys
 import glob
 
 
-# TO CONNECT: ssh berti@131.114.137.168
 # TO COPY: scp -r C:\Users\berti\PycharmProjects\MusAE berti@131.114.137.168:
+# TO CONNECT: ssh berti@131.114.137.168
 # TO ATTACH TO TMUX: tmux attach -t Training
 # TO SWITCH WINDOW ctrl+b 0-1-2
 # TO SEE SESSION: tmux ls
@@ -61,7 +61,7 @@ class Trainer:
         plt.savefig(plot_path)
         plt.clf()
 
-    def run_epoch(self, loader, memories):
+    def run_epoch(self, loader):
         total_loss = 0
         total_aux_loss = 0
         i = 0
@@ -74,7 +74,7 @@ class Trainer:
             if n_tokens == 0:  # All tracks are empty
                 continue
             # Step
-            out, memories, aux_loss = self.model.forward(src, memories=memories)  # TODO why out is none on remote?
+            out, aux_loss = self.model.forward(src)  # TODO why out is none on remote?
             # print("out: ", out)
             loss = self.loss_computer(out, src[:, :, :, 1:], n_tokens)  # skip first elem of each bars
             if self.optimizer is not None:
@@ -87,7 +87,7 @@ class Trainer:
             i += 1
         if i == 0:
             exit("i is zero for some kind of mystery")
-        return total_loss / i, total_aux_loss / i, memories
+        return total_loss / i, total_aux_loss / i
 
     def train(self):
         if not self.save_path:  # if no save path is defined (to default it is not)
@@ -113,7 +113,6 @@ class Trainer:
         tr_aux_losses = []
         ts_aux_losses = []
         best_ts_loss = sys.float_info.max
-        memories = None
         dataset = SongIterator(dataset_path=self.dataset_path, test_size=self.test_size,
                                batch_size=self.batch_size, n_workers=self.n_workers)
         tr_loader, ts_loader = dataset.get_loaders()
@@ -121,9 +120,9 @@ class Trainer:
         for self.epoch in range(self.n_epochs):
             # print("Epoch ", epoch, " over ", n_epochs)
             self.model.train()
-            tr_loss, tr_aux_loss, memories = self.run_epoch(tr_loader, memories)
+            tr_loss, tr_aux_loss = self.run_epoch(tr_loader)
             self.model.eval()
-            ts_loss, ts_aux_loss, _ = self.run_epoch(ts_loader, memories)
+            ts_loss, ts_aux_loss = self.run_epoch(ts_loader)
             print("Epoch {}: TR loss: {:.4f}, TS loss: {:.4f}, Aux TR loss: {:.4f}, Aux TS loss: {:.2f}".format(
                 self.epoch, tr_loss, ts_loss, tr_aux_loss, ts_aux_loss, end="\n"))
             # Save model if best and erase all others

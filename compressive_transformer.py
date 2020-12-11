@@ -3,23 +3,14 @@ import torch
 import math
 from torch.nn import functional as F
 from torch.autograd import Variable
-from torch import autograd
 import copy
 from functools import partial
 from collections import namedtuple
 
-
 Memory = namedtuple('Memory', ['mem', 'compressed_mem'])
-
-# TODO add positional encoding coherent for encoder e decoder
-# TODO add all the other AE functionalities
 
 
 class TransformerAutoencoder(nn.Module):
-    """
-    A standard Encoder-Decoder architecture. Base for this and many other models.
-    """
-
     def __init__(self,
                  d_model=None,
                  n_tracks=None,
@@ -35,27 +26,18 @@ class TransformerAutoencoder(nn.Module):
                  pad_token=None):
         super(TransformerAutoencoder, self).__init__()
 
-        # assert mem_len >= seq_len, 'length of memory should be at least the sequence length'
-        # assert cmem_len >= (
-                    # mem_len // cmem_ratio), f'length of compressed memory should be at least the memory length divided by the compression ratio {int(mem_len // cmem_ratio)}'
+        assert mem_len >= seq_len, 'length of memory should be at least the sequence length'
+        assert cmem_len >= (mem_len // cmem_ratio), f'len of cmem should be at least ' f'{int(mem_len // cmem_ratio)}'
 
-        max_bar_length = 100
-        max_latents = 100
-
-        # Deepcopy creates new instances of the object, nothing is shared between layers
         c = copy.deepcopy
-        # x + norm(attention())
-        mem_attn = Residual(PreNorm(d_model, MemoryMultiHeadedAttention(heads, d_model, seq_len, mem_len, cmem_len, cmem_ratio)))
         # TODO check dropout, bias
-        mh_attn = DecResidual(DecPreNorm(d_model, nn.MultiheadAttention(d_model, heads, 0.0)))
-        # dec_ff = PositionwiseFeedForward(d_model, d_ff, dropout)
-        # x = x + norm(ff())
+        mem_attn = Residual(PreNorm(d_model, MemoryMultiHeadedAttention(heads, d_model, seq_len, mem_len, cmem_len, cmem_ratio)))
+        mh_attn = Residual(PreNorm(d_model, MultiHeadedAttention(heads, d_model)))
         ff = Residual(PreNorm(d_model, FeedForward(d_model, d_ff, dropout=0.1)))
-        position = PositionalEncoding(d_model, dropout, max_len=seq_len)
-        encoder = Encoder(EncoderLayer(d_model, c(mem_attn), c(ff), dropout), layers, vocab_size, d_model, pad_token)
-        decoder = Decoder(DecoderLayer(d_model, c(mh_attn), c(mh_attn), c(ff), dropout, heads), layers, vocab_size, d_model, pad_token)
 
-        # need one encoder and one decoder for each of the four tracks
+        encoder = Encoder(EncoderLayer(d_model, c(mem_attn), c(ff), dropout), layers, vocab_size, d_model, pad_token)
+        decoder = Decoder(DecoderLayer(d_model, c(mem_attn), c(mh_attn), c(ff), dropout, heads), layers, vocab_size, d_model, pad_token)
+
         self.drums_encoder = c(encoder)
         self.bass_encoder = c(encoder)
         self.guitar_encoder = c(encoder)
@@ -66,22 +48,11 @@ class TransformerAutoencoder(nn.Module):
         self.guitar_decoder = c(decoder)
         self.strings_decoder = c(decoder)
 
-        # TODO un embedding per ogni traccia o basta un emebdding layer unico ?
-        # self.src_embed = nn.Sequential(Embeddings(vocab_size, d_model), c(position))
-        # self.tgt_embed = nn.Sequential(Embeddings(vocab_size, d_model), c(position))
-        # self.src_embed = Embeddings(src_vocab, d_model)
-        # self.tgt_embed = Embeddings(src_vocab, d_model)
-
-        # positional embeddings
-        # seq_and_mem_len = seq_len + mem_len + cmem_len
-        # self.pos_emb = nn.Parameter(torch.zeros(heads, seq_and_mem_len, d_model // heads))
-
         self.generator = Generator(d_model, vocab_size)
 
-        # TODO per ora lasciare così ma in futuro non aggregare latents delle varie tracce
+        # TODO do not aggregate latents of tracks
         self.linear_encoder = nn.Linear(d_model * n_tracks, d_model)
-        # self.linear_decoder = nn.Linear(d_model * n_tracks, d_model)
-        # additional info
+
         self.n_tracks = n_tracks
         self.layers = layers
         self.d_model = d_model
@@ -91,103 +62,78 @@ class TransformerAutoencoder(nn.Module):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
-    # def forward(self, src, tgt, src_mask, tgt_mask, memories=None):
-    def forward(self, src, memories=None):
-        "Take in and process masked src and target sequences."
-        # Check if memories are empty, in the case create new memories
-        n_track, n_bar, n_batch, n_tok = src.shape
-        if memories is None:
-            memories = (None, None)
-        mem, cmem = memories
-        # every memory has size n_tracks * n_layer * b * 0 * d
-        if mem is None:
-            mem = torch.empty(self.n_tracks, self.layers, n_batch, 0, self.d_model, **to(src))
-        if cmem is None:
-            cmem = torch.empty(self.n_tracks, self.layers, n_batch, 0, self.d_model, **to(src))
-        # positional embeddings
-        # total_len = mem.shape[3] + cmem.shape[3] + self.seq_len
-        # pos_emb = self.pos_emb[:, (self.seq_len - t):total_len]
-        # pos_emb = None # TODO CORREGGERE
-        # Set up new memories and loss
-        # aux_loss = torch.tensor(0., requires_grad=True, **to(src))
-        latents, next_memories, aux_loss = self.encode(src, (mem, cmem))
-        # detach memories
-        next_mem, next_cmem = next_memories
-        next_mem, next_cmem = map(torch.detach, (next_mem, next_cmem))
-        # output = self.decode(latents, src_mask, tgt, tgt_mask)
-        output = self.decode(latents, src)
-        return output, (next_mem, next_cmem), aux_loss
+    def forward(self, src):
+        latents, enc_aux_loss = self.encode(src)
+        output, dec_aux_loss = self.decode(latents, src)
+        aux_loss = (enc_aux_loss + dec_aux_loss) / 2
+        return output, aux_loss
 
-    def encode(self, src, memories):
-        mem, cmem = memories
-        # For every track, encode
-        drums_z, drums_mem, drums_cmem, drums_l = self.drums_encoder(src[0, :, :, :], (mem[0], cmem[0]))
-        bass_z, bass_mem, bass_cmem, bass_l = self.bass_encoder(src[1, :, :, :], (mem[0], cmem[0]))
-        guitar_z, guitar_mem, guitar_cmem, guitar_l = self.guitar_encoder(src[2, :, :, :], (cmem[0], mem[0]))
-        strings_z, strings_mem, strings_cmem, strings_l = self.strings_encoder(src[3, :, :, :], (cmem[0], mem[0]))
-        # Stack memories
-        # drums_mem, drums_cmem = map(torch.stack, (drums_mem, drums_cmem))
-        # bass_mem, bass_cmem = map(torch.stack, (bass_mem, bass_cmem))
-        # guitar_mem, guitar_cmem = map(torch.stack, (guitar_mem, guitar_cmem))
-        # strings_mem, strings_cmem = map(torch.stack, (strings_mem, strings_cmem))
-        new_mem = torch.stack((drums_mem, bass_mem, guitar_mem, strings_mem))
-        new_cmem = torch.stack((drums_cmem, bass_cmem, guitar_cmem, strings_cmem))
-        # Sum up losses
-        # aux_loss = torch.tensor(0., requires_grad=True, **to(src))
+    def encode(self, src):
+        drums_z, drums_l = self.drums_encoder(src[0, :, :, :])
+        bass_z, bass_l = self.bass_encoder(src[1, :, :, :])
+        guitar_z, guitar_l = self.guitar_encoder(src[2, :, :, :])
+        strings_z, strings_l = self.strings_encoder(src[3, :, :, :])
+
+        latents = torch.cat([drums_z, bass_z, guitar_z, strings_z], dim=-1)
+        latents = self.linear_encoder(latents)  # TODO do not aggregate
+
         aux_loss = torch.stack((drums_l, bass_l, guitar_l, strings_l))
         aux_loss = torch.mean(aux_loss)
-        # Concatenate latents of every track
-        latents = torch.cat([drums_z, bass_z, guitar_z, strings_z], dim=-1)
-        latents = self.linear_encoder(latents)  # TODO non aggregare
-        return latents, (new_mem, new_cmem), aux_loss
+
+        return latents, aux_loss
 
     def decode(self, latents, src):
-        drums_out = self.drums_decoder(latents, src[0])
-        bass_out = self.bass_decoder(latents, src[1])
-        guitar_out = self.guitar_decoder(latents, src[2])
-        strings_out = self.strings_decoder(latents, src[3])
+        drums_out, drums_l = self.drums_decoder(latents, src[0])
+        bass_out, bass_l = self.bass_decoder(latents, src[1])
+        guitar_out, guitar_l = self.guitar_decoder(latents, src[2])
+        strings_out, strings_l = self.strings_decoder(latents, src[3])
+
         output = torch.stack([drums_out, bass_out, guitar_out, strings_out], dim=-1)
-        return self.generator(output)
+        output = self.generator(output)
+
+        aux_loss = torch.stack((drums_l, bass_l, guitar_l, strings_l))
+        aux_loss = torch.mean(aux_loss)
+
+        return output, aux_loss
 
 
 class Encoder(nn.Module):
-    "Core encoder is a stack of N layers"
-
     def __init__(self, layer, N, vocab_size, d_model, pad_token):
         super(Encoder, self).__init__()
         self.layers = clones(layer, N)
-        # self.norm = LayerNorm(layer.size)
         self.embed = nn.Embedding(vocab_size, d_model)
         self.position = PositionalEncoding(d_model, 0.1)
         self.N = N
         self.pad_token = pad_token
+        self.d_model = d_model
+        self.compress_bar = nn.Linear(d_model*100, d_model)
 
-    def forward(self, x, memories):
-        "Pass the input (and mask) through each layer in turn."
-        mems, cmems = memories
+    def forward(self, x):
+        n_bar, n_batch, n_tok = x.shape
+        mems = torch.empty(self.N, n_batch, 0, self.d_model, **to(x))
+        cmems = torch.empty(self.N, n_batch, 0, self.d_model, **to(x))
         aux_loss = torch.tensor(0., requires_grad=True, device=x.device, dtype=torch.float32)
         latents = []
-        # memories have dimensions: layer, batch, size, dim
         for bar in x:
             input_mask = bar != self.pad_token
-            embedded = self.embed(bar)
-            latent = self.position(embedded)
+            bar = self.embed(bar)
+            bar = self.position(bar)
             bar_mems = []
             bar_cmems = []
             for layer, mem, cmem in zip(self.layers, mems, cmems):
-                latent, new_memory, layer_loss = layer(latent, (mem, cmem), input_mask)
-                # NEW_MEMORY[0] 1, 100, 64 NEW MEMORY[1] 1, 0, 64
-                latents.append(latent)
-                bar_mems.append(new_memory[0])
-                bar_cmems.append(new_memory[1])
+                bar, new_memories, layer_loss = layer(bar, (mem, cmem), input_mask)
+                bar_mems.append(new_memories[0])
+                bar_cmems.append(new_memories[1])
                 aux_loss = aux_loss + layer_loss
-            # TODO prepare memories for next bar
+            bar = bar.reshape(n_batch, self.d_model * n_tok)
+            bar = self.compress_bar(bar)
+            latents.append(bar)
             mems = torch.stack(bar_mems)
             cmems = torch.stack(bar_cmems)
         latents = torch.stack(latents)
-        aux_loss = aux_loss / len(self.layers)  # normalize w.r.t number of layers
-        aux_loss = aux_loss / len(x)  # normalize w.r.t. number of bars
-        return latents, mems, cmems, aux_loss
+        aux_loss = aux_loss / self.N  # normalize w.r.t number of layers
+        aux_loss = aux_loss / n_bar  # normalize w.r.t. number of bars
+        return latents, aux_loss
 
 
 class Decoder(nn.Module):
@@ -199,72 +145,75 @@ class Decoder(nn.Module):
         self.pad_token = pad_token
         self.embed = nn.Embedding(vocab_size, d_model)
         self.position = PositionalEncoding(d_model, 0.1)
+        self.N = N
+        self.d_model = d_model
+        self.decompress_bar = nn.Linear(d_model, d_model*100)
 
-    def forward(self, latents, srcs):
+    def forward(self, latents, bars):
         outs = []
-        for latent, src in zip(latents, srcs):  # For each bar
-            n_batch = src.shape[0]
-            input_mask = src != self.pad_token
-            target = src[:, 1:]
+        n_bar, n_batch, n_tok = bars.shape
+        mems = torch.empty(self.N, n_batch, 0, self.d_model, **to(bars))
+        cmems = torch.empty(self.N, n_batch, 0, self.d_model, **to(bars))
+        latents = self.decompress_bar(latents)
+        latents = latents.reshape(n_bar, n_batch, n_tok, self.d_model)
+        bar_mems = []
+        bar_cmems = []
+        aux_loss = torch.tensor(0., requires_grad=True, device=bars.device, dtype=torch.float32)
+        for latent, bar in zip(latents, bars):
+            n_batch = bar.shape[0]
+            input_mask = bar != self.pad_token
+            target = bar[:, 1:]
+            tgt_pad_mask = target != self.pad_token
             sub_mask = torch.triu(torch.ones(target.shape[-1], target.shape[-1])).to(latents.device)
             sub_mask = ~sub_mask.repeat(n_batch, 1, 1).bool()  # TODO check, f,f,f -> t,f,f -> t,t,f etc.
             target_mask = torch.reshape(target.repeat(1, target.shape[-1]),
                                         (sub_mask.shape[0], sub_mask.shape[-1], sub_mask.shape[-1]))
             target_mask = (target_mask != self.pad_token) & sub_mask
-            embed = self.embed(target)
-            out = self.position(embed)
-            for layer in self.layers:
-                out = layer(out, latent, input_mask, target_mask)
-            outs.append(out)
+            target = self.embed(target)
+            target = self.position(target)
+            for layer, mem, cmem in zip(self.layers, mems, cmems):
+                latent, new_memories, layer_loss = layer(latent, target, (mem, cmem), input_mask, target_mask, tgt_pad_mask)
+                bar_mems.append(new_memories[0])
+                bar_cmems.append(new_memories[1])
+                aux_loss = aux_loss + layer_loss
+            latent = latent.reshape(n_batch, n_tok-1, self.d_model)
+            outs.append(latent)
+            mems = torch.stack(bar_mems)
+            cmems = torch.stack(bar_cmems)
         outs = torch.stack(outs)
-        return outs
+        aux_loss = aux_loss / self.N  # normalize w.r.t number of layers
+        aux_loss = aux_loss / n_bar  # normalize w.r.t. number of bars
+        return outs, aux_loss
 
 
 class EncoderLayer(nn.Module):
-    "Encoder is made up of self-attn and feed forward (defined below)"
-
     def __init__(self, size, self_attn, feed_forward, dropout):
         super(EncoderLayer, self).__init__()
         self.self_attn = self_attn
         self.feed_forward = feed_forward
-        # self.sublayer = clones(SublayerConnection(size, dropout), 2)
         self.size = size
 
     def forward(self, x, memories, input_mask):
-        "Follow Figure 1 (left) for connections."
         x, new_memories, aux_loss = self.self_attn(x, memories=memories, input_mask=input_mask)
         x, = self.feed_forward(x)
-        # for memory in new_memories:
-            # memory.detach()
-        # x = self.sublayer[0](old_x, lambda k: x)
-        return x, new_memories, aux_loss # self.sublayer[1](x, self.feed_forward), new_memories, aux_loss
+        return x, new_memories, aux_loss
 
 
 class DecoderLayer(nn.Module):
     "Decoder is made of self-attn, src-attn, and feed forward (defined below)"
-
-    def __init__(self, size, self_attn, src_attn, feed_forward, dropout, heads):
+    def __init__(self, size, mem_attn, src_attn, feed_forward, dropout, heads):
         super(DecoderLayer, self).__init__()
         self.size = size
-        self.self_attn = self_attn
+        self.mem_attn = mem_attn
         self.src_attn = src_attn
         self.feed_forward = feed_forward
         self.heads = heads
-        # self.sublayer = clones(SublayerConnection(size, dropout), 3)
 
-    def forward(self, x, memory, src_mask, tgt_mask):
-        m = memory
-        # self_attn è Residual(Prenorm(MultiHeadAttention))
-        # quindi Reisdual prende x e gli altri argomenti che riceve e li passa a PreNorm
-        x = x.transpose(0, 1)
-        m = m.transpose(0, 1)
-        tgt_mask = tgt_mask.repeat((self.heads, 1, 1))
-        # to_append = torch.zeros((4, tgt_mask.shape[-2])).bool().unsqueeze(2).to(x.device)
-        # tgt_mask = torch.cat((tgt_mask, to_append), -1)
-        x, attn_weights = self.self_attn(x, x, x, attn_mask=tgt_mask)
-        x, attn_weights = self.src_attn(x, m, m, key_padding_mask=src_mask)
+    def forward(self, latent, target, memories, src_mask, tgt_mask, tgt_pad_mask):
+        x, new_memories, aux_loss = self.mem_attn(target, memories=memories, input_mask=tgt_pad_mask)
+        x, = self.src_attn(x, key=latent, value=latent, mask=src_mask)
         x, = self.feed_forward(x)
-        return x
+        return x, new_memories, aux_loss
 
 
 class MemoryMultiHeadedAttention(nn.Module):
@@ -371,7 +320,7 @@ class MemoryMultiHeadedAttention(nn.Module):
         # calculate memory and compressed memory
 
         old_mem, new_mem = queue_fifo(mem, x, length=self.mem_len, dim=1)
-
+        # pad old memory such that it can be compressed
         old_mem_padding = old_mem.shape[1] % self.cmem_ratio
 
         if old_mem_padding != 0:
@@ -410,6 +359,46 @@ class MemoryMultiHeadedAttention(nn.Module):
         return logits, Memory(new_mem, new_cmem), aux_loss
 
 
+class MultiHeadedAttention(nn.Module):
+    def __init__(self, h, d_model, dropout=0.1):
+        "Take in model size and number of heads."
+        super(MultiHeadedAttention, self).__init__()
+        assert d_model % h == 0
+        # We assume d_v always equals d_k
+        self.d_out = d_model // h
+        self.h = h
+        # 4 projection layers: 1 for query, 2 for keys, 3 for values, and final at the end
+        self.linears = (clones(nn.Linear(d_model, d_model), 4))
+        self.attn = None
+        self.dropout = nn.Dropout(p=dropout)
+
+    def forward(self, query, key=None, value=None, mask=None):
+        if mask is not None:
+            # Same mask applied to all h heads.
+            mask = mask.unsqueeze(1)
+            # src_mask happends to be on one dimension. so we unsqueeze it to be applied to each attention result
+            # but tgt mask is going to be of 2 dimension so se have no need to unsqueeze, and apply it directly
+            # TODO: check if we should compute a square src_mask outside the model
+            if len(mask.shape) == 3:
+                mask = mask.unsqueeze(-2)
+
+        nbatches = query.size(0)
+
+        # 1) Do all the linear projections in batch from d_model => h x d_k
+        # here we use first three projection layers
+        query, key, value = [l(x).view(nbatches, -1, self.h, self.d_out).transpose(1, 2)  # TODO fix this
+                             for l, x in zip(self.linears, (query, key, value))]
+
+        # 2) Apply attention on all the projected vectors in batch.
+        x = full_attn(query, key, value, mask=mask, dropout=self.dropout)
+
+        # 3) "Concat" using a view and apply a final linear.
+        x = x.transpose(1, 2).contiguous().view(nbatches, -1, self.h * self.d_out)
+
+        # here we use final projection layer
+        return self.linears[-1](x)
+
+
 class FeedForward(nn.Module):
     def __init__(self, dim, hidden, dropout=0.):
         super().__init__()
@@ -441,19 +430,6 @@ class Residual(nn.Module):
         return ret
 
 
-class DecResidual(nn.Module):
-    def __init__(self, fn):
-        super().__init__()
-        self.fn = fn
-    # apply out = fn(x, **kwargs) and return out+x and other results from fn
-
-    def forward(self, x, y, z, **kwargs):
-        out = self.fn(x, y, z, **kwargs)
-        out = cast_tuple(out)
-        ret = (out[0] + x), *out[1:]
-        return ret
-
-
 class PreNorm(nn.Module):
     def __init__(self, dim, fn):
         super().__init__()
@@ -463,19 +439,6 @@ class PreNorm(nn.Module):
     def forward(self, x, **kwargs):
         x = self.norm(x)
         return self.fn(x, **kwargs)
-
-
-class DecPreNorm(nn.Module):
-    def __init__(self, dim, fn):
-        super().__init__()
-        self.norm = nn.LayerNorm(dim)
-        self.fn = fn
-
-    def forward(self, x, y, z, **kwargs):
-        x = self.norm(x)
-        y = self.norm(y)
-        z = self.norm(z)
-        return self.fn(x, y, z, **kwargs)
 
 
 class Generator(nn.Module):
@@ -528,6 +491,27 @@ class Embeddings(nn.Module):
     def forward(self, x):
         aux = self.lut(x)
         return aux * math.sqrt(self.d_model)
+
+
+class PositionalEncoding(nn.Module):
+    "Implement the PE function."
+
+    def __init__(self, d_model, dropout, max_len=500):
+        super(PositionalEncoding, self).__init__()
+        self.dropout = nn.Dropout(p=dropout)
+
+        # Compute the positional encodings once in log space.
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0., max_len).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0., d_model, 2) * -(math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0)
+        self.register_buffer('pe', pe)
+
+    def forward(self, x):
+        x = x + Variable(self.pe[:, :x.size(1)], requires_grad=False) # TODO ERA FALSE
+        return self.dropout(x)
 
 
 def full_attn(q, k, v, mask=None, dropout=None):
@@ -602,77 +586,7 @@ def cast_tuple(el):
     return el if isinstance(el, tuple) else (el,)
 
 
-class PositionalEncoding(nn.Module):
-    "Implement the PE function."
-
-    def __init__(self, d_model, dropout, max_len=5000):
-        super(PositionalEncoding, self).__init__()
-        self.dropout = nn.Dropout(p=dropout)
-
-        # Compute the positional encodings once in log space.
-        pe = torch.zeros(max_len, d_model)
-        position = torch.arange(0., max_len).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0., d_model, 2) * -(math.log(10000.0) / d_model))
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-        pe = pe.unsqueeze(0)
-        self.register_buffer('pe', pe)
-
-    def forward(self, x):
-        x = x + Variable(self.pe[:, :x.size(1)], requires_grad=False) # TODO ERA FALSE
-        return self.dropout(x)
-
 # TODO USELESS?
-
-# class DecoderMultiHeadedAttention(nn.Module):
-#     def __init__(self, h, d_model, dropout=0.1):
-#         "Take in model size and number of heads."
-#         super(DecoderMultiHeadedAttention, self).__init__()
-#         assert d_model % h == 0
-#         # We assume d_v always equals d_k
-#         self.d_out = d_model // h
-#         self.h = h
-#         # 4 projection layers: 1 for query, 2 for keys, 3 for values, and final at the end
-#         self.linears = (clones(nn.Linear(d_model, d_model), 4))
-#         self.attn = None
-#         self.dropout = nn.Dropout(p=dropout)
-#
-#     def forward(self, query, key=None, value=None, mask=None):
-#         if mask is not None:
-#             # Same mask applied to all h heads.
-#             mask = mask.unsqueeze(1)
-#             # src_mask happends to be on one dimension. so we unsqueeze it to be applied to each attention result
-#             # but tgt mask is going to be of 2 dimension so se have no need to unsqueeze, and apply it directly
-#             # TODO: check if we should compute a square src_mask outside the model
-#             if len(mask.shape) == 3:
-#                 mask = mask.unsqueeze(-2)
-#
-#         nbatches = query.size(0)
-#
-#         # 1) Do all the linear projections in batch from d_model => h x d_k
-#         # here we use first three projection layers
-#         query, key, value = [l(x).view(nbatches, -1, self.h, self.d_out).transpose(1, 2)  # TODO fix this
-#                              for l, x in zip(self.linears, (query, key, value))]
-#
-#         # 2) Apply attention on all the projected vectors in batch.
-#         x = full_attn(query, key, value, mask=mask, dropout=self.dropout)
-#
-#         # 3) "Concat" using a view and apply a final linear.
-#         x = x.transpose(1, 2).contiguous().view(nbatches, -1, self.h * self.d_out)
-#
-#         # here we use final projection layer
-#         return self.linears[-1](x)
-# def attention(query, key, value, mask=None, dropout=None):
-#     "Compute 'Scaled Dot Product Attention'"
-#     d_k = query.size(-1)
-#     scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(d_k)
-#     if mask is not None:
-#         scores = scores.masked_fill(mask == 0, -1e9)
-#     p_attn = F.softmax(scores, dim=-1)
-#     if dropout is not None:
-#         p_attn = dropout(p_attn)
-#     return torch.matmul(p_attn, value)
-
 # def get_std_opt(model):
 #     return NoamOpt(model.src_embed[0].d_model, 2, 4000,
 #                    torch.optim.Adam(model.parameters(), lr=0, betas=(0.9, 0.98), eps=1e-9))

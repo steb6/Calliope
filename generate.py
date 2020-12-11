@@ -1,5 +1,5 @@
-from muspy_config import config
-from muspy_train import Trainer
+from config import config
+from train import Trainer
 import os
 from create_dataset import NoteRepresentationManager
 

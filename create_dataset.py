@@ -305,5 +305,5 @@ class NoteRepresentationManager:
 
 
 if __name__ == "__main__":
-    from muspy_config import config
+    from config import config
     manager = NoteRepresentationManager(**config["data"], **config["tokens"], **config["paths"])

@@ -12,6 +12,8 @@ def get_freer_gpu():
 
 def set_freer_gpu():
     if os.getcwd() == 'C:\\Users\\berti\\PycharmProjects\\MusAE':
+        os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+        os.environ["CUDA_VISIBLE_DEVICES"] = "0"
         print("Local execution")
     else:
         os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
@@ -27,8 +29,8 @@ vocab_size = 21 + 128*4 + 32*2  # TODO check  # tokens (21) + time*2, pitch, dur
 config = {
     "train": {
         "vocab_size": vocab_size,
-        "device": "cuda",
-        "batch_size": 3,
+        "device": "cpu",
+        "batch_size": 2,
         "test_size": 0.3,
         "n_workers": 1,
         "n_epochs": 250,
@@ -36,7 +38,7 @@ config = {
     },
     "model": {
         "vocab_size": vocab_size,  # this depends by config.tokens
-        "d_model": 64,
+        "d_model": 16,
         "n_tracks": 4,
         "heads": 4,
         "d_ff": 256,
