@@ -22,15 +22,15 @@ def set_freer_gpu():
         print("Remote execution on gpu ", gpu)
 
 
-max_bars = 150
-max_bar_length = 100  # TODO danger
+max_bars = 100
+max_bar_length = 150
 vocab_size = 21 + 128*4 + 32*2  # TODO check  # tokens (21) + time*2, pitch, duration (128) + velocities, tempos (32)
 
 config = {
     "train": {
         "vocab_size": vocab_size,
         "device": "cpu",
-        "batch_size": 2,
+        "batch_size": 1,
         "test_size": 0.3,
         "n_workers": 1,
         "n_epochs": 250,
@@ -48,6 +48,7 @@ config = {
         "cmem_len": max_bar_length//4,
         "cmem_ratio": 4,
         "seq_len": max_bar_length,
+        "max_bars": max_bars,
         "pad_token": 0
     },
     "data": {  # Parameters to create and listen the note representation

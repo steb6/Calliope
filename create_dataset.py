@@ -86,13 +86,13 @@ class NoteRepresentationManager:
         elif i + 1 < self.max_bars:  # if adding a row, we are in limits
             t[i][j] = self.eob_token
             i += 1
-            j = 0
+            j = 1
             t[i][0] = self.sob_token
-            self.log.write("Reached max length of bar\n")
+            self.log.write(str(self.count) + ": Reached max length of bar\n")
             return self.add_tokens(t, i, j, tokens)  # new line and recursion
         else:
             t[i][j] = self.eos_token
-            self.log.write("Reached max length of song\n")
+            self.log.write(str(self.count) + ": Reached max length of track\n")
         return t, i, j
 
     @staticmethod
@@ -128,7 +128,8 @@ class NoteRepresentationManager:
                     res = self.time_signature_manager.from_fraction_to_time_and_token(num, den)
                     if res is None:
                         self.log.write(
-                            "Time signature not known: {} / {}".format(signature.numerator, signature.denominator))
+                            str(self.count) +
+                            ": Time signature not known: {} / {}".format(signature.numerator, signature.denominator))
                         return None
                     time_signature, tok = res
                     signatures.remove(signature)
@@ -154,10 +155,10 @@ class NoteRepresentationManager:
                 for tempo in tempos:
                     tempo.time -= self.resolution * time_signature
             if not note[0] < self.num_values * 2:  # check value of time
-                self.log.write("Invalid time: " + str(note) + '\n')
+                self.log.write(str(self.count) + ": Invalid time: " + str(note) + '\n')
                 continue
             if not note[1] < self.num_values:  # check value of pitch
-                self.log.write("Invalid pitch: " + str(note[1]))
+                self.log.write(str(self.count) + ": Invalid pitch: " + str(note[1]))
                 continue
             if not note[2] < self.num_values:  # clip duration if > 127
                 note[2] = self.num_values - 1
@@ -249,20 +250,20 @@ class NoteRepresentationManager:
         else:
             dataset_length = self.early_stop
         progbar = tqdm(total=dataset_length, leave=True, position=0, desc="Dataset creation")
-        count = 0
+        self.count = 0
         os.makedirs(self.dataset_path)
         self.log = open(self.log_file, "w")
         self.log.write("Log of dataset_converter, to check if it is working right\n")
         # lengths = []
         for subdir, dirs, files in os.walk(raw_midi):  # iterate over all subdirectories
             for filename in files:  # iterate over all files
-                if self.early_stop == 0 and count > 0:  # if not early stop, update bar anyway
+                if self.early_stop == 0 and self.count > 0:  # if not early stop, update bar anyway
                     progbar.update()
                 filepath = subdir + os.sep + filename
                 try:
                     song = muspy.read(filepath)
                 except Exception as e:  # invalid song format
-                    self.log.write(str(count) + " invalid song format: " + e.__str__() + '\n')
+                    self.log.write(str(self.count) + " invalid song format: " + e.__str__() + '\n')
                     continue
                 filtered_song = self.filter_song(song)
                 if filtered_song is None:  # if the song has 4 valid tracks
@@ -288,12 +289,12 @@ class NoteRepresentationManager:
                 #     reconstructed_music.write_midi("after.mid")
                 # except Exception as e:
                 #     self.log.write(e.__str__()+'\n')
-                with open(os.path.join(self.dataset_path, str(count) + '.pickle'), 'wb') as f:
+                with open(os.path.join(self.dataset_path, str(self.count) + '.pickle'), 'wb') as f:
                     pickle.dump(tensor_song, f)
-                count += 1
+                self.count += 1
                 if self.early_stop != 0:  # if early_stop, we update progbar only after a success
                     progbar.update()
-                    if count >= self.early_stop:
+                    if self.count >= self.early_stop:
                         self.log.close()
                         # import matplotlib.pyplot as plt
                         # plt.hist(lengths, density=True, bins=30)  # `density=False` would make counts

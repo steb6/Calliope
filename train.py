@@ -19,10 +19,12 @@ import glob
 # TO COPY: scp -r C:\Users\berti\PycharmProjects\MusAE berti@131.114.137.168:
 # TO CONNECT: ssh berti@131.114.137.168
 # TO ATTACH TO TMUX: tmux attach -t Training
+# TO RESIZE TMUX: tmux attach -d -t Training
 # TO SWITCH WINDOW ctrl+b 0-1-2
 # TO SEE SESSION: tmux ls
 # TO DETACH ctrl+b d
 # TO VISUALIZE GPUs STATUS: nvidia-smi
+# TO GET RESULTS: scp -r berti@131.114.137.168:MusAE/training* C:\Users\berti\PycharmProjects\MusAE\remote_results
 
 class Trainer:
     def __init__(self, save_path=None, pad_token=None, device=None, dataset_path=None, test_size=None,
@@ -47,16 +49,18 @@ class Trainer:
         self.max_bars = max_bars
         self.label_smoothing = label_smoothing
 
-    def plot(self, tr, ts, tr_aux, ts_aux, plot_path):
+    def plot(self, tr, ts, tr_aux, ts_aux, tr_ae, ts_ae, plot_path):
         if self.epoch == 0:
             plt.figure()
-        plt.subplot(211)  # 2 rows and 1 column, first index
+        plt.subplot(311)  # 3 rows and 1 column, first index
         plt.plot(range(self.epoch + 1), tr, c="r", label="Training loss")
         plt.plot(range(self.epoch + 1), ts, c="b", label="Testing loss")
-        plt.legend()
-        plt.subplot(212)  # 2 rows and 1 column, second index
-        plt.plot(range(self.epoch + 1), tr_aux, c="g", label="Training aux loss")
-        plt.plot(range(self.epoch + 1), ts_aux, c="y", label="Testing aux loss")
+        plt.subplot(312)  # 3 rows and 1 column, second index
+        plt.plot(range(self.epoch + 1), tr_aux, c="r", label="Training aux loss")
+        plt.plot(range(self.epoch + 1), ts_aux, c="b", label="Testing aux loss")
+        plt.subplot(313)  # 3 rows and 1 column, third index
+        plt.plot(range(self.epoch + 1), tr_ae, c="r", label="Training auto-encoding loss")
+        plt.plot(range(self.epoch + 1), ts_ae, c="b", label="Testing auto-encoding loss")
         plt.legend()
         plt.savefig(plot_path)
         plt.clf()
@@ -64,6 +68,7 @@ class Trainer:
     def run_epoch(self, loader):
         total_loss = 0
         total_aux_loss = 0
+        total_ae_loss = 0
         i = 0
         description = ("Train" if self.model.training else "Eval ") + " epoch " + str(self.epoch)
         for src in tqdm(loader, desc=description, leave=True, position=0):
@@ -74,20 +79,21 @@ class Trainer:
             if n_tokens == 0:  # All tracks are empty
                 continue
             # Step
-            out, aux_loss = self.model.forward(src)  # TODO why out is none on remote?
+            out, aux_loss, ae_loss = self.model.forward(src)
             # print("out: ", out)
             loss = self.loss_computer(out, src[:, :, :, 1:], n_tokens)  # skip first elem of each bars
             if self.optimizer is not None:
                 self.optimizer.optimizer.zero_grad()
-                (aux_loss + loss).backward()
+                (aux_loss + loss + ae_loss).backward()
                 self.optimizer.step()
 
             total_loss += loss.item()
             total_aux_loss += aux_loss.item()
+            total_ae_loss += ae_loss.item()
             i += 1
         if i == 0:
             exit("i is zero for some kind of mystery")
-        return total_loss / i, total_aux_loss / i
+        return total_loss / i, total_aux_loss / i, total_ae_loss / i
 
     def train(self):
         if not self.save_path:  # if no save path is defined (to default it is not)
@@ -99,6 +105,9 @@ class Trainer:
         os.mkdir(self.save_path)
         # Model
         self.model.to(self.device)
+        # TODO remove test
+        # for parameter in self.model.named_parameters():
+        # print(parameter[0], " ", parameter[1].shape)
 
         # Optimizer
         self.optimizer = NoamOpt(config["model"]["d_model"], 1, 2000,
@@ -112,6 +121,8 @@ class Trainer:
         ts_losses = []
         tr_aux_losses = []
         ts_aux_losses = []
+        tr_ae_losses = []
+        ts_ae_losses = []
         best_ts_loss = sys.float_info.max
         dataset = SongIterator(dataset_path=self.dataset_path, test_size=self.test_size,
                                batch_size=self.batch_size, n_workers=self.n_workers)
@@ -120,25 +131,31 @@ class Trainer:
         for self.epoch in range(self.n_epochs):
             # print("Epoch ", epoch, " over ", n_epochs)
             self.model.train()
-            tr_loss, tr_aux_loss = self.run_epoch(tr_loader)
+            tr_loss, tr_aux_loss, tr_ae_loss = self.run_epoch(tr_loader)
             self.model.eval()
-            ts_loss, ts_aux_loss = self.run_epoch(ts_loader)
-            print("Epoch {}: TR loss: {:.4f}, TS loss: {:.4f}, Aux TR loss: {:.4f}, Aux TS loss: {:.2f}".format(
-                self.epoch, tr_loss, ts_loss, tr_aux_loss, ts_aux_loss, end="\n"))
+            ts_loss, ts_aux_loss, ts_ae_loss = self.run_epoch(ts_loader)
+            print("Epoch {}: TR loss: {:.4f}, TS loss: {:.4f}, Aux TR loss: {:.4f}, Aux TS loss: {:.2f}, "
+                  "AE TR loss: {:.4f}, AE TS loss: {:.4f}".format(
+                   self.epoch, tr_loss, ts_loss, tr_aux_loss, ts_aux_loss, tr_ae_loss, ts_ae_loss, end="\n"))
             # Save model if best and erase all others
             if ts_loss < best_ts_loss:
-                print("Saving best model")
-                best_ts_loss = ts_loss
-                torch.save(self.model, os.path.join(self.save_path, self.model_name + '_' + str(self.epoch) + '.pt'))
+                new_model = os.path.join(self.save_path, self.model_name + '_' + str(self.epoch) + '.pt')
+                print("Saving best model in " + new_model + ", DO NOT INTERRUPT")
                 for filename in glob.glob(os.path.join(self.save_path, self.model_name+'*')):
                     os.remove(filename)
+                best_ts_loss = ts_loss
+                torch.save(self.model, new_model)
+                print("Model saved")
             # Plot learning curve and save it
             tr_losses.append(tr_loss)
             ts_losses.append(ts_loss)
             tr_aux_losses.append(tr_aux_loss)
             ts_aux_losses.append(ts_aux_loss)
+            tr_ae_losses.append(tr_ae_loss)
+            ts_ae_losses.append(ts_ae_loss)
             plot_path = os.path.join(self.save_path, self.plot_name + '_' + str(self.epoch) + '.png')
-            self.plot(tr_losses, ts_losses, tr_aux_losses, ts_aux_losses, plot_path=plot_path)
+            self.plot(tr_losses, ts_losses, tr_aux_losses, ts_aux_losses,
+                      tr_ae_losses, ts_ae_losses, plot_path=plot_path)
             # Remove old plot
             if self.epoch > 0:
                 os.remove(os.path.join(self.save_path, self.plot_name + '_' + str(self.epoch - 1) + '.png'))
@@ -202,8 +219,8 @@ if __name__ == "__main__":
     set_freer_gpu()
     notes = NoteRepresentationManager(**config["tokens"], **config["data"], **config["paths"])
 
-    # shutil.rmtree(config["paths"]["dataset_path"], ignore_errors=True)
-    # notes.convert_dataset()
+    shutil.rmtree(config["paths"]["dataset_path"], ignore_errors=True)
+    notes.convert_dataset()
 
     m = TransformerAutoencoder(**config["model"])
 
