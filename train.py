@@ -71,7 +71,10 @@ class Trainer:
         total_ae_loss = 0
         i = 0
         description = ("Train" if self.model.training else "Eval ") + " epoch " + str(self.epoch)
-        for src in tqdm(loader, desc=description, leave=True, position=0):
+        print(description)
+        # for src in tqdm(loader, desc=description, leave=True, position=0):
+        length = len(loader)
+        for count, src in enumerate(loader):
             src = np.swapaxes(src, 0, 1)  # swap batch, tracks -> tracks, batch
             src = np.swapaxes(src, 1, 2)  # swap batch, bars -> bars, batch
             n_tokens = np.count_nonzero(src)
@@ -83,13 +86,17 @@ class Trainer:
             # print("out: ", out)
             loss = self.loss_computer(out, src[:, :, :, 1:], n_tokens)  # skip first elem of each bars
             if self.optimizer is not None:
-                self.optimizer.optimizer.zero_grad()
                 (aux_loss + loss + ae_loss).backward()
                 self.optimizer.step()
-
+                # self.optimizer.optimizer.zero_grad()
+                self.optimizer.zero_grad()
+            progress = int((count/length)*100)
+            print("{}% Mini-batch: loss: {:.4f}, attn loss: {:.4f}, ae loss: {:.4f}".format(
+                   progress, loss, aux_loss, ae_loss, end="\n"))
             total_loss += loss.item()
             total_aux_loss += aux_loss.item()
             total_ae_loss += ae_loss.item()
+
             i += 1
         if i == 0:
             exit("i is zero for some kind of mystery")
@@ -110,8 +117,9 @@ class Trainer:
         # print(parameter[0], " ", parameter[1].shape)
 
         # Optimizer
-        self.optimizer = NoamOpt(config["model"]["d_model"], 1, 2000,
-                                 torch.optim.Adam(self.model.parameters(), lr=0, betas=(0.9, 0.98), eps=1e-9))
+        # self.optimizer = NoamOpt(config["model"]["d_model"], 1, 2000,
+        #                          torch.optim.Adam(self.model.parameters(), lr=0, betas=(0.9, 0.98), eps=1e-9))
+        self.optimizer = torch.optim.Adam(self.model.parameters())  # TODO adjust following paper
         # Loss
         criterion = LabelSmoothing(size=self.vocab_size, padding_idx=self.pad_token, smoothing=self.label_smoothing,
                                    device=self.device)
@@ -219,8 +227,8 @@ if __name__ == "__main__":
     set_freer_gpu()
     notes = NoteRepresentationManager(**config["tokens"], **config["data"], **config["paths"])
 
-    shutil.rmtree(config["paths"]["dataset_path"], ignore_errors=True)
-    notes.convert_dataset()
+    # shutil.rmtree(config["paths"]["dataset_path"], ignore_errors=True)
+    # notes.convert_dataset()
 
     m = TransformerAutoencoder(**config["model"])
 
