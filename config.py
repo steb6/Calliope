@@ -23,14 +23,14 @@ def set_freer_gpu():
 
 
 max_bars = 100
-max_bar_length = 150
+max_bar_length = 200
 vocab_size = 21 + 128*4 + 32*2  # TODO check  # tokens (21) + time*2, pitch, duration (128) + velocities, tempos (32)
 
 config = {
     "train": {
         "vocab_size": vocab_size,
-        "device": "cpu",
-        "batch_size": 1,
+        "device": "cuda",
+        "batch_size": 3,
         "test_size": 0.1,
         "n_workers": 1,
         "n_epochs": 250,
@@ -42,7 +42,7 @@ config = {
         "n_tracks": 4,
         "heads": 4,
         "d_ff": 256,
-        "layers": 3,
+        "layers": 2,
         "dropout": 0.1,
         "mem_len": max_bar_length,  # 512, before was 512
         "cmem_len": max_bar_length//4,

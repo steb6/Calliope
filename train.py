@@ -75,27 +75,57 @@ class Trainer:
         # for src in tqdm(loader, desc=description, leave=True, position=0):
         length = len(loader)
         for count, src in enumerate(loader):
-            src = np.swapaxes(src, 0, 1)  # swap batch, tracks -> tracks, batch
-            src = np.swapaxes(src, 1, 2)  # swap batch, bars -> bars, batch
-            n_tokens = np.count_nonzero(src)
-            src = torch.LongTensor(src.long()).to(self.device)
-            if n_tokens == 0:  # All tracks are empty
-                continue
+            src = np.swapaxes(src, 0, 2)  # swap batch, tracks -> tracks, batch
+            bars = torch.LongTensor(src.long()).to(self.device)
             # Step
-            out, aux_loss, ae_loss = self.model.forward(src)
+            n_bars, n_tracks, n_batches, n_toks = bars.shape
+            e_mems = torch.empty(n_tracks, 2, n_batches, 0, 32, dtype=torch.float32, device=bars.device)
+            e_cmems = torch.empty(n_tracks, 2, n_batches, 0, 32, dtype=torch.float32, device=bars.device)
+            d_mems = torch.empty(n_tracks, 2, n_batches, 0, 32, dtype=torch.float32, device=bars.device)
+            d_cmems = torch.empty(n_tracks, 2, n_batches, 0, 32, dtype=torch.float32, device=bars.device)
+            latents = []
+            e_attn_losses = torch.tensor(0., requires_grad=True, device=bars.device, dtype=torch.float32)
+            e_ae_losses = torch.tensor(0., requires_grad=True, device=bars.device, dtype=torch.float32)
+            d_attn_losses = torch.tensor(0., requires_grad=True, device=bars.device, dtype=torch.float32)
+            d_ae_losses = torch.tensor(0., requires_grad=True, device=bars.device, dtype=torch.float32)
+            for bar in bars:
+                n_tokens = np.count_nonzero(bar.cpu())
+                if n_tokens == 0:
+                    continue
+                latent, e_mems, e_cmems, e_attn_loss, e_ae_loss = self.model.encode(bar, e_mems, e_cmems)
+                out, d_mems, d_cmems, d_attn_loss, d_ae_loss = self.model.decode(latent, bar, d_mems, d_cmems)
+                # e_attn_losses = e_attn_losses + e_attn_loss
+                # e_ae_losses = e_ae_losses + e_ae_loss
+                # d_attn_losses = d_attn_losses + d_attn_loss
+                # d_ae_losses = d_ae_losses + d_ae_loss
+                loss = self.loss_computer(out, bar[:, :, :], n_tokens)  # TODO skip first elem of each bars>
+                if self.optimizer is not None:
+                    self.optimizer.zero_grad()
+                    (loss + e_attn_loss + e_ae_loss + d_attn_loss + d_attn_loss).backward()
+                    self.optimizer.step()
+                print("{}% Mini-batch: loss: {:.4f}, e_attn loss: {:.4f}, e_ae loss: {:.4f},"
+                      "d_attn loss: {:.4f}, d_ae loss: {:.4f}".format(
+                    0, loss, e_attn_loss, e_ae_loss, d_attn_loss, d_ae_loss, end="\n"))
+
+                # latents.append(latents)
+                # enc_attn_losses = enc_attn_losses + aux_loss
+                # enc_ae_losses = enc_ae_losses + ae_loss
+
+
+
             # print("out: ", out)
-            loss = self.loss_computer(out, src[:, :, :, 1:], n_tokens)  # skip first elem of each bars
-            if self.optimizer is not None:
-                (aux_loss + loss + ae_loss).backward()
-                self.optimizer.step()
-                # self.optimizer.optimizer.zero_grad()
-                self.optimizer.zero_grad()
-            progress = int((count/length)*100)
-            print("{}% Mini-batch: loss: {:.4f}, attn loss: {:.4f}, ae loss: {:.4f}".format(
-                   progress, loss, aux_loss, ae_loss, end="\n"))
-            total_loss += loss.item()
-            total_aux_loss += aux_loss.item()
-            total_ae_loss += ae_loss.item()
+            # loss = self.loss_computer(out, src[:, :, :, 1:], n_tokens)  # skip first elem of each bars
+            # if self.optimizer is not None:
+            #     (aux_loss + loss + ae_loss).backward()
+            #     self.optimizer.step()
+            #     # self.optimizer.optimizer.zero_grad()
+            #     self.optimizer.zero_grad()
+            # progress = int((count/length)*100)
+            # print("{}% Mini-batch: loss: {:.4f}, attn loss: {:.4f}, ae loss: {:.4f}".format(
+            #        progress, loss, aux_loss, ae_loss, end="\n"))
+            # total_loss += loss.item()
+            # total_aux_loss += aux_loss.item()
+            # total_ae_loss += ae_loss.item()
 
             i += 1
         if i == 0:
