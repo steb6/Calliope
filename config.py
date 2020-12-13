@@ -31,7 +31,7 @@ config = {
         "vocab_size": vocab_size,
         "device": "cuda",
         "batch_size": 3,
-        "test_size": 0.1,
+        "test_size": 0.3,
         "n_workers": 1,
         "n_epochs": 250,
         "label_smoothing": 0.1,
@@ -56,7 +56,7 @@ config = {
         "max_bar_length": max_bar_length,
         "use_velocity": True,
         "reconstruct_programs": [0, 0, 32, 40],
-        "early_stop": 100,  # set this to 0 to disable early stop
+        "early_stop": 10,  # set this to 0 to disable early stop
         "resolution": 24,
         "tempo": 120,
         "velocities_total": (0, 127),  # using min max scaling, limits are inclusive

@@ -33,7 +33,8 @@ class TransformerAutoencoder(nn.Module):
 
         c = copy.deepcopy
         # TODO check dropout, bias
-        mem_attn = Residual(PreNorm(d_model, MemoryMultiHeadedAttention(heads, d_model, seq_len, mem_len, cmem_len, cmem_ratio)))
+        mem_attn = Residual(PreNorm(d_model, MemoryMultiHeadedAttention(heads, d_model, seq_len,
+                                                                        mem_len, cmem_len, cmem_ratio)))
         mh_attn = Residual(PreNorm(d_model, MultiHeadedAttention(heads, d_model)))
         ff = Residual(PreNorm(d_model, FeedForward(d_model, d_ff, dropout=0.1)))
 
@@ -66,32 +67,6 @@ class TransformerAutoencoder(nn.Module):
         for p in self.parameters():
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
-
-    # def forward(self, bar, enc_mems, enc_cmems):
-
-
-    # def forward(self, bars):
-    #     n_bars, n_tracks, n_batches, n_toks = bars.shape
-    #     enc_mems = torch.empty(n_tracks, self.layers, n_batches, 0, self.d_model, **to(bars))
-    #     enc_cmems = torch.empty(n_tracks, self.layers, n_batches, 0, self.d_model, **to(bars))
-    #     latents = []
-    #     enc_attn_losses = torch.tensor(0., requires_grad=True, device=bars.device, dtype=torch.float32)
-    #     enc_ae_losses = torch.tensor(0., requires_grad=True, device=bars.device, dtype=torch.float32)
-    #     for bar in bars:
-    #         latent, enc_mems, enc_cmems, enc_aux_loss, enc_ae_loss = self.encode(bar, enc_mems, enc_cmems)
-    #         latents.append(latent)
-    #         enc_attn_losses = enc_attn_losses + enc_aux_loss
-    #         enc_ae_losses = enc_ae_losses + enc_ae_loss
-    #     # here we have latents
-    #     # TODO compress and decompress
-    #     # here we have latents
-    #     exit()
-    #     for latent in latents:
-    #         print("BAU")
-    #     output, dec_aux_loss, dec_ae_loss = self.decode(latents, src)
-    #     aux_loss = (enc_aux_loss + dec_aux_loss) / 2
-    #     ae_loss = (enc_ae_loss + dec_ae_loss) / 2
-    #     return output, aux_loss, ae_loss
 
     def encode(self, bar, mems, cmems):
         d_z, d_mem, d_cmem, d_l, d_ae = self.drums_encoder(bar[0, :, :], mems[0, :, :, :, :], cmems[0, :, :, :, :])
@@ -146,7 +121,6 @@ class Encoder(nn.Module):
         self.pad_token = pad_token
         self.d_model = d_model
         self.compress_bar = nn.Linear(d_model*bar_len, d_model)
-        # self.compress_track = nn.Linear(d_model*max_bars, d_model*4)  # TODO parametrize
 
     def forward(self, bar, mems, cmems):
         n_batches, bar_len = bar.shape

@@ -209,7 +209,8 @@ class NoteRepresentationManager:
                     note = muspy.Note(notes[0] + time - self.time_first_token,
                                       notes[1] - self.pitch_first_token,
                                       notes[2] - self.duration_first_token,
-                                      self.min_max_scaling(notes[3], self.velocities_compat, self.velocities_total))
+                                      self.min_max_scaling(notes[3] - self.velocity_first_token, self.velocities_compat,
+                                                           self.velocities_total))
                     track.append(note)
                     notes = notes[4:]
                 elif notes[0] == self.bar_token:  # if it is a bar
@@ -223,7 +224,8 @@ class NoteRepresentationManager:
                     music.time_signatures.append(muspy.TimeSignature(time=time, numerator=n, denominator=d))
                     notes = notes[1:]
                 elif self.tempos_first_token <= notes[0] < self.tempos_first_token + self.tempos_compat[1]+1:  # tempo
-                    tempo = self.min_max_scaling(notes[0], self.tempos_compat, self.tempos_total)
+                    tempo = self.min_max_scaling(notes[0] - self.tempos_first_token,
+                                                 self.tempos_compat,  self.tempos_total)
                     music.tempos.append(muspy.Tempo(time=time, qpm=tempo))
                     notes = notes[1:]
                 else:  # unknown combination, just skip (maybe undertrained model)

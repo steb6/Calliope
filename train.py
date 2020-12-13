@@ -77,55 +77,51 @@ class Trainer:
         for count, src in enumerate(loader):
             src = np.swapaxes(src, 0, 2)  # swap batch, tracks -> tracks, batch
             bars = torch.LongTensor(src.long()).to(self.device)
-            # Step
+            # Step  # TODO parametrize
             n_bars, n_tracks, n_batches, n_toks = bars.shape
             e_mems = torch.empty(n_tracks, 2, n_batches, 0, 32, dtype=torch.float32, device=bars.device)
             e_cmems = torch.empty(n_tracks, 2, n_batches, 0, 32, dtype=torch.float32, device=bars.device)
             d_mems = torch.empty(n_tracks, 2, n_batches, 0, 32, dtype=torch.float32, device=bars.device)
             d_cmems = torch.empty(n_tracks, 2, n_batches, 0, 32, dtype=torch.float32, device=bars.device)
-            latents = []
-            e_attn_losses = torch.tensor(0., requires_grad=True, device=bars.device, dtype=torch.float32)
-            e_ae_losses = torch.tensor(0., requires_grad=True, device=bars.device, dtype=torch.float32)
-            d_attn_losses = torch.tensor(0., requires_grad=True, device=bars.device, dtype=torch.float32)
-            d_ae_losses = torch.tensor(0., requires_grad=True, device=bars.device, dtype=torch.float32)
+
+            losses = []
+            e_attn_losses = []
+            e_ae_losses = []
+            d_attn_losses = []
+            d_ae_losses = []
+
             for bar in bars:
                 n_tokens = np.count_nonzero(bar.cpu())
                 if n_tokens == 0:
                     continue
                 latent, e_mems, e_cmems, e_attn_loss, e_ae_loss = self.model.encode(bar, e_mems, e_cmems)
                 out, d_mems, d_cmems, d_attn_loss, d_ae_loss = self.model.decode(latent, bar, d_mems, d_cmems)
-                # e_attn_losses = e_attn_losses + e_attn_loss
-                # e_ae_losses = e_ae_losses + e_ae_loss
-                # d_attn_losses = d_attn_losses + d_attn_loss
-                # d_ae_losses = d_ae_losses + d_ae_loss
+
                 loss = self.loss_computer(out, bar[:, :, :], n_tokens)  # TODO skip first elem of each bars>
                 if self.optimizer is not None:
                     self.optimizer.zero_grad()
                     (loss + e_attn_loss + e_ae_loss + d_attn_loss + d_attn_loss).backward()
                     self.optimizer.step()
-                print("{}% Mini-batch: loss: {:.4f}, e_attn loss: {:.4f}, e_ae loss: {:.4f},"
-                      "d_attn loss: {:.4f}, d_ae loss: {:.4f}".format(
-                    0, loss, e_attn_loss, e_ae_loss, d_attn_loss, d_ae_loss, end="\n"))
 
-                # latents.append(latents)
-                # enc_attn_losses = enc_attn_losses + aux_loss
-                # enc_ae_losses = enc_ae_losses + ae_loss
+                losses.append(loss)
+                e_attn_losses.append(e_attn_loss)
+                e_ae_losses.append(e_ae_loss)
+                d_attn_losses.append(d_attn_loss)
+                d_ae_losses.append(d_ae_loss)
 
+            loss_avg = sum(losses)/len(losses)
+            e_attn_loss_avg = sum(e_attn_losses)/len(e_attn_losses)
+            e_ae_loss_avg = sum(e_ae_losses)/len(e_ae_losses)
+            d_attn_loss_avg = sum(d_attn_losses)/len(d_attn_losses)
+            d_ae_loss_avg = sum(d_ae_losses)/len(d_ae_losses)
 
+            print("{:.1f}% Mini-batch: loss: {:.4f}, e_attn loss: {:.4f}, e_ae loss: {:.4f},"
+                  " d_attn loss: {:.4f}, d_ae loss: {:.4f}".format(
+                   (count/length)*100, loss_avg, e_attn_loss_avg, e_ae_loss_avg, d_attn_loss_avg, d_ae_loss_avg, end="\n"))
 
-            # print("out: ", out)
-            # loss = self.loss_computer(out, src[:, :, :, 1:], n_tokens)  # skip first elem of each bars
-            # if self.optimizer is not None:
-            #     (aux_loss + loss + ae_loss).backward()
-            #     self.optimizer.step()
-            #     # self.optimizer.optimizer.zero_grad()
-            #     self.optimizer.zero_grad()
-            # progress = int((count/length)*100)
-            # print("{}% Mini-batch: loss: {:.4f}, attn loss: {:.4f}, ae loss: {:.4f}".format(
-            #        progress, loss, aux_loss, ae_loss, end="\n"))
-            # total_loss += loss.item()
-            # total_aux_loss += aux_loss.item()
-            # total_ae_loss += ae_loss.item()
+            total_loss += loss_avg
+            total_aux_loss += (e_attn_loss_avg + d_attn_loss_avg) / 2
+            total_ae_loss += (e_ae_loss_avg + d_ae_loss_avg) / 2
 
             i += 1
         if i == 0:
@@ -161,7 +157,7 @@ class Trainer:
         ts_aux_losses = []
         tr_ae_losses = []
         ts_ae_losses = []
-        best_ts_loss = sys.float_info.max
+        best_ts_loss = 1000000
         dataset = SongIterator(dataset_path=self.dataset_path, test_size=self.test_size,
                                batch_size=self.batch_size, n_workers=self.n_workers)
         tr_loader, ts_loader = dataset.get_loaders()
@@ -204,9 +200,11 @@ class Trainer:
             assert sampled_dir
             # Load model
             model = torch.load(checkpoint_path)
+            print("Loaded model "+checkpoint_path)
         else:
             model = self.model
             sampled_dir = os.path.join(self.save_path, "sampled")
+        model.to(self.device)
         model.eval()
         # Create final directory
         if not os.path.exists(sampled_dir):
@@ -219,36 +217,40 @@ class Trainer:
         _, ts_loader = SongIterator(dataset_path=self.dataset_path, test_size=self.test_size,
                                     batch_size=self.batch_size, n_workers=self.n_workers).get_loaders()
         original_song = ts_loader.__iter__().next()
-        original_song = np.array(original_song)
-        src = np.swapaxes(original_song, 0, 1)
-        src = np.swapaxes(src, 1, 2)
-        src = torch.LongTensor(src.astype(np.long)).to(self.device)
-        out, _, _ = model.forward(src)
-        tracks_tokens = torch.max(out, dim=-2).indices
-        song = np.array(tracks_tokens.cpu()).swapaxes(0, 1)
-        song = song[0, :, :, :]
-        final = np.zeros((4, 100, 99), dtype=np.int16)
-        final[0] = song[:, :, 0]
-        final[1] = song[:, :, 1]
-        final[2] = song[:, :, 2]
-        final[3] = song[:, :, 3]
-        # song = np.swapaxes(song, 0, 1)
-        # song = np.swapaxes(song, 0, 3)
-        # song = np.reshape(song, (-1, 4))
-        # song = np.swapaxes(song, 0, 1)
-        final = note_manager.reconstruct_music(final)
-        final.write_midi(os.path.join(sampled_dir, "after.mid"))
-        # Experiment  # TODO save song in right format to be listened
-        # song_one = np.reshape(song[:, :, 0, :], (-1, 4)).swapaxes(0, 1)
-        original_song = original_song[0]
-        original_song = original_song.reshape(4, -1)
-        original_song = note_manager.reconstruct_music(original_song)
-        original_song.write_midi(os.path.join(sampled_dir, "before.mid"))
-        song_two = np.reshape(np.array(src[:, :, 0, :].cpu()), (-1, 4)).swapaxes(0, 1)
-        # created = note_manager.reconstruct_music(song_one)
-        # original = note_manager.reconstruct_music(song_two)
-        # created.write_midi(os.path.join(sampled_dir, "after.mid"))
-        # original.write_midi(os.path.join(sampled_dir, "before.mid"))
+        src = np.swapaxes(original_song, 0, 2)  # swap batch, tracks -> tracks, batch
+        src = torch.LongTensor(src.long()).to(self.device)
+        # Step  # TODO parametrize
+        n_bars, n_tracks, n_batches, n_toks = src.shape
+        e_mems = torch.empty(n_tracks, 2, n_batches, 0, 32, dtype=torch.float32, device=src.device)
+        e_cmems = torch.empty(n_tracks, 2, n_batches, 0, 32, dtype=torch.float32, device=src.device)
+        d_mems = torch.empty(n_tracks, 2, n_batches, 0, 32, dtype=torch.float32, device=src.device)
+        d_cmems = torch.empty(n_tracks, 2, n_batches, 0, 32, dtype=torch.float32, device=src.device)
+        outs = []
+        for bar in src:
+            n_tokens = np.count_nonzero(bar.cpu())
+            if n_tokens == 0:
+                continue
+            latent, e_mems, e_cmems, e_attn_loss, e_ae_loss = model.encode(bar, e_mems, e_cmems)
+            out, d_mems, d_cmems, d_attn_loss, d_ae_loss = model.decode(latent, bar, d_mems, d_cmems)
+            out = torch.max(out, dim=-2).indices
+            outs.append(out)
+
+        outs = torch.stack(outs)
+
+        src = src.cpu()
+        outs = outs.cpu()
+        outs = outs.transpose(0, 1)  # invert bar and batch
+        outs = outs.transpose(0, -1)  # invert batch and instruments
+        outs = outs[:, :, :, 0]  # take first song of batch
+        src = src.transpose(0, 1)
+        src = src.transpose(-2, -1)
+        src = src[:, :, :, 0]
+
+        original = note_manager.reconstruct_music(src.reshape(4, -1).numpy())
+        reconstructed = note_manager.reconstruct_music(outs.reshape(4, -1).numpy())
+        reconstructed.write_midi(os.path.join(sampled_dir, "reconstructed.mid"))
+        original.write_midi(os.path.join(sampled_dir, "original.mid"))
+
         print("Songs generated in " + sampled_dir)
 
 
@@ -257,8 +259,8 @@ if __name__ == "__main__":
     set_freer_gpu()
     notes = NoteRepresentationManager(**config["tokens"], **config["data"], **config["paths"])
 
-    # shutil.rmtree(config["paths"]["dataset_path"], ignore_errors=True)
-    # notes.convert_dataset()
+    shutil.rmtree(config["paths"]["dataset_path"], ignore_errors=True)
+    notes.convert_dataset()
 
     m = TransformerAutoencoder(**config["model"])
 
