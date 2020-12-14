@@ -137,24 +137,12 @@ class Encoder(nn.Module):
             new_cmem.append(new_memories[1])
             attn_losses = attn_losses + attn_loss
             ae_losses = ae_losses + ae_loss
-                # aux_loss = aux_loss + layer_loss
-            # bar = bar.reshape(n_batch, self.d_model * n_tok)
-            # bar = self.compress_bar(bar)
-            # latents.append(bar)
-            # mems = torch.stack(bar_mems)
-            # cmems = torch.stack(bar_cmems)
         mems = torch.stack(new_mem)
         cmems = torch.stack(new_cmem)
         bar = bar.reshape(n_batches, bar_len*self.d_model)
         bar = self.compress_bar(bar)
-        # latents = torch.stack(latents)
-        # latents = latents.transpose(0, 1)
-        # latents = latents.reshape(n_batch, self.d_model*n_bar)
-        # latents = self.compress_track(latents)
         attn_loss = attn_losses / self.N  # normalize w.r.t number of layers
-        # attn_loss = attn_loss / n_bar  # normalize w.r.t. number of bars
         ae_loss = ae_losses / self.N  # normalize w.r.t number of layers
-        # ae_loss = ae_loss / n_bar  # normalize w.r.t. number of bars
         return bar, mems, cmems, attn_loss, ae_loss
 
 
@@ -171,13 +159,11 @@ class Decoder(nn.Module):
         self.d_model = d_model
         self.max_bars = max_bars
         self.decompress_bar = nn.Linear(d_model, d_model*seq_len)
-        # self.decompress_track = nn.Linear(d_model*4, d_model*max_bars)  # TODO parametrize
 
     def forward(self, latent, bar, mems, cmems):
         n_batches, bar_len = bar.shape
         latent = self.decompress_bar(latent)
         latent = latent.reshape(n_batches, bar_len, self.d_model)
-
         attn_losses = torch.tensor(0., requires_grad=True, device=bar.device, dtype=torch.float32)
         ae_losses = torch.tensor(0., requires_grad=True, device=bar.device, dtype=torch.float32)
         input_mask = bar != self.pad_token
@@ -191,50 +177,11 @@ class Decoder(nn.Module):
             new_cmem.append(new_memories[1])
             attn_losses = attn_losses + attn_loss
             ae_losses = ae_losses + ae_loss
-
         mems = torch.stack(new_mem)
         cmems = torch.stack(new_cmem)
-
         attn_losses = attn_losses / self.N  # normalize w.r.t number of layers
         ae_losses = ae_losses / self.N  # normalize w.r.t number of layers
-
         return latent, mems, cmems, attn_losses, ae_losses
-
-
-
-        # outs = []
-        # n_bar, n_batch, n_tok = bars.shape
-        # mems = torch.empty(self.N, n_batch, 0, self.d_model, **to(bars))
-        # cmems = torch.empty(self.N, n_batch, 0, self.d_model, **to(bars))
-        # latents = self.decompress_track(latents)
-        # latents = latents.reshape(n_batch, self.max_bars, self.d_model)
-        # latents = self.decompress_bar(latents)
-        # latents = latents.reshape(n_bar, n_batch, n_tok, self.d_model)
-        # attn_loss = torch.tensor(0., requires_grad=True, device=bars.device, dtype=torch.float32)
-        # ae_loss = torch.tensor(0., requires_grad=True, device=bars.device, dtype=torch.float32)
-        # for latent, bar in zip(latents, bars):
-        #     bar_mask = bar != self.pad_token
-        #     bar = self.embed(bar)
-        #     bar = self.position(bar)
-        #     bar_mems = []
-        #     bar_cmems = []
-        #     for layer, mem, cmem in zip(self.layers, mems, cmems):
-        #         latent, new_memories, attn_layer_loss, ae_layer_loss = layer(latent, bar, (mem, cmem), bar_mask)
-        #         bar_mems.append(new_memories[0])
-        #         bar_cmems.append(new_memories[1])
-        #         attn_loss = attn_loss + attn_layer_loss
-        #         ae_loss = ae_loss + ae_layer_loss
-        #         # aux_loss = aux_loss + layer_loss
-        #     latent = latent.reshape(n_batch, n_tok, self.d_model)
-        #     outs.append(latent)
-        #     mems = torch.stack(bar_mems)
-        #     cmems = torch.stack(bar_cmems)
-        # outs = torch.stack(outs)
-        # attn_loss = attn_loss / self.N  # normalize w.r.t number of layers
-        # attn_loss = attn_loss / n_bar  # normalize w.r.t. number of bars
-        # ae_loss = ae_loss / self.N  # normalize w.r.t number of layers
-        # ae_loss = ae_loss / n_bar  # normalize w.r.t. number of bars
-        # return outs, attn_loss, ae_loss
 
 
 class EncoderLayer(nn.Module):
@@ -386,8 +333,8 @@ class MemoryMultiHeadedAttention(nn.Module):
         compressed_mem = self.compress_mem_fn(old_mem)
         old_cmem, new_cmem = split_at_index(1, -self.cmem_len, torch.cat((cmem, compressed_mem), dim=1))
 
-        if not self.training:
-            return logits, Memory(new_mem, new_cmem), aux_loss, ae_loss
+        # if not self.training:  # TODO without this, it does not use memory in evaluating new song
+            # return logits, Memory(new_mem, new_cmem), aux_loss, ae_loss
 
         # calculate compressed memory auxiliary loss if training
 
@@ -522,23 +469,6 @@ class Generator(nn.Module):
         out_strings = F.log_softmax(self.proj_strings(x[:, :, :, 3]), dim=-1)
         out = torch.stack([out_drums, out_bass, out_guitar, out_strings], dim=-1)
         return out
-
-        # out_drums = []
-        # out_bass = []
-        # out_guitar = []
-        # out_strings = []
-        # for bar in x:
-        #     out_drums.append(F.log_softmax(self.proj_drums(bar[:, :, :, 0]), dim=-1))
-        #     out_bass.append(F.log_softmax(self.proj_bass(bar[:, :, :, 1]), dim=-1))
-        #     out_guitar.append(F.log_softmax(self.proj_guitar(bar[:, :, :, 2]), dim=-1))
-        #     out_strings.append(F.log_softmax(self.proj_strings(bar[:, :, :, 3]), dim=-1))
-        #     # at the end, for each time step we have one-hot of token
-        # out_drums = torch.stack(out_strings)
-        # out_bass = torch.stack(out_bass)
-        # out_guitar = torch.stack(out_guitar)
-        # out_strings = torch.stack(out_strings)
-        # out = torch.stack([out_drums, out_bass, out_guitar, out_strings], dim=-1)
-        # return out
 
 
 class ConvCompress(nn.Module):

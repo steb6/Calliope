@@ -14,6 +14,7 @@ from create_dataset import NoteRepresentationManager
 import shutil
 import sys
 import glob
+import wandb
 
 
 # TO COPY: scp -r C:\Users\berti\PycharmProjects\MusAE berti@131.114.137.168:
@@ -29,7 +30,7 @@ import glob
 class Trainer:
     def __init__(self, save_path=None, pad_token=None, device=None, dataset_path=None, test_size=None,
                  batch_size=None, n_workers=None, vocab_size=None, n_epochs=None, model_name="checkpoint",
-                 plot_name="plot", model=None, max_bars=None, label_smoothing=None):
+                 plot_name="plot", model=None, max_bars=None, label_smoothing=None, config=config):
         self.epoch = 0
         self.save_path = save_path
         self.model = None
@@ -48,6 +49,7 @@ class Trainer:
         self.model = model
         self.max_bars = max_bars
         self.label_smoothing = label_smoothing
+        self.config = config
 
     def plot(self, tr, ts, tr_aux, ts_aux, tr_ae, ts_ae, plot_path):
         if self.epoch == 0:
@@ -90,7 +92,7 @@ class Trainer:
             d_attn_losses = []
             d_ae_losses = []
 
-            for bar in bars:
+            for bar in tqdm(bars, leave=True, position=0):
                 n_tokens = np.count_nonzero(bar.cpu())
                 if n_tokens == 0:
                     continue
@@ -103,11 +105,14 @@ class Trainer:
                     (loss + e_attn_loss + e_ae_loss + d_attn_loss + d_attn_loss).backward()
                     self.optimizer.step()
 
-                losses.append(loss)
-                e_attn_losses.append(e_attn_loss)
-                e_ae_losses.append(e_ae_loss)
-                d_attn_losses.append(d_attn_loss)
-                d_ae_losses.append(d_ae_loss)
+                wandb.log({"loss": loss, "encoder attention loss": e_attn_loss, "encoder autoencoder loss": e_ae_loss,
+                           "decoder attention loss": d_attn_loss, "decoder autoencoder loss": d_ae_loss})
+
+                losses.append(loss.item())
+                e_attn_losses.append(e_attn_loss.item())
+                e_ae_losses.append(e_ae_loss.item())
+                d_attn_losses.append(d_attn_loss.item())
+                d_ae_losses.append(d_ae_loss.item())
 
             loss_avg = sum(losses)/len(losses)
             e_attn_loss_avg = sum(e_attn_losses)/len(e_attn_losses)
@@ -161,6 +166,10 @@ class Trainer:
         dataset = SongIterator(dataset_path=self.dataset_path, test_size=self.test_size,
                                batch_size=self.batch_size, n_workers=self.n_workers)
         tr_loader, ts_loader = dataset.get_loaders()
+        wandb.login()
+        wandb.init(project="MusAE", config=self.config)
+        config = wandb.config
+        wandb.watch(self.model)
         # Train
         for self.epoch in range(self.n_epochs):
             # print("Epoch ", epoch, " over ", n_epochs)
@@ -267,6 +276,7 @@ if __name__ == "__main__":
     trainer = Trainer(model=m,
                       pad_token=config["tokens"]["pad_token"],
                       dataset_path=config["paths"]["dataset_path"],
-                      **config["train"])
+                      **config["train"],
+                      config=config)
     trainer.train()
     trainer.generate(note_manager=notes)
