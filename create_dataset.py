@@ -237,6 +237,23 @@ class NoteRepresentationManager:
             music.time_signatures.append(muspy.TimeSignature(time=0, numerator=4, denominator=4))
         return music
 
+    @staticmethod
+    def cut_song(song, end_time):
+        cut_song = muspy.Music()
+        for track in song.tracks:
+            cut_track = muspy.Track(program=track.program, is_drum=track.is_drum)
+            for note in track.notes:
+                if note.time < end_time:
+                    cut_track.notes.append(note)
+            cut_song.tracks.append(cut_track)
+        for tempo in song.tempos:
+            if tempo.time < end_time:
+                cut_song.tempos.append(tempo)
+        for signature in song.time_signatures:
+            if signature.time < end_time:
+                cut_song.time_signatures.append(signature)
+        return cut_song
+
     def convert_dataset(self):
         """
         Given a dataset path and a destination path, it walks all directories of dataset

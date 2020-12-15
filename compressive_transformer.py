@@ -63,6 +63,7 @@ class TransformerAutoencoder(nn.Module):
         self.d_model = d_model
         self.seq_len = seq_len
         self.max_bars = max_bars
+        self.pad_token = pad_token
 
         for p in self.parameters():
             if p.dim() > 1:

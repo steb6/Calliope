@@ -29,7 +29,9 @@ class SimpleLossCompute:
         loss = (loss_drums + loss_bass + loss_guitar + loss_strings) / norm  # mean loss per token
         loss = loss.mean(dim=0)  # mean loss per batch sample
 
-        return loss
+        loss_items = (loss_drums.item(), loss_bass.item(), loss_guitar.item(), loss_strings.item())
+
+        return loss, loss_items
 
 
         # y_drums = y[:, :, 0]

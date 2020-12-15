@@ -12,8 +12,8 @@ def get_freer_gpu():
 
 def set_freer_gpu():
     if os.getcwd() == 'C:\\Users\\berti\\PycharmProjects\\MusAE':
-        os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-        os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+        # os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+        # os.environ["CUDA_VISIBLE_DEVICES"] = "0"
         print("Local execution")
     else:
         os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
@@ -41,7 +41,7 @@ config = {
         "d_model": 32,
         "n_tracks": 4,
         "heads": 4,
-        "d_ff": 256,
+        "d_ff": 128,
         "layers": 2,
         "dropout": 0.1,
         "mem_len": max_bar_length,  # 512, before was 512
