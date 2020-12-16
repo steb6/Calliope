@@ -6,7 +6,7 @@ from tqdm.auto import tqdm
 from compressive_transformer import TransformerAutoencoder
 from config import config, set_freer_gpu
 from iterate_dataset import SongIterator
-from optimizer import NoamOpt
+from optimizer import CTOpt
 from label_smoother import LabelSmoothing
 from loss_computer import SimpleLossCompute
 import numpy as np
@@ -25,7 +25,7 @@ import wandb
 # TO SEE SESSION: tmux ls
 # TO DETACH ctrl+b d
 # TO VISUALIZE GPUs STATUS: nvidia-smi
-# TO GET RESULTS: scp -r berti@131.114.137.168:MusAE/training* C:\Users\berti\PycharmProjects\MusAE\remote_results
+# TO GET RESULTS: scp -r berti@131.114.137.168:MusAE/2020* C:\Users\berti\PycharmProjects\MusAE\remote_results
 
 class Trainer:
     def __init__(self, save_path=None, device=None, dataset_path=None, test_size=None,
@@ -48,6 +48,7 @@ class Trainer:
         self.max_bars = max_bars
         self.label_smoothing = label_smoothing
         self.config = config
+        self.optimizer = None
 
     def plot(self, tr, ts, tr_aux, ts_aux, tr_ae, ts_ae, plot_path):
         if self.epoch == 0:
@@ -97,10 +98,11 @@ class Trainer:
                 out, d_mems, d_cmems, d_attn_loss, d_ae_loss = self.model.decode(latent, bar, d_mems, d_cmems)
 
                 loss, loss_items = self.loss_computer(out, bar[:, :, :], n_tokens)  # TODO skip first elem of each bars>
-                if self.optimizer is not None:
+                if self.model.training:
                     self.optimizer.zero_grad()
                     (loss + e_attn_loss + e_ae_loss + d_attn_loss + d_attn_loss).backward()
-                    self.optimizer.step()
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 0.1)
+                    self.optimizer.optimize()  # TODO add cosine decay and decreasing optimization updating
 
                 loss_drums, loss_bass, loss_guitar, loss_strings = loss_items
                 drums_losses.append(loss_drums)
@@ -160,7 +162,8 @@ class Trainer:
         os.mkdir(self.save_path)
         # Model
         self.model.to(self.device)
-        self.optimizer = torch.optim.Adam(self.model.parameters())  # TODO adjust following paper
+        # Optimizer
+        self.optimizer = CTOpt(torch.optim.Adam(self.model.parameters()), 1000, (1e-6, 1e-4))
         # Loss
         criterion = LabelSmoothing(size=self.vocab_size, padding_idx=self.model.pad_token,
                                    smoothing=self.label_smoothing, device=self.device)
@@ -291,5 +294,5 @@ if __name__ == "__main__":
 # print(parameter[0], " ", parameter[1].shape)
 
 # Optimizer
-# self.optimizer = NoamOpt(config["model"]["d_model"], 1, 2000,
+# self.opt = NoamOpt(config["model"]["d_model"], 1, 2000,
 #                          torch.optim.Adam(self.model.parameters(), lr=0, betas=(0.9, 0.98), eps=1e-9))
