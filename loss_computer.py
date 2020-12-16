@@ -26,10 +26,13 @@ class SimpleLossCompute:
         loss_strings = self.smooth_label(x_strings.contiguous().view(-1, x_strings.size(-1)),
                                          y_strings.contiguous().view(-1))
 
-        loss = (loss_drums + loss_bass + loss_guitar + loss_strings) / norm  # mean loss per token
+        loss = (loss_drums + loss_bass + loss_guitar + loss_strings) / norm[0]  # mean loss per token
         loss = loss.mean(dim=0)  # mean loss per batch sample
 
-        loss_items = (loss_drums.item(), loss_bass.item(), loss_guitar.item(), loss_strings.item())
+        loss_items = (loss_drums.item()/norm[1] if norm[1] != 0 else -1,
+                      loss_bass.item()/norm[2] if norm[2] != 0 else -1,
+                      loss_guitar.item()/norm[3] if norm[3] != 0 else -1,
+                      loss_strings.item()/norm[4]if norm[4] != 0 else -1)
 
         return loss, loss_items
 
