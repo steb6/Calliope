@@ -15,6 +15,7 @@ import shutil
 import sys
 import glob
 import wandb
+from midi_converter import midi_to_wav
 
 
 # TO COPY: scp -r C:\Users\berti\PycharmProjects\MusAE\*.py berti@131.114.137.168:MusAE
@@ -80,7 +81,7 @@ class Trainer:
             latent, e_mems, e_cmems, e_attn_loss, e_ae_loss = self.model.encode(bar, e_mems, e_cmems)
             out, d_mems, d_cmems, d_attn_loss, d_ae_loss = self.model.decode(latent, bar, d_mems, d_cmems)
 
-            loss, loss_items = self.loss_computer(out, bar[:, :, :], norm)  # TODO skip first elem of each bars>
+            loss, loss_items = self.loss_computer(out, bar[:, :, 1:], norm)  # TODO skip first elem of each bars>
             if self.model.training:
                 self.optimizer.zero_grad()
                 (loss + e_attn_loss + e_ae_loss + d_attn_loss + d_attn_loss).backward()
@@ -163,6 +164,7 @@ class Trainer:
         desc = "Train epoch " + str(self.epoch) + ", mb " + str(0)
         train_progress = tqdm(total=self.mb_before_eval, position=0, leave=True, desc=desc)
         trained = False
+        it_counter = 0
         for self.epoch in range(self.n_epochs):  # repeat for each epoch
             # print("Epoch ", self.epoch)
             for it, src in enumerate(tr_loader):  # repeat for each mini-batch
@@ -171,6 +173,7 @@ class Trainer:
                     ts_losses = []
                     self.model.eval()
                     desc = "Eval epoch " + str(self.epoch) + ", mb " + str(it)
+                    test = None
                     for test in tqdm(ts_loader, position=0, leave=True, desc=desc):
                         ts_loss = self.run_mb(test)
                         ts_losses.append(ts_loss)
@@ -191,18 +194,21 @@ class Trainer:
                         torch.save(self.model, new_model)
                         print("Model saved")
                     note_manager = NoteRepresentationManager(**config["tokens"], **config["data"], **config["paths"])
-                    original, reconstructed = self.generate(self.model, note_manager)
+                    original, reconstructed = self.generate(self.model, test, note_manager)  # TODO ATTENTION
                     prefix = "epoch_" + str(self.epoch) + "_mb_" + str(it)
-                    original.write_midi(os.path.join(wandb.run.dir, prefix + "_original.mid"))
+                    original.write_midi(os.path.join(wandb.run.dir, prefix + "_original.mid"))  # TODO write as wav
                     reconstructed.write_midi(os.path.join(wandb.run.dir, prefix+"_reconstructed.mid"))
-
-                    wandb.log({"epoch " + str(self.epoch):
-                                   [wandb.Audio(os.path.join(wandb.run.dir, prefix + "_original.mid"),
-                                                caption=prefix + "_original", sample_rate=32),
-                                    wandb.Audio(os.path.join(wandb.run.dir, prefix + "_reconstructed.mid"),
-                                                caption=prefix + "_reconstructed", sample_rate=32)
+                    midi_to_wav(os.path.join(wandb.run.dir, prefix + "_original.mid"),
+                                os.path.join(wandb.run.dir, prefix + "_original.wav"))
+                    midi_to_wav(os.path.join(wandb.run.dir, prefix + "_reconstructed.mid"),
+                                os.path.join(wandb.run.dir, prefix + "_reconstructed.wav"))
+                    wandb.log({str(it_counter):
+                                   [wandb.Audio(os.path.join(wandb.run.dir, prefix + "_original.wav"),
+                                                caption="original", sample_rate=32),
+                                    wandb.Audio(os.path.join(wandb.run.dir, prefix + "_reconstructed.wav"),
+                                                caption="reconstructed", sample_rate=32)
                                     ]})
-
+                    it_counter += 1
                     # wandb.save(os.path.join(wandb.run.dir, prefix + "_original.mid"))
                     # wandb.save(os.path.join(wandb.run.dir, prefix + "_reconstructed.mid"))
                     self.model.train()
@@ -212,7 +218,6 @@ class Trainer:
                 self.log_to_wandb(tr_losses)
                 train_progress.update()
                 trained = True
-                # print(it)# wandb.Audio  # TODO try log audio
 
     def get_memories(self):
         a = self.model.n_tracks
@@ -226,12 +231,9 @@ class Trainer:
         d_cmems = torch.empty(a, b, c, d, e, dtype=torch.float32, device=self.device)
         return e_mems, e_cmems, d_mems, d_cmems
 
-    def generate(self, model, note_manager=None):
+    def generate(self, model, original_song, note_manager=None):
         model.to(self.device)
         model.eval()
-        _, ts_loader = SongIterator(dataset_path=self.dataset_path, test_size=self.test_size,
-                                    batch_size=self.batch_size, n_workers=self.n_workers).get_loaders()
-        original_song = ts_loader.__iter__().next()
         src = np.swapaxes(original_song, 0, 2)  # swap batch, tracks -> tracks, batch
         src = torch.LongTensor(src.long()).to(self.device)
         e_mems, e_cmems, d_mems, d_cmems = self.get_memories()
@@ -263,8 +265,8 @@ if __name__ == "__main__":
     set_freer_gpu()
     notes = NoteRepresentationManager(**config["tokens"], **config["data"], **config["paths"])
 
-    # shutil.rmtree(config["paths"]["dataset_path"], ignore_errors=True)
-    # notes.convert_dataset()
+    shutil.rmtree(config["paths"]["dataset_path"], ignore_errors=True)
+    notes.convert_dataset()
 
     m = TransformerAutoencoder(**config["model"])
 

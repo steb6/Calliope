@@ -8,7 +8,6 @@ from functools import partial
 from collections import namedtuple
 
 Memory = namedtuple('Memory', ['mem', 'compressed_mem'])
-# Loss = namedtuple('Loss', ['attn_loss', 'ae_loss'])
 
 
 class TransformerAutoencoder(nn.Module):
@@ -121,9 +120,10 @@ class Encoder(nn.Module):
         self.N = N
         self.pad_token = pad_token
         self.d_model = d_model
-        self.compress_bar = nn.Linear(d_model*bar_len, d_model)
+        self.compress_bar = nn.Linear(d_model*(bar_len-1), d_model)  # TODO make it better
 
     def forward(self, bar, mems, cmems):
+        bar = bar[:, 1:]
         n_batches, bar_len = bar.shape
         attn_losses = torch.tensor(0., requires_grad=True, device=bar.device, dtype=torch.float32)
         ae_losses = torch.tensor(0., requires_grad=True, device=bar.device, dtype=torch.float32)
@@ -159,9 +159,10 @@ class Decoder(nn.Module):
         self.N = N
         self.d_model = d_model
         self.max_bars = max_bars
-        self.decompress_bar = nn.Linear(d_model, d_model*seq_len)
+        self.decompress_bar = nn.Linear(d_model, d_model*(seq_len-1))
 
     def forward(self, latent, bar, mems, cmems):
+        bar = bar[:, :-1]  # skip first because we are in the decoder
         n_batches, bar_len = bar.shape
         latent = self.decompress_bar(latent)
         latent = latent.reshape(n_batches, bar_len, self.d_model)
