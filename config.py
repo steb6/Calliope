@@ -3,25 +3,6 @@ import numpy as np
 
 remote = os.getcwd() != 'C:\\Users\\berti\\PycharmProjects\\MusAE'
 
-
-def get_freer_gpu():
-    os.system('nvidia-smi -q -d Memory |grep -A4 GPU|grep Free >tmp')
-    memory_available = [int(x.split()[2]) for x in open('tmp', 'r').readlines()]
-    return np.argmax(memory_available)
-
-
-def set_freer_gpu():
-    if os.getcwd() == 'C:\\Users\\berti\\PycharmProjects\\MusAE':
-        # os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-        # os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-        print("Local execution")
-    else:
-        os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-        gpu = str(get_freer_gpu())
-        os.environ["CUDA_VISIBLE_DEVICES"] = gpu
-        print("Remote execution on gpu ", gpu)
-
-
 max_bars = 100
 max_bar_length = 200
 vocab_size = 21 + 128*4 + 32*2  # TODO check  # tokens (21) + time*2, pitch, duration (128) + velocities, tempos (32)
@@ -30,12 +11,15 @@ config = {
     "train": {
         "vocab_size": vocab_size,
         "device": "cuda",
-        "batch_size": 32,
+        "batch_size": 2,
         "test_size": 0.1,
         "n_workers": 0,
         "n_epochs": 250,
         "label_smoothing": 0.1,
         "mb_before_eval": 10,
+        "warmup_steps": 100,
+        "lr_min": 1e-6,
+        "lr_max": 1e-4,
     },
     "model": {
         "vocab_size": vocab_size,  # this depends by config.tokens
@@ -57,7 +41,7 @@ config = {
         "max_bar_length": max_bar_length,
         "use_velocity": True,
         "reconstruct_programs": [0, 0, 32, 40],
-        "early_stop": 1000,  # set this to 0 to disable early stop
+        "early_stop": 100,  # set this to 0 to disable early stop
         "resolution": 24,
         "tempo": 120,
         "velocities_total": (0, 127),  # using min max scaling, limits are inclusive
@@ -71,7 +55,7 @@ config = {
         "sos_token": 2,
         "eos_token": 3,
         "sob_token": 4,
-        "eob_token" : 5,
+        "eob_token": 5,
         # Time signature
         "two_two_token": 6,
         # x/4
@@ -108,3 +92,19 @@ config = {
         "model_name": "checkpoint_epoch",
     }
 }
+
+
+def get_freer_gpu():
+    os.system('nvidia-smi -q -d Memory |grep -A4 GPU|grep Free >tmp')
+    memory_available = [int(x.split()[2]) for x in open('tmp', 'r').readlines()]
+    return np.argmax(memory_available)
+
+
+def set_freer_gpu():
+    if remote:
+        os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+        gpu = str(get_freer_gpu())
+        os.environ["CUDA_VISIBLE_DEVICES"] = gpu
+        print("Remote execution on gpu ", gpu)
+    else:
+        print("Local execution")

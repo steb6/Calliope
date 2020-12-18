@@ -20,8 +20,6 @@ class LabelSmoothing(nn.Module):
     def forward(self, x, target):
         assert x.size(1) == self.size
         true_dist = x.data.clone()
-        # create a tensor with size (597, 1292) and fill it with this value
-        # size is token dimension, smoothing is 0.1
         true_dist.fill_(self.smoothing / (self.size - 2))
         # unsqueeze add a dimension in the specified position
         # put self.confidence value (0.9) in true dist in the positions indicated by target
@@ -35,4 +33,4 @@ class LabelSmoothing(nn.Module):
         if mask.dim() > 0:
             true_dist.index_fill_(0, mask.squeeze(), 0.0)
         self.true_dist = true_dist
-        return self.criterion(x, true_dist.to(self.device))  # TODO mettere a posto in caso di multi gpu
+        return self.criterion(x, true_dist.to(self.device))

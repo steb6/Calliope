@@ -1,42 +1,25 @@
-import matplotlib.pyplot as plt
 import os
 import torch
 from datetime import datetime
 from tqdm.auto import tqdm
-from compressive_transformer import TransformerAutoencoder
-from config import config, set_freer_gpu
+from config import config, remote
 from iterate_dataset import SongIterator
 from optimizer import CTOpt
 from label_smoother import LabelSmoothing
 from loss_computer import SimpleLossCompute
 import numpy as np
 from create_dataset import NoteRepresentationManager
-import shutil
-import sys
 import glob
 import wandb
 from midi_converter import midi_to_wav
 
 
-# TO COPY: scp -r C:\Users\berti\PycharmProjects\MusAE\*.py berti@131.114.137.168:MusAE
-# TO CONNECT: ssh berti@131.114.137.168
-# TO ATTACH TO TMUX: tmux attach -t Training
-# TO RESIZE TMUX: tmux attach -d -t Training
-# TO SWITCH WINDOW ctrl+b 0-1-2
-# TO SEE SESSION: tmux ls
-# TO DETACH ctrl+b d
-# TO VISUALIZE GPUs STATUS: nvidia-smi
-# TO GET RESULTS: scp -r berti@131.114.137.168:MusAE/2020* C:\Users\berti\PycharmProjects\MusAE\remote_results
-
 class Trainer:
     def __init__(self, save_path=None, device=None, dataset_path=None, test_size=None,
                  batch_size=None, n_workers=None, vocab_size=None, n_epochs=None, model_name="checkpoint",
                  plot_name="plot", model=None, max_bars=None, label_smoothing=None, config=config,
-                 mb_before_eval=None):
-        self.epoch = 0
+                 mb_before_eval=None, warmup_steps=None, lr_min=None, lr_max=None):
         self.save_path = save_path
-        self.model = None
-        self.loss_computer = None
         self.device = device
         self.dataset_path = dataset_path
         self.test_size = test_size
@@ -50,10 +33,36 @@ class Trainer:
         self.max_bars = max_bars
         self.label_smoothing = label_smoothing
         self.config = config
-        self.optimizer = None
         self.mb_before_eval = mb_before_eval
+        self.warmup_steps = warmup_steps
+        self.lr_min = lr_min
+        self.lr_max = lr_max
+        self.epoch = 0
+        self.model = model
+        self.loss_computer = None
+        self.optimizer = None
+
+    def get_memories(self):
+        """
+        :return: 4 empty memories with dimension taken from attributes of the self class
+        """
+        a = self.model.n_tracks
+        b = self.model.layers
+        c = self.batch_size
+        d = 0  # initial memories dimension
+        e = self.model.d_model
+        e_mems = torch.empty(a, b, c, d, e, dtype=torch.float32, device=self.device)
+        e_cmems = torch.empty(a, b, c, d, e, dtype=torch.float32, device=self.device)
+        d_mems = torch.empty(a, b, c, d, e, dtype=torch.float32, device=self.device)
+        d_cmems = torch.empty(a, b, c, d, e, dtype=torch.float32, device=self.device)
+        return e_mems, e_cmems, d_mems, d_cmems
 
     def run_mb(self, src):
+        """
+        It runs a mini-batch and return loss, if the model is in training it does also optimization
+        :param src: Tensor with shape (n_batch, time_steps)
+        :return: Tuple with total_loss, auxiliary_losses and instruments losses
+        """
         src = np.swapaxes(src, 0, 2)  # swap batch, tracks -> tracks, batch
         bars = torch.LongTensor(src.long()).to(self.device)
         e_mems, e_cmems, d_mems, d_cmems = self.get_memories()
@@ -67,7 +76,6 @@ class Trainer:
         guitar_losses = []
         strings_losses = []
 
-        # for bar in tqdm(bars, leave=True, position=0):
         for bar in bars:
             n_tokens = np.count_nonzero(bar.cpu())
             if n_tokens == 0:
@@ -81,7 +89,7 @@ class Trainer:
             latent, e_mems, e_cmems, e_attn_loss, e_ae_loss = self.model.encode(bar, e_mems, e_cmems)
             out, d_mems, d_cmems, d_attn_loss, d_ae_loss = self.model.decode(latent, bar, d_mems, d_cmems)
 
-            loss, loss_items = self.loss_computer(out, bar[:, :, 1:], norm)  # TODO skip first elem of each bars>
+            loss, loss_items = self.loss_computer(out, bar[:, :, 1:], norm)
             if self.model.training:
                 self.optimizer.zero_grad()
                 (loss + e_attn_loss + e_ae_loss + d_attn_loss + d_attn_loss).backward()
@@ -118,6 +126,11 @@ class Trainer:
         return losses
 
     def log_to_wandb(self, losses):
+        """
+        It logs to wandb the losses w.r.t. the model mode
+        :param losses: Tuple with the 9 losses
+        :return: Nothing
+        """
         mode = "train/" if self.model.training else "eval/"
         wandb.log({mode + "loss": losses[0],
                    mode + "encoder attention loss": losses[1],
@@ -129,35 +142,65 @@ class Trainer:
                    mode + "guitar loss": losses[7],
                    mode + "strings loss": losses[8]})
 
-    def train(self):
-        if not self.save_path:  # if no save path is defined (to default it is not)
-            timestamp = str(datetime.now())
-            timestamp = timestamp[:timestamp.index('.')]
-            timestamp = timestamp.replace(' ', '_').replace(':', '-')
-            # self.save_path = 'training_' + timestamp
-            self.save_path = timestamp
+    def generate(self, model, original_song, note_manager=None):
+        """
+        :param model: The trained model
+        :param original_song: Tensor with shape (n_bars, n_batch, timesteps)
+        :param note_manager: NoteManager class to reconstruct the song
+        :return: Music, Music: original Music and reconstructed Music
+        """
+        model.to(self.device)
+        model.eval()
+        src = np.swapaxes(original_song, 0, 2)  # swap batch, tracks -> tracks, batch
+        src = torch.LongTensor(src.long()).to(self.device)
+        e_mems, e_cmems, d_mems, d_cmems = self.get_memories()
+        outs = []
+        for bar in src:
+            n_tokens = np.count_nonzero(bar.cpu())
+            if n_tokens == 0:
+                continue
+            latent, e_mems, e_cmems, e_attn_loss, e_ae_loss = model.encode(bar, e_mems, e_cmems)
+            out, d_mems, d_cmems, d_attn_loss, d_ae_loss = model.decode(latent, bar, d_mems, d_cmems)
+            out = torch.max(out, dim=-2).indices
+            outs.append(out)
+        outs = torch.stack(outs)
+        src = src.cpu()
+        outs = outs.cpu()
+        outs = outs.transpose(0, 1)  # invert bar and batch
+        outs = outs.transpose(0, -1)  # invert batch and instruments
+        outs = outs[:, :, :, 0]  # take first song of batch
+        src = src.transpose(0, 1)
+        src = src.transpose(-2, -1)
+        src = src[:, :, :, 0]
+        original = note_manager.reconstruct_music(src.reshape(4, -1).numpy())
+        reconstructed = note_manager.reconstruct_music(outs.reshape(4, -1).numpy())  # flat bars
+        reconstructed = note_manager.cut_song(reconstructed, original.get_end_time())  # cut reconstructed song length
+        return original, reconstructed
 
+    def train(self):
+        # Create checkpoint folder
+        timestamp = str(datetime.now())
+        timestamp = timestamp[:timestamp.index('.')]
+        timestamp = timestamp.replace(' ', '_').replace(':', '-')
+        self.save_path = timestamp
         os.mkdir(self.save_path)
         # Model
         self.model.to(self.device)
         # Optimizer
-        self.optimizer = CTOpt(torch.optim.Adam(self.model.parameters()), 1000, (1e-6, 1e-4))
+        self.optimizer = CTOpt(torch.optim.Adam(self.model.parameters()), self.warmup_steps,
+                               (self.lr_min, self.lr_max))  # TODO add other
         # Loss
         criterion = LabelSmoothing(size=self.vocab_size, padding_idx=self.model.pad_token,
                                    smoothing=self.label_smoothing, device=self.device)
         criterion.to(self.device)
         self.loss_computer = SimpleLossCompute(criterion)
-        best_ts_loss = 1000000
+        # Dataset
         dataset = SongIterator(dataset_path=self.dataset_path, test_size=self.test_size,
                                batch_size=self.batch_size, n_workers=self.n_workers)
         tr_loader, ts_loader = dataset.get_loaders()
+        # Wandb
         wandb.login()
-        if os.getcwd() == 'C:\\Users\\berti\\PycharmProjects\\MusAE':
-            execution = "local"
-        else:
-            execution = "remote"
-        wandb.init(project="MusAE", config=self.config, name=execution + ' ' + self.save_path)
-        config = wandb.config
+        wandb.init(project="MusAE", config=self.config, name="remote" if remote else "local" + ' ' + self.save_path)
         wandb.watch(self.model)
         # Train
         self.model.train()
@@ -165,8 +208,8 @@ class Trainer:
         train_progress = tqdm(total=self.mb_before_eval, position=0, leave=True, desc=desc)
         trained = False
         it_counter = 0
+        best_ts_loss = 1000000
         for self.epoch in range(self.n_epochs):  # repeat for each epoch
-            # print("Epoch ", self.epoch)
             for it, src in enumerate(tr_loader):  # repeat for each mini-batch
                 if it % self.mb_before_eval == 0 and trained:
                     train_progress.close()
@@ -196,7 +239,7 @@ class Trainer:
                     note_manager = NoteRepresentationManager(**config["tokens"], **config["data"], **config["paths"])
                     original, reconstructed = self.generate(self.model, test, note_manager)  # TODO ATTENTION
                     prefix = "epoch_" + str(self.epoch) + "_mb_" + str(it)
-                    original.write_midi(os.path.join(wandb.run.dir, prefix + "_original.mid"))  # TODO write as wav
+                    original.write_midi(os.path.join(wandb.run.dir, prefix + "_original.mid"))
                     reconstructed.write_midi(os.path.join(wandb.run.dir, prefix+"_reconstructed.mid"))
                     midi_to_wav(os.path.join(wandb.run.dir, prefix + "_original.mid"),
                                 os.path.join(wandb.run.dir, prefix + "_original.wav"))
@@ -218,85 +261,3 @@ class Trainer:
                 self.log_to_wandb(tr_losses)
                 train_progress.update()
                 trained = True
-
-    def get_memories(self):
-        a = self.model.n_tracks
-        b = self.model.layers
-        c = self.batch_size
-        d = 0  # initial memories dimension
-        e = self.model.d_model
-        e_mems = torch.empty(a, b, c, d, e, dtype=torch.float32, device=self.device)
-        e_cmems = torch.empty(a, b, c, d, e, dtype=torch.float32, device=self.device)
-        d_mems = torch.empty(a, b, c, d, e, dtype=torch.float32, device=self.device)
-        d_cmems = torch.empty(a, b, c, d, e, dtype=torch.float32, device=self.device)
-        return e_mems, e_cmems, d_mems, d_cmems
-
-    def generate(self, model, original_song, note_manager=None):
-        model.to(self.device)
-        model.eval()
-        src = np.swapaxes(original_song, 0, 2)  # swap batch, tracks -> tracks, batch
-        src = torch.LongTensor(src.long()).to(self.device)
-        e_mems, e_cmems, d_mems, d_cmems = self.get_memories()
-        outs = []
-        for bar in src:
-            n_tokens = np.count_nonzero(bar.cpu())
-            if n_tokens == 0:
-                continue
-            latent, e_mems, e_cmems, e_attn_loss, e_ae_loss = model.encode(bar, e_mems, e_cmems)
-            out, d_mems, d_cmems, d_attn_loss, d_ae_loss = model.decode(latent, bar, d_mems, d_cmems)
-            out = torch.max(out, dim=-2).indices
-            outs.append(out)
-        outs = torch.stack(outs)
-        src = src.cpu()
-        outs = outs.cpu()
-        outs = outs.transpose(0, 1)  # invert bar and batch
-        outs = outs.transpose(0, -1)  # invert batch and instruments
-        outs = outs[:, :, :, 0]  # take first song of batch
-        src = src.transpose(0, 1)
-        src = src.transpose(-2, -1)
-        src = src[:, :, :, 0]
-        original = note_manager.reconstruct_music(src.reshape(4, -1).numpy())
-        reconstructed = note_manager.reconstruct_music(outs.reshape(4, -1).numpy())  # flat bars
-        reconstructed = note_manager.cut_song(reconstructed, original.get_end_time())  # cut reconstructed song length
-        return original, reconstructed
-
-
-if __name__ == "__main__":
-    set_freer_gpu()
-    notes = NoteRepresentationManager(**config["tokens"], **config["data"], **config["paths"])
-
-    shutil.rmtree(config["paths"]["dataset_path"], ignore_errors=True)
-    notes.convert_dataset()
-
-    m = TransformerAutoencoder(**config["model"])
-
-    trainer = Trainer(model=m,
-                      dataset_path=config["paths"]["dataset_path"],
-                      **config["train"],
-                      config=config,
-                      )
-    trainer.train()
-
-# TODO remove test
-# for parameter in self.model.named_parameters():
-# print(parameter[0], " ", parameter[1].shape)
-
-# Optimizer
-# self.opt = NoamOpt(config["model"]["d_model"], 1, 2000,
-#                          torch.optim.Adam(self.model.parameters(), lr=0, betas=(0.9, 0.98), eps=1e-9))
-
-    # def plot(self, tr, ts, tr_aux, ts_aux, tr_ae, ts_ae, plot_path):
-    #     if self.epoch == 0:
-    #         plt.figure()
-    #     plt.subplot(311)  # 3 rows and 1 column, first index
-    #     plt.plot(range(self.epoch + 1), tr, c="r", label="Training loss")
-    #     plt.plot(range(self.epoch + 1), ts, c="b", label="Testing loss")
-    #     plt.subplot(312)  # 3 rows and 1 column, second index
-    #     plt.plot(range(self.epoch + 1), tr_aux, c="r", label="Training aux loss")
-    #     plt.plot(range(self.epoch + 1), ts_aux, c="b", label="Testing aux loss")
-    #     plt.subplot(313)  # 3 rows and 1 column, third index
-    #     plt.plot(range(self.epoch + 1), tr_ae, c="r", label="Training auto-encoding loss")
-    #     plt.plot(range(self.epoch + 1), ts_ae, c="b", label="Testing auto-encoding loss")
-    #     plt.legend()
-    #     plt.savefig(plot_path)
-    #     plt.clf()
