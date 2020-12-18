@@ -17,9 +17,12 @@ config = {
         "n_epochs": 250,
         "label_smoothing": 0.1,
         "mb_before_eval": 10,
-        "warmup_steps": 100,
+        "warmup_steps": 1000,
         "lr_min": 1e-6,
         "lr_max": 1e-4,
+        "z_dim": 1024,
+        "mid_dim": 2048,
+        "max_bars": max_bars,
     },
     "model": {
         "vocab_size": vocab_size,  # this depends by config.tokens

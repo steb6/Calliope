@@ -12,13 +12,16 @@ from create_dataset import NoteRepresentationManager
 import glob
 import wandb
 from midi_converter import midi_to_wav
+import torch.nn.functional as F
+from aae import Q_net, P_net, D_net_gauss
+from torch.autograd import Variable
 
 
 class Trainer:
     def __init__(self, save_path=None, device=None, dataset_path=None, test_size=None,
                  batch_size=None, n_workers=None, vocab_size=None, n_epochs=None, model_name="checkpoint",
                  plot_name="plot", model=None, max_bars=None, label_smoothing=None, config=config,
-                 mb_before_eval=None, warmup_steps=None, lr_min=None, lr_max=None):
+                 mb_before_eval=None, warmup_steps=None, lr_min=None, lr_max=None, z_dim=None, mid_dim=None):
         self.save_path = save_path
         self.device = device
         self.dataset_path = dataset_path
@@ -41,6 +44,16 @@ class Trainer:
         self.model = model
         self.loss_computer = None
         self.optimizer = None
+        # Adversarial part
+        self.z_dim = z_dim
+        self.mid_dim = mid_dim
+        self.Q_net = None
+        self.P_net = None
+        self.D_net_gauss = None
+        self.optim_P = None
+        self.optim_Q_enc = None
+        self.optim_Q_gen = None
+        self.optim_D = None
 
     def get_memories(self):
         """
@@ -75,7 +88,7 @@ class Trainer:
         bass_losses = []
         guitar_losses = []
         strings_losses = []
-
+        latents = []
         for bar in bars:
             n_tokens = np.count_nonzero(bar.cpu())
             if n_tokens == 0:
@@ -87,6 +100,7 @@ class Trainer:
             norm = (n_tokens, n_tokens_drums, n_tokens_bass, n_tokens_guitar, n_tokens_strings)
 
             latent, e_mems, e_cmems, e_attn_loss, e_ae_loss = self.model.encode(bar, e_mems, e_cmems)
+            latents.append(latent.detach())
             out, d_mems, d_cmems, d_attn_loss, d_ae_loss = self.model.decode(latent, bar, d_mems, d_cmems)
 
             loss, loss_items = self.loss_computer(out, bar[:, :, 1:], norm)
@@ -112,6 +126,44 @@ class Trainer:
             d_attn_losses.append(d_attn_loss.item())
             d_ae_losses.append(d_ae_loss.item())
 
+        # TODO train variational autoencoder for latents compression
+        EPS = 1e-15
+        latents = torch.stack(latents)
+        to_pad = self.max_bars - latents.shape[0]
+        latents = F.pad(latents, (0, 0, 0, 0, 0, to_pad), value=0.)
+        latents = latents.transpose(0, 1)
+        latents = torch.reshape(latents, (self.batch_size, -1)).to(self.device)
+        # Reconstruction loss
+        self.P_net.zero_grad()
+        self.Q_net.zero_grad()
+        self.D_net_gauss.zero_grad()
+        z = self.Q_net(latents)
+        x = self.P_net(z)
+        # recon_loss = F.binary_cross_entropy(x+EPS, latents+EPS)  TODO mse or binary cross entropy?
+        recon_loss = F.mse_loss(x + EPS, latents + EPS)
+        recon_loss = recon_loss / self.model.d_model*self.max_bars
+        recon_loss.backward()
+        self.optim_P.step()
+        self.optim_Q_enc.step()
+        # Discriminator
+        # true prior is random normal (randn)
+        # this is constraining the Z-projection to be normal!
+        self.Q_net.eval()
+        z_real_gauss = Variable(torch.randn_like(z)).cuda()
+        D_real_gauss = self.D_net_gauss(z_real_gauss)
+        z_fake_gauss = self.Q_net(latents)
+        D_fake_gauss = self.D_net_gauss(z_fake_gauss)
+        D_loss = -torch.mean(torch.log(D_real_gauss + EPS) + torch.log(1 - D_fake_gauss + EPS))
+        D_loss.backward()
+        self.optim_D.step()
+        # Generator
+        self.Q_net.train()
+        z_fake_gauss = self.Q_net(latents)
+        D_fake_gauss = self.D_net_gauss(z_fake_gauss)
+        G_loss = -torch.mean(torch.log(D_fake_gauss + EPS))
+        G_loss.backward()
+        self.optim_Q_gen.step()
+        # Avg losses
         loss_avg = sum(losses) / len(losses)
         e_attn_loss_avg = sum(e_attn_losses) / len(e_attn_losses)
         e_ae_loss_avg = sum(e_ae_losses) / len(e_ae_losses)
@@ -122,7 +174,7 @@ class Trainer:
         guitar_loss_avg = sum(guitar_losses) / len(guitar_losses)
         strings_loss_avg = sum(guitar_losses) / len(guitar_losses)
         losses = (loss_avg, e_attn_loss_avg, e_ae_loss_avg, d_attn_loss_avg, d_ae_loss_avg, drums_loss_avg,
-                  bass_loss_avg, guitar_loss_avg, strings_loss_avg)
+                  bass_loss_avg, guitar_loss_avg, strings_loss_avg, recon_loss, D_loss, G_loss)
         return losses
 
     def log_to_wandb(self, losses):
@@ -140,7 +192,10 @@ class Trainer:
                    mode + "drums loss": losses[5],
                    mode + "bass loss": losses[6],
                    mode + "guitar loss": losses[7],
-                   mode + "strings loss": losses[8]})
+                   mode + "strings loss": losses[8],
+                   mode + "recon loss": losses[9],
+                   mode + "discriminator loss": losses[10],
+                   mode + "generator loss": losses[11]})
 
     def generate(self, model, original_song, note_manager=None):
         """
@@ -186,9 +241,19 @@ class Trainer:
         os.mkdir(self.save_path)
         # Model
         self.model.to(self.device)
-        # Optimizer
+        self.P_net = P_net(self.max_bars*self.model.d_model, self.mid_dim, self.z_dim).to(self.device)
+        self.Q_net = Q_net(self.max_bars*self.model.d_model, self.mid_dim, self.z_dim).to(self.device)
+        self.D_net_gauss = D_net_gauss(self.max_bars*self.model.d_model, self.z_dim).to(self.device)
+        # Optimizers
         self.optimizer = CTOpt(torch.optim.Adam(self.model.parameters()), self.warmup_steps,
                                (self.lr_min, self.lr_max))  # TODO add other
+        gen_lr = 0.0001
+        reg_lr = 0.00005
+        self.optim_P = torch.optim.Adam(self.P_net.parameters(), lr=gen_lr)
+        self.optim_Q_enc = torch.optim.Adam(self.Q_net.parameters(), lr=gen_lr)
+        # regularizing optimizers
+        self.optim_Q_gen = torch.optim.Adam(self.Q_net.parameters(), lr=reg_lr)
+        self.optim_D = torch.optim.Adam(self.D_net_gauss.parameters(), lr=reg_lr)
         # Loss
         criterion = LabelSmoothing(size=self.vocab_size, padding_idx=self.model.pad_token,
                                    smoothing=self.label_smoothing, device=self.device)
@@ -256,7 +321,7 @@ class Trainer:
                     # wandb.save(os.path.join(wandb.run.dir, prefix + "_reconstructed.mid"))
                     self.model.train()
                     desc = "Train epoch " + str(self.epoch) + ", mb " + str(it)
-                    train_progress = tqdm(total=10, position=0, leave=True, desc=desc)
+                    train_progress = tqdm(total=self.mb_before_eval, position=0, leave=True, desc=desc)
                 tr_losses = self.run_mb(src)
                 self.log_to_wandb(tr_losses)
                 train_progress.update()
