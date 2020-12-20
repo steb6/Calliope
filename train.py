@@ -15,6 +15,7 @@ from midi_converter import midi_to_wav
 import torch.nn.functional as F
 from aae import Q_net, P_net, D_net_gauss
 from torch.autograd import Variable
+from config import max_bar_length
 
 
 class Trainer:
@@ -100,7 +101,7 @@ class Trainer:
             norm = (n_tokens, n_tokens_drums, n_tokens_bass, n_tokens_guitar, n_tokens_strings)
 
             latent, e_mems, e_cmems, e_attn_loss, e_ae_loss = self.model.encode(bar, e_mems, e_cmems)
-            latents.append(latent.detach())
+            latents.append(latent.data)  # aae decoder output has sigmoid, so our latents has sigmoid too
             out, d_mems, d_cmems, d_attn_loss, d_ae_loss = self.model.decode(latent, bar, d_mems, d_cmems)
 
             loss, loss_items = self.loss_computer(out, bar[:, :, 1:], norm)
@@ -133,7 +134,7 @@ class Trainer:
         latents = F.pad(latents, (0, 0, 0, 0, 0, to_pad), value=0.)
         latents = latents.transpose(0, 1)
         latents = torch.reshape(latents, (self.batch_size, -1)).to(self.device)
-        # Reconstruction loss
+        # Reconstruction loss: optimize encoder Q and decoder P to reconstruct input
         self.P_net.zero_grad()
         self.Q_net.zero_grad()
         self.D_net_gauss.zero_grad()
@@ -141,15 +142,13 @@ class Trainer:
         x = self.P_net(z)
         # recon_loss = F.binary_cross_entropy(x+EPS, latents+EPS)  TODO mse or binary cross entropy?
         recon_loss = F.mse_loss(x + EPS, latents + EPS)
-        recon_loss = recon_loss / self.model.d_model*self.max_bars
+        # recon_loss = recon_loss / (self.model.d_model*self.max_bars)
         recon_loss.backward()
         self.optim_P.step()
         self.optim_Q_enc.step()
-        # Discriminator
-        # true prior is random normal (randn)
-        # this is constraining the Z-projection to be normal!
+        # Discriminator: optimize discriminator to recognize normal distribution as valid
         self.Q_net.eval()
-        z_real_gauss = Variable(torch.randn_like(z)).cuda()
+        z_real_gauss = Variable(torch.randn_like(z)).cuda()  # normal distribution
         D_real_gauss = self.D_net_gauss(z_real_gauss)
         z_fake_gauss = self.Q_net(latents)
         D_fake_gauss = self.D_net_gauss(z_fake_gauss)
@@ -197,7 +196,7 @@ class Trainer:
                    mode + "discriminator loss": losses[10],
                    mode + "generator loss": losses[11]})
 
-    def generate(self, model, original_song, note_manager=None):
+    def reconstruct(self, model, original_song, note_manager=None):
         """
         :param model: The trained model
         :param original_song: Tensor with shape (n_bars, n_batch, timesteps)
@@ -232,6 +231,50 @@ class Trainer:
         reconstructed = note_manager.cut_song(reconstructed, original.get_end_time())  # cut reconstructed song length
         return original, reconstructed
 
+    def generate(self, iterations=10):
+        """
+        It generates a new song using the aae with a normal distributed vector.
+        :param iterations: Number of latents to consider and so bars to generate
+        :return: Muspy generated song
+        """
+        z = Variable(torch.randn((self.batch_size, self.z_dim))).cuda()
+        latents = self.P_net(z)
+        latents = latents.reshape(self.batch_size, self.max_bars, self.model.d_model)
+        latents = latents.transpose(0, 1)
+        _, _, d_mems, d_cmems = self.get_memories()
+        # 4 x 2 x 200
+        first = True
+        self.model.eval()
+        bars = []
+        latents = latents[:iterations, ...]
+        for latent in tqdm(latents, leave=True, position=0, desc="Generating track"):
+            if first:
+                bar = torch.LongTensor(4, self.batch_size, 1)  # n_track x n_batch x tokens
+                bar[:, :, 0] = config["tokens"]["sos_token"]
+                first = False
+            else:
+                bar = torch.LongTensor(4, self.batch_size, 1)
+                bar[:, :, 0] = config["tokens"]["sob_token"]
+            bar = bar.to(self.device)
+            for i in range(max_bar_length-1):  # we start with sos token, so we stop une step before size
+                to_pad = max_bar_length - bar.shape[-1]
+                bar = F.pad(bar, (0, to_pad), value=config["tokens"]["pad_token"])
+
+                out, _, _, _, _ = self.model.decode(latent, bar, d_mems, d_cmems)
+                out = torch.max(out, dim=-2).indices
+                out = out.transpose(1, 2)
+                out = out.transpose(0, 1)
+                bar = torch.cat((bar[:, :, :(i+1)], out[:, :, 0].unsqueeze(-1)), dim=-1)
+            out, d_mems, d_cmems, _, _ = self.model.decode(latent, bar, d_mems, d_cmems)
+            bars.append(bar)
+        bars = torch.stack(bars)
+        note_manager = NoteRepresentationManager(**config["tokens"], **config["data"], **config["paths"])
+        bars = bars.transpose(0, 2)  # invert bars and batches
+        song = bars[0, :, :, :]  # take just first song
+        song = torch.reshape(song, (4, -1)).cpu().numpy()
+        song = note_manager.reconstruct_music(song)
+        return song
+
     def train(self):
         # Create checkpoint folder
         timestamp = str(datetime.now())
@@ -239,7 +282,7 @@ class Trainer:
         timestamp = timestamp.replace(' ', '_').replace(':', '-')
         self.save_path = timestamp
         os.mkdir(self.save_path)
-        # Model
+        # Models
         self.model.to(self.device)
         self.P_net = P_net(self.max_bars*self.model.d_model, self.mid_dim, self.z_dim).to(self.device)
         self.Q_net = Q_net(self.max_bars*self.model.d_model, self.mid_dim, self.z_dim).to(self.device)
@@ -251,7 +294,6 @@ class Trainer:
         reg_lr = 0.00005
         self.optim_P = torch.optim.Adam(self.P_net.parameters(), lr=gen_lr)
         self.optim_Q_enc = torch.optim.Adam(self.Q_net.parameters(), lr=gen_lr)
-        # regularizing optimizers
         self.optim_Q_gen = torch.optim.Adam(self.Q_net.parameters(), lr=reg_lr)
         self.optim_D = torch.optim.Adam(self.D_net_gauss.parameters(), lr=reg_lr)
         # Loss
@@ -273,7 +315,10 @@ class Trainer:
         train_progress = tqdm(total=self.mb_before_eval, position=0, leave=True, desc=desc)
         trained = False
         it_counter = 0
-        best_ts_loss = 1000000
+        best_ts_loss = float("inf")
+        best_aae_recon_loss = float("inf")
+        best_aae_disc_loss = float("inf")
+        best_aae_gen_loss = float("inf")
         for self.epoch in range(self.n_epochs):  # repeat for each epoch
             for it, src in enumerate(tr_loader):  # repeat for each mini-batch
                 if it % self.mb_before_eval == 0 and trained:
@@ -282,17 +327,29 @@ class Trainer:
                     self.model.eval()
                     desc = "Eval epoch " + str(self.epoch) + ", mb " + str(it)
                     test = None
-                    for test in tqdm(ts_loader, position=0, leave=True, desc=desc):
+                    for test in tqdm(ts_loader, position=0, leave=True, desc=desc):  # remember test losses
                         ts_loss = self.run_mb(test)
                         ts_losses.append(ts_loss)
-                    final = ()
-                    for i in range(len(ts_losses[0])):
+                    final = ()  # average losses
+                    for i in range(len(ts_losses[0])):  # for each loss value
                         aux = []
-                        for loss in ts_losses:
+                        for loss in ts_losses:  # for each computed loss
                             aux.append(loss[i])
                         avg = sum(aux) / len(aux)
                         final = final + (avg,)
-                    self.log_to_wandb(final)
+                    if final[0] < 1:  # song are well reconstructed, we can check the aae model
+                        if final[9] < best_aae_recon_loss and final[10] < best_aae_disc_loss and \
+                                final[11] < best_aae_gen_loss:
+                            print("Saving best aae model in " + os.path.join(self.save_path, "aae"))
+                            for filename in glob.glob(os.path.join(self.save_path, "aae" + '*')):
+                                os.remove(filename)
+                            best_aae_recon_loss = final[9]
+                            best_aae_disc_loss = final[10]
+                            best_aae_gen_loss = final[11]
+                            torch.save(self.Q_net, "aae_encoder")
+                            torch.save(self.P_net, "aae_decoder")
+                            torch.save(self.D_net_gauss, "aae_discriminator")
+                            print("aae model saved")
                     if final[0] < best_ts_loss:
                         new_model = os.path.join(self.save_path, self.model_name + '_' + str(self.epoch) + '.pt')
                         print("Saving best model in " + new_model + ", DO NOT INTERRUPT")
@@ -301,20 +358,27 @@ class Trainer:
                         best_ts_loss = final[0]
                         torch.save(self.model, new_model)
                         print("Model saved")
+                    self.log_to_wandb(final)
+                    generated = self.generate(iterations=10)  # generate new track
                     note_manager = NoteRepresentationManager(**config["tokens"], **config["data"], **config["paths"])
-                    original, reconstructed = self.generate(self.model, test, note_manager)  # TODO ATTENTION
+                    original, reconstructed = self.reconstruct(self.model, test, note_manager)
                     prefix = "epoch_" + str(self.epoch) + "_mb_" + str(it)
                     original.write_midi(os.path.join(wandb.run.dir, prefix + "_original.mid"))
                     reconstructed.write_midi(os.path.join(wandb.run.dir, prefix+"_reconstructed.mid"))
+                    generated.write_midi(os.path.join(wandb.run.dir, prefix+"_generated.mid"))
                     midi_to_wav(os.path.join(wandb.run.dir, prefix + "_original.mid"),
                                 os.path.join(wandb.run.dir, prefix + "_original.wav"))
                     midi_to_wav(os.path.join(wandb.run.dir, prefix + "_reconstructed.mid"),
                                 os.path.join(wandb.run.dir, prefix + "_reconstructed.wav"))
+                    midi_to_wav(os.path.join(wandb.run.dir, prefix + "_generated.mid"),
+                                os.path.join(wandb.run.dir, prefix + "_generated.wav"))
                     wandb.log({str(it_counter):
                                    [wandb.Audio(os.path.join(wandb.run.dir, prefix + "_original.wav"),
                                                 caption="original", sample_rate=32),
                                     wandb.Audio(os.path.join(wandb.run.dir, prefix + "_reconstructed.wav"),
-                                                caption="reconstructed", sample_rate=32)
+                                                caption="reconstructed", sample_rate=32),
+                                    wandb.Audio(os.path.join(wandb.run.dir, prefix + "_generated.wav"),
+                                                caption="generated", sample_rate=32)
                                     ]})
                     it_counter += 1
                     # wandb.save(os.path.join(wandb.run.dir, prefix + "_original.mid"))

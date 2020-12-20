@@ -5,13 +5,13 @@ remote = os.getcwd() != 'C:\\Users\\berti\\PycharmProjects\\MusAE'
 
 max_bars = 100
 max_bar_length = 200
-vocab_size = 21 + 128*4 + 32*2  # TODO check  # tokens (21) + time*2, pitch, duration (128) + velocities, tempos (32)
+vocab_size = 21 + 128*4 + 32*2  # tokens (21) + time*2, pitch, duration (128) + velocities, tempos (32)
 
 config = {
     "train": {
         "vocab_size": vocab_size,
         "device": "cuda",
-        "batch_size": 2,
+        "batch_size": 3,
         "test_size": 0.1,
         "n_workers": 0,
         "n_epochs": 250,
@@ -40,11 +40,11 @@ config = {
         "pad_token": 0
     },
     "data": {  # Parameters to create and listen the note representation
-        "max_bars": max_bars,  # because of the histogram of the lengths and the memory limits
+        "max_bars": max_bars,
         "max_bar_length": max_bar_length,
         "use_velocity": True,
         "reconstruct_programs": [0, 0, 32, 40],
-        "early_stop": 100,  # set this to 0 to disable early stop
+        "early_stop": 1000,  # set this to 0 to disable early stop
         "resolution": 24,
         "tempo": 120,
         "velocities_total": (0, 127),  # using min max scaling, limits are inclusive
