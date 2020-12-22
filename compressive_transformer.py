@@ -29,7 +29,8 @@ class TransformerAutoencoder(nn.Module):
         super(TransformerAutoencoder, self).__init__()
 
         assert mem_len >= seq_len, 'length of memory should be at least the sequence length'
-        assert cmem_len >= (mem_len // cmem_ratio), f'len of cmem should be at least ' f'{int(mem_len // cmem_ratio)}'
+        assert cmem_len >= (mem_len // cmem_ratio), f'len of cmem should be at least ' f'{int(mem_len // cmem_ratio)}' \
+                                                    f' but it is ' f'{int(cmem_len)}'
 
         c = copy.deepcopy
         # TODO check dropout, bias
@@ -143,8 +144,8 @@ class Encoder(nn.Module):
             ae_losses = ae_losses + ae_loss
         mems = torch.stack(new_mem)
         cmems = torch.stack(new_cmem)
-        bar = bar.reshape(n_batches, bar_len * self.d_model)
-        bar = self.compress_bar(bar)
+        bar = bar.reshape(n_batches, bar_len * self.d_model)  # flat bar tokens
+        bar = self.compress_bar(bar)  # compress bar tokens
         attn_loss = attn_losses / self.N  # normalize w.r.t number of layers
         ae_loss = ae_losses / self.N  # normalize w.r.t number of layers
         return bar, mems, cmems, attn_loss, ae_loss
@@ -177,7 +178,7 @@ class Decoder(nn.Module):
         new_mem = []
         new_cmem = []
         for layer, mem, cmem in zip(self.layers, mems, cmems):
-            latent, new_memories, attn_loss, ae_loss = layer(latent, bar, (mem, cmem), input_mask)
+            bar, new_memories, attn_loss, ae_loss = layer(latent, bar, (mem, cmem), input_mask)
             new_mem.append(new_memories[0])
             new_cmem.append(new_memories[1])
             attn_losses = attn_losses + attn_loss
@@ -186,7 +187,7 @@ class Decoder(nn.Module):
         cmems = torch.stack(new_cmem)
         attn_losses = attn_losses / self.N  # normalize w.r.t number of layers
         ae_losses = ae_losses / self.N  # normalize w.r.t number of layers
-        return latent, mems, cmems, attn_losses, ae_losses
+        return bar, mems, cmems, attn_losses, ae_losses
 
 
 class EncoderLayer(nn.Module):
@@ -294,7 +295,7 @@ class MemoryMultiHeadedAttention(nn.Module):
         logits = self.to_out(out)
         logits = self.dropout(logits)
 
-        new_mem = mem
+        # new_mem = mem
         new_cmem = cmem
         aux_loss = torch.zeros(1, requires_grad=True, **to(q))
         ae_loss = torch.zeros(1, requires_grad=True, **to(q))
@@ -304,7 +305,7 @@ class MemoryMultiHeadedAttention(nn.Module):
         # return logits, Memory(new_mem, new_cmem), aux_loss
 
         # calculate memory and compressed memory
-
+        x = F.pad(x, (0, 0, 0, 1), value=0.0)  # pad x to match mem
         old_mem, new_mem = queue_fifo(mem, x, length=self.mem_len, dim=1)
         old_mem_padding = old_mem.shape[1] % self.cmem_ratio
 
@@ -342,9 +343,13 @@ class MemoryMultiHeadedAttention(nn.Module):
         )
 
         # Calculate auto-encoding loss
+        to_pad = self.cmem_len - new_cmem.shape[1]
+        if to_pad != 0:
+            new_cmem = F.pad(new_cmem, (0, 0, to_pad, 0), value=0.0)
         reconstructed_mem = self.deconv(new_cmem.transpose(1, 2)).transpose(1, 2)
         to_pad = old_mem.shape[1] - reconstructed_mem.shape[1]
-        reconstructed_mem = F.pad(reconstructed_mem, (0, 0, 0, to_pad), value=0.)
+        if to_pad != 0:
+            reconstructed_mem = F.pad(reconstructed_mem, (0, 0, 0, to_pad), value=0.)
 
         ae_loss = F.mse_loss(
             old_mem,

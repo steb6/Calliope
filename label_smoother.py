@@ -18,19 +18,21 @@ class LabelSmoothing(nn.Module):
         self.device = device
 
     def forward(self, x, target):
-        assert x.size(1) == self.size
+        # assert x.size(1) == self.size
         true_dist = x.data.clone()
         true_dist.fill_(self.smoothing / (self.size - 2))
-        # unsqueeze add a dimension in the specified position
-        # put self.confidence value (0.9) in true dist in the positions indicated by target
-        # so true_dist has the same size of x which have 0.9 in the right notes and a small value in all the others
-        true_dist.scatter_(1, target.data.unsqueeze(1), self.confidence)
-        # set all padding position to 0 (because we have a lot of them)
-        true_dist[:, self.padding_idx] = 0
+        true_idx = target.data.unsqueeze(2)
+        # true_dist[i][j][aux[i][j][k]] = self.confidence
+        true_dist.scatter_(2, true_idx, self.confidence)
+        true_dist[..., self.padding_idx] = 0  # we dont want padding to be targeted
         # return position of padding of target
         mask = torch.nonzero(target.data == self.padding_idx)
+        # mask = (target.data == self.padding_idx).nonzero()
+        # mas = torch.nonzero(target.data, (target.data == self.padding_idx))
         # substitute position of pad in true_dist with 0
-        if mask.dim() > 0:
-            true_dist.index_fill_(0, mask.squeeze(), 0.0)
+        for m in mask:
+            true_dist[m[0], m[1], :] = 0.0
+        # if mask.dim() > 0:
+        #     true_dist.index_fill_(0, mask.squeeze(), 0.0)
         self.true_dist = true_dist
         return self.criterion(x, true_dist.to(self.device))

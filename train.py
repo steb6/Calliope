@@ -16,13 +16,15 @@ import torch.nn.functional as F
 from aae import Q_net, P_net, D_net_gauss
 from torch.autograd import Variable
 from config import max_bar_length
+from compress_cmem import CmemCompressor, CmemDecompressor, CompressLatents, DecompressLatents
 
 
 class Trainer:
     def __init__(self, save_path=None, device=None, dataset_path=None, test_size=None,
                  batch_size=None, n_workers=None, vocab_size=None, n_epochs=None, model_name="checkpoint",
                  plot_name="plot", model=None, max_bars=None, label_smoothing=None, config=config,
-                 mb_before_eval=None, warmup_steps=None, lr_min=None, lr_max=None, z_dim=None, mid_dim=None):
+                 mb_before_eval=None, warmup_steps=None, lr_min=None, lr_max=None, z_dim=None, mid_dim=None,
+                 mem_len=None, cmem_len=None):
         self.save_path = save_path
         self.device = device
         self.dataset_path = dataset_path
@@ -45,6 +47,12 @@ class Trainer:
         self.model = model
         self.loss_computer = None
         self.optimizer = None
+        self.mem_len = mem_len
+        self.cmem_len = cmem_len
+        self.cmem_compressor = CmemCompressor(self.model.d_model, 512, max_bars, self.model.layers).to(device)
+        self.cmem_decompressor = CmemDecompressor(self.model.d_model, 512, max_bars, self.model.layers).to(device)
+        self.compress_latents = CompressLatents(self.model.d_model, 512, max_bars)
+        self.decompress_latents = DecompressLatents(self.model.d_model, 512, max_bars)
         # Adversarial part
         self.z_dim = z_dim
         self.mid_dim = mid_dim
@@ -63,12 +71,11 @@ class Trainer:
         a = self.model.n_tracks
         b = self.model.layers
         c = self.batch_size
-        d = 0  # initial memories dimension
         e = self.model.d_model
-        e_mems = torch.empty(a, b, c, d, e, dtype=torch.float32, device=self.device)
-        e_cmems = torch.empty(a, b, c, d, e, dtype=torch.float32, device=self.device)
-        d_mems = torch.empty(a, b, c, d, e, dtype=torch.float32, device=self.device)
-        d_cmems = torch.empty(a, b, c, d, e, dtype=torch.float32, device=self.device)
+        e_mems = torch.zeros(a, b, c, self.mem_len, e, dtype=torch.float32, device=self.device)
+        e_cmems = torch.zeros(a, b, c, self.cmem_len, e, dtype=torch.float32, device=self.device)
+        d_mems = torch.zeros(a, b, c, self.mem_len, e, dtype=torch.float32, device=self.device)
+        d_cmems = torch.zeros(a, b, c, self.cmem_len, e, dtype=torch.float32, device=self.device)
         return e_mems, e_cmems, d_mems, d_cmems
 
     def run_mb(self, src):
@@ -80,100 +87,182 @@ class Trainer:
         src = np.swapaxes(src, 0, 2)  # swap batch, tracks -> tracks, batch
         bars = torch.LongTensor(src.long()).to(self.device)
         e_mems, e_cmems, d_mems, d_cmems = self.get_memories()
-        losses = []
-        e_attn_losses = []
-        e_ae_losses = []
-        d_attn_losses = []
-        d_ae_losses = []
         drums_losses = []
         bass_losses = []
         guitar_losses = []
         strings_losses = []
+        e_attn_losses = torch.tensor(0., requires_grad=True, device=self.device, dtype=torch.float32)
+        e_ae_losses = torch.tensor(0., requires_grad=True, device=self.device, dtype=torch.float32)
+        d_attn_losses = torch.tensor(0., requires_grad=True, device=self.device, dtype=torch.float32)
+        d_ae_losses = torch.tensor(0., requires_grad=True, device=self.device, dtype=torch.float32)
+        losses = torch.tensor(0., requires_grad=True, device=self.device, dtype=torch.float32)
+        e_attn_losses = []
+        e_ae_losses = []
+        d_attn_losses = []
+        d_ae_losses = []
+        losses = []
+
         latents = []
         for bar in bars:
-            n_tokens = np.count_nonzero(bar.cpu())
-            if n_tokens == 0:
-                continue
-            n_tokens_drums = np.count_nonzero(bar.cpu()[0, :, :])
-            n_tokens_bass = np.count_nonzero(bar.cpu()[1, :, :])
-            n_tokens_guitar = np.count_nonzero(bar.cpu()[2, :, :])
-            n_tokens_strings = np.count_nonzero(bar.cpu()[3, :, :])
-            norm = (n_tokens, n_tokens_drums, n_tokens_bass, n_tokens_guitar, n_tokens_strings)
+            # n_tokens = np.count_nonzero(bar.cpu())
+            # if n_tokens == 0:
+            #     continue
+            # n_tokens_drums = np.count_nonzero(bar.cpu()[0, :, :])
+            # n_tokens_bass = np.count_nonzero(bar.cpu()[1, :, :])
+            # n_tokens_guitar = np.count_nonzero(bar.cpu()[2, :, :])
+            # n_tokens_strings = np.count_nonzero(bar.cpu()[3, :, :])
+            # norm = (n_tokens, n_tokens_drums, n_tokens_bass, n_tokens_guitar, n_tokens_strings)
 
             latent, e_mems, e_cmems, e_attn_loss, e_ae_loss = self.model.encode(bar, e_mems, e_cmems)
-            latents.append(latent.data)  # aae decoder output has sigmoid, so our latents has sigmoid too
-            out, d_mems, d_cmems, d_attn_loss, d_ae_loss = self.model.decode(latent, bar, d_mems, d_cmems)
+            # e_attn_losses = e_attn_losses + e_attn_loss
+            # e_ae_losses = e_ae_losses + e_ae_loss
+            e_attn_losses.append(e_attn_loss)
+            e_ae_losses.append(e_ae_loss)
+            latents.append(latent)
 
-            loss, loss_items = self.loss_computer(out, bar[:, :, 1:], norm)
-            if self.model.training:
-                self.optimizer.zero_grad()
-                (loss + e_attn_loss + e_ae_loss + d_attn_loss + d_attn_loss).backward()
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 0.1)
-                self.optimizer.optimize()  # TODO add cosine decay and decreasing optimization updating
+            # if self.model.training:
+            #     (e_attn_loss + e_ae_loss).backward()
+            # e_attn_losses = e_attn_losses + e_attn_loss
+            # e_ae_losses = e_ae_losses + e_ae_loss
 
-            loss_drums, loss_bass, loss_guitar, loss_strings = loss_items
-            if loss_drums != -1:  # if this instrument was not empty in this bar
-                drums_losses.append(loss_drums)
-            if loss_bass != -1:
-                bass_losses.append(loss_bass)
-            if loss_guitar != -1:
-                guitar_losses.append(loss_guitar)
-            if loss_strings != -1:
-                strings_losses.append(loss_guitar)
-
-            losses.append(loss.item())
-            e_attn_losses.append(e_attn_loss.item())
-            e_ae_losses.append(e_ae_loss.item())
-            d_attn_losses.append(d_attn_loss.item())
-            d_ae_losses.append(d_ae_loss.item())
-
+            # latents.append(latent.data)  # aae decoder output has sigmoid, so our latents has sigmoid too
+            # out, d_mems, d_cmems, d_attn_loss, d_ae_loss = self.model.decode(latent, bar, d_mems, d_cmems)
+            #
+            # loss, loss_items = self.loss_computer(out, bar[:, :, 1:], norm)
+            # if self.model.training:
+            #     self.optimizer.zero_grad()
+            #     (loss + e_attn_loss + e_ae_loss + d_attn_loss + d_attn_loss).backward()
+            #     torch.nn.utils.clip_grad_norm_(self.model.parameters(), 0.1)
+            #     self.optimizer.optimize()  # TODO add cosine decay and decreasing optimization updating
+            #
+            # loss_drums, loss_bass, loss_guitar, loss_strings = loss_items
+            # if loss_drums != -1:  # if this instrument was not empty in this bar
+            #     drums_losses.append(loss_drums)
+            # if loss_bass != -1:
+            #     bass_losses.append(loss_bass)
+            # if loss_guitar != -1:
+            #     guitar_losses.append(loss_guitar)
+            # if loss_strings != -1:
+            #     strings_losses.append(loss_guitar)
+            #
+            # losses.append(loss.item())
+            # e_attn_losses.append(e_attn_loss.item())
+            # e_ae_losses.append(e_ae_loss.item())
+            # d_attn_losses.append(d_attn_loss.item())
+            # d_ae_losses.append(d_ae_loss.item())
         # TODO train variational autoencoder for latents compression
-        EPS = 1e-15
         latents = torch.stack(latents)
-        to_pad = self.max_bars - latents.shape[0]
-        latents = F.pad(latents, (0, 0, 0, 0, 0, to_pad), value=0.)
-        latents = latents.transpose(0, 1)
-        latents = torch.reshape(latents, (self.batch_size, -1)).to(self.device)
-        # Reconstruction loss: optimize encoder Q and decoder P to reconstruct input
-        self.P_net.zero_grad()
-        self.Q_net.zero_grad()
-        self.D_net_gauss.zero_grad()
-        z = self.Q_net(latents)
-        x = self.P_net(z)
-        # recon_loss = F.binary_cross_entropy(x+EPS, latents+EPS)  TODO mse or binary cross entropy?
-        recon_loss = F.mse_loss(x + EPS, latents + EPS)
-        # recon_loss = recon_loss / (self.model.d_model*self.max_bars)
-        recon_loss.backward()
-        self.optim_P.step()
-        self.optim_Q_enc.step()
-        # Discriminator: optimize discriminator to recognize normal distribution as valid
-        self.Q_net.eval()
-        z_real_gauss = Variable(torch.randn_like(z)).cuda()  # normal distribution
-        D_real_gauss = self.D_net_gauss(z_real_gauss)
-        z_fake_gauss = self.Q_net(latents)
-        D_fake_gauss = self.D_net_gauss(z_fake_gauss)
-        D_loss = -torch.mean(torch.log(D_real_gauss + EPS) + torch.log(1 - D_fake_gauss + EPS))
-        D_loss.backward()
-        self.optim_D.step()
-        # Generator
-        self.Q_net.train()
-        z_fake_gauss = self.Q_net(latents)
-        D_fake_gauss = self.D_net_gauss(z_fake_gauss)
-        G_loss = -torch.mean(torch.log(D_fake_gauss + EPS))
-        G_loss.backward()
-        self.optim_Q_gen.step()
-        # Avg losses
-        loss_avg = sum(losses) / len(losses)
-        e_attn_loss_avg = sum(e_attn_losses) / len(e_attn_losses)
-        e_ae_loss_avg = sum(e_ae_losses) / len(e_ae_losses)
-        d_attn_loss_avg = sum(d_attn_losses) / len(d_attn_losses)
-        d_ae_loss_avg = sum(d_ae_losses) / len(d_ae_losses)
-        drums_loss_avg = sum(drums_losses) / len(drums_losses)
-        bass_loss_avg = sum(bass_losses) / len(bass_losses)
-        guitar_loss_avg = sum(guitar_losses) / len(guitar_losses)
-        strings_loss_avg = sum(guitar_losses) / len(guitar_losses)
-        losses = (loss_avg, e_attn_loss_avg, e_ae_loss_avg, d_attn_loss_avg, d_ae_loss_avg, drums_loss_avg,
-                  bass_loss_avg, guitar_loss_avg, strings_loss_avg, recon_loss, D_loss, G_loss)
+        latents = self.compress_latents(latents)
+        latents = self.decompress_latents(latents)
+        # latents = self.decompress_latents(latents)
+        # latents = self.cmem_compressor.forward(e_cmems)
+        # d_cmems = self.cmem_decompressor.forward(latents)
+        outs = []
+        for bar, latent in zip(bars, latents):
+            out, d_mems, d_cmems, d_attn_loss, d_ae_loss = self.model.decode(latent, bar, d_mems, d_cmems)
+            d_attn_losses.append(d_attn_loss)
+            d_ae_losses.append(d_ae_loss)
+            outs.append(out)
+        e_ae_losses = torch.stack(e_ae_losses).mean()
+        e_attn_losses = torch.stack(e_attn_losses).mean()
+        d_ae_losses = torch.stack(d_ae_losses).mean()
+        d_attn_losses = torch.stack(d_attn_losses).mean()
+        outs = torch.stack(outs)  # compute los
+        n_tokens = torch.count_nonzero(bars)
+        n_tokens_drums = torch.count_nonzero(bars[:, 0, :, :])
+        n_tokens_bass = torch.count_nonzero(bars[:, 1, :, :])
+        n_tokens_guitar = torch.count_nonzero(bars[:, 2, :, :])
+        n_tokens_strings = torch.count_nonzero(bars[:, 3, :, :])
+        norm = (n_tokens, n_tokens_drums, n_tokens_bass, n_tokens_guitar, n_tokens_strings)
+        bars = bars.transpose(1, 2)
+        bars = bars.transpose(2, 3)
+        bars = bars[:, :, 1:, :]
+        loss, loss_items = self.loss_computer(outs, bars, norm)
+        if self.model.training:
+            self.optimizer.zero_grad()
+            (loss + e_attn_losses + e_ae_losses + d_attn_losses + d_attn_losses).backward()
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 0.1)
+            self.optimizer.optimize()  # TODO add cosine decay and decreasing optimization updating
+
+        losses = (loss.item(), e_attn_losses.item(), e_ae_losses.item(), d_attn_losses.item(), d_ae_losses.item(),
+                  *loss_items)
+            # d_attn_losses = d_attn_losses + d_attn_loss
+            # d_ae_losses = d_ae_losses + d_ae_loss
+
+        #     n_tokens = np.count_nonzero(bar.cpu())
+        #     if n_tokens == 0:
+        #         continue
+        #     n_tokens_drums = np.count_nonzero(bar.cpu()[0, :, :])
+        #     n_tokens_bass = np.count_nonzero(bar.cpu()[1, :, :])
+        #     n_tokens_guitar = np.count_nonzero(bar.cpu()[2, :, :])
+        #     n_tokens_strings = np.count_nonzero(bar.cpu()[3, :, :])
+        #     norm = (n_tokens, n_tokens_drums, n_tokens_bass, n_tokens_guitar, n_tokens_strings)
+        #     loss, loss_items = self.loss_computer(out, bar[:, :, 1:], norm)
+        #     # losses = losses + loss
+        #
+        #     if self.model.training:
+        #         self.optimizer.zero_grad()
+        #         # (loss + e_attn_loss + e_ae_loss + d_attn_loss + d_attn_loss).backward()
+        #         (loss + d_attn_loss + d_attn_loss).backward()
+        #         for name, parameter in self.model.named_parameters():
+        #             if parameter.grad is None:
+        #                 print(name)
+        #         torch.nn.utils.clip_grad_norm_(self.model.parameters(), 0.1)
+        #         self.optimizer.optimize()  # TODO add cosine decay and decreasing optimization updating
+        #
+        # loss_drums, loss_bass, loss_guitar, loss_strings = loss_items
+        # if loss_drums != -1:  # if this instrument was not empty in this bar
+        #     drums_losses.append(loss_drums)
+        # if loss_bass != -1:
+        #     bass_losses.append(loss_bass)
+        # if loss_guitar != -1:
+        #     guitar_losses.append(loss_guitar)
+        # if loss_strings != -1:
+        #     strings_losses.append(loss_guitar)
+
+
+
+        # EPS = 1e-15
+        # # Reconstruction loss: optimize encoder Q and decoder P to reconstruct input
+        # self.P_net.zero_grad()
+        # self.Q_net.zero_grad()
+        # self.D_net_gauss.zero_grad()
+        # z = self.Q_net(latents)
+        # x = self.P_net(z)
+        # # recon_loss = F.binary_cross_entropy(x+EPS, latents+EPS)  TODO mse or binary cross entropy?
+        # recon_loss = F.mse_loss(x + EPS, latents + EPS)
+        # # recon_loss = recon_loss / (self.model.d_model*self.max_bars)
+        # recon_loss.backward()
+        # self.optim_P.step()
+        # self.optim_Q_enc.step()
+        # # Discriminator: optimize discriminator to recognize normal distribution as valid
+        # self.Q_net.eval()
+        # z_real_gauss = Variable(torch.randn_like(z)).cuda()  # normal distribution
+        # D_real_gauss = self.D_net_gauss(z_real_gauss)
+        # z_fake_gauss = self.Q_net(latents)
+        # D_fake_gauss = self.D_net_gauss(z_fake_gauss)
+        # D_loss = -torch.mean(torch.log(D_real_gauss + EPS) + torch.log(1 - D_fake_gauss + EPS))
+        # D_loss.backward()
+        # self.optim_D.step()
+        # # Generator
+        # self.Q_net.train()
+        # z_fake_gauss = self.Q_net(latents)
+        # D_fake_gauss = self.D_net_gauss(z_fake_gauss)
+        # G_loss = -torch.mean(torch.log(D_fake_gauss + EPS))
+        # G_loss.backward()
+        # self.optim_Q_gen.step()
+        # # Avg losses
+        # loss_avg = sum(losses) / len(losses)
+        # e_attn_loss_avg = sum(e_attn_losses) / len(e_attn_losses)
+        # e_ae_loss_avg = sum(e_ae_losses) / len(e_ae_losses)
+        # d_attn_loss_avg = sum(d_attn_losses) / len(d_attn_losses)
+        # d_ae_loss_avg = sum(d_ae_losses) / len(d_ae_losses)
+        # drums_loss_avg = sum(drums_losses) / len(drums_losses)
+        # bass_loss_avg = sum(bass_losses) / len(bass_losses)
+        # guitar_loss_avg = sum(guitar_losses) / len(guitar_losses)
+        # strings_loss_avg = sum(guitar_losses) / len(guitar_losses)
+        # losses = (loss_avg, e_attn_loss_avg, e_ae_loss_avg, d_attn_loss_avg, d_ae_loss_avg, drums_loss_avg,
+        #           bass_loss_avg, guitar_loss_avg, strings_loss_avg, recon_loss, D_loss, G_loss)
         return losses
 
     def log_to_wandb(self, losses):
@@ -191,10 +280,10 @@ class Trainer:
                    mode + "drums loss": losses[5],
                    mode + "bass loss": losses[6],
                    mode + "guitar loss": losses[7],
-                   mode + "strings loss": losses[8],
-                   mode + "recon loss": losses[9],
-                   mode + "discriminator loss": losses[10],
-                   mode + "generator loss": losses[11]})
+                   mode + "strings loss": losses[8]})
+                   # mode + "recon loss": losses[9],
+                   # mode + "discriminator loss": losses[10],
+                   # mode + "generator loss": losses[11]})
 
     def reconstruct(self, model, original_song, note_manager=None):
         """
@@ -288,8 +377,8 @@ class Trainer:
         self.Q_net = Q_net(self.max_bars*self.model.d_model, self.mid_dim, self.z_dim).to(self.device)
         self.D_net_gauss = D_net_gauss(self.max_bars*self.model.d_model, self.z_dim).to(self.device)
         # Optimizers
-        self.optimizer = CTOpt(torch.optim.Adam(self.model.parameters()), self.warmup_steps,
-                               (self.lr_min, self.lr_max))  # TODO add other
+        self.optimizer = CTOpt(torch.optim.Adam(self.model.parameters()),
+                               self.warmup_steps, (self.lr_min, self.lr_max))  # TODO add other
         gen_lr = 0.0001
         reg_lr = 0.00005
         self.optim_P = torch.optim.Adam(self.P_net.parameters(), lr=gen_lr)

@@ -9,9 +9,9 @@ vocab_size = 21 + 128*4 + 32*2  # tokens (21) + time*2, pitch, duration (128) + 
 
 config = {
     "train": {
-        "vocab_size": vocab_size,
-        "device": "cuda",
-        "batch_size": 3,
+        "vocab_size": vocab_size,  # for label smoother
+        "device": "cpu",
+        "batch_size": 1,
         "test_size": 0.1,
         "n_workers": 0,
         "n_epochs": 250,
@@ -23,6 +23,8 @@ config = {
         "z_dim": 1024,
         "mid_dim": 2048,
         "max_bars": max_bars,
+        "mem_len": max_bar_length,
+        "cmem_len": max_bars
     },
     "model": {
         "vocab_size": vocab_size,  # this depends by config.tokens
@@ -30,11 +32,11 @@ config = {
         "n_tracks": 4,
         "heads": 4,
         "d_ff": 128,
-        "layers": 4,
+        "layers": 1,  # 3 GB each
         "dropout": 0.1,
-        "mem_len": max_bar_length,  # 512, before was 512
-        "cmem_len": max_bar_length//4,
-        "cmem_ratio": 4,
+        "mem_len": max_bar_length,  # keep last 2 bars
+        "cmem_len": max_bars,  # keep one vector for each bar
+        "cmem_ratio": max_bar_length,
         "seq_len": max_bar_length,
         "max_bars": max_bars,
         "pad_token": 0

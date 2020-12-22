@@ -1,3 +1,6 @@
+import torch
+
+
 class SimpleLossCompute:
 
     def __init__(self, smooth_label):
@@ -11,31 +14,37 @@ class SimpleLossCompute:
         :param norm: Tuple with the total number of token and 4 respective number of token w.r.t. instruments
         :return: loss to use for back-propagation and instruments losses for plotting
         """
-        y_drums = y[0, :, :]
-        y_bass = y[1, :, :]
-        y_guitar = y[2, :, :]
-        y_strings = y[3, :, :]
+        n_bar, n_batch, n_tok, vocab_dim, n_track = x.shape
+        x = x.reshape(n_batch, -1, vocab_dim, n_track)  # flat bars
+        y = y.reshape(n_batch, -1, n_track)  # flat bars
 
-        x_drums = x[:, :, :, 0]
-        x_bass = x[:, :, :, 1]
-        x_guitar = x[:, :, :, 2]
-        x_strings = x[:, :, :, 3]
+        y_drums = y[..., 0]
+        y_bass = y[..., 1]
+        y_guitar = y[..., 2]
+        y_strings = y[..., 3]
 
-        loss_drums = self.smooth_label(x_drums.contiguous().view(-1, x_drums.size(-1)),
-                                       y_drums.contiguous().view(-1))
-        loss_bass = self.smooth_label(x_bass.contiguous().view(-1, x_bass.size(-1)),
-                                      y_bass.contiguous().view(-1))
-        loss_guitar = self.smooth_label(x_guitar.contiguous().view(-1, x_guitar.size(-1)),
-                                        y_guitar.contiguous().view(-1))
-        loss_strings = self.smooth_label(x_strings.contiguous().view(-1, x_strings.size(-1)),
-                                         y_strings.contiguous().view(-1))
+        x_drums = x[..., 0]
+        x_bass = x[..., 1]
+        x_guitar = x[..., 2]
+        x_strings = x[..., 3]
 
-        loss = (loss_drums + loss_bass + loss_guitar + loss_strings) / norm[0]  # mean loss per token
+        n_tokens = torch.count_nonzero(y).item()
+        n_tokens_drums = torch.count_nonzero(y_drums).item()
+        n_tokens_bass = torch.count_nonzero(y_bass).item()
+        n_tokens_guitar = torch.count_nonzero(y_guitar).item()
+        n_tokens_strings = torch.count_nonzero(y_strings).item()
+
+        loss_drums = self.smooth_label(x_drums, y_drums) / n_tokens_drums
+        loss_bass = self.smooth_label(x_bass, y_bass) / n_tokens_bass
+        loss_guitar = self.smooth_label(x_guitar, y_guitar) / n_tokens_guitar
+        loss_strings = self.smooth_label(x_strings, y_strings) / n_tokens_strings
+
+        loss = (loss_drums + loss_bass + loss_guitar + loss_strings) / 4  # mean loss per token
         loss = loss.mean(dim=0)  # mean loss per batch sample
 
-        loss_items = (loss_drums.item()/norm[1] if norm[1] != 0 else -1,
-                      loss_bass.item()/norm[2] if norm[2] != 0 else -1,
-                      loss_guitar.item()/norm[3] if norm[3] != 0 else -1,
-                      loss_strings.item()/norm[4]if norm[4] != 0 else -1)
+        # loss_items = (loss_drums.item()/norm[1] if norm[1] != 0 else -1,
+        #               loss_bass.item()/norm[2] if norm[2] != 0 else -1,
+        #               loss_guitar.item()/norm[3] if norm[3] != 0 else -1,
+        #               loss_strings.item()/norm[4]if norm[4] != 0 else -1)
 
-        return loss, loss_items
+        return loss, (loss_drums, loss_bass, loss_guitar, loss_strings)
