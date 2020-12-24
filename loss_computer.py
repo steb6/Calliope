@@ -28,7 +28,6 @@ class SimpleLossCompute:
         x_guitar = x[..., 2]
         x_strings = x[..., 3]
 
-        n_tokens = torch.count_nonzero(y).item()
         n_tokens_drums = torch.count_nonzero(y_drums).item()
         n_tokens_bass = torch.count_nonzero(y_bass).item()
         n_tokens_guitar = torch.count_nonzero(y_guitar).item()
@@ -40,11 +39,5 @@ class SimpleLossCompute:
         loss_strings = self.smooth_label(x_strings, y_strings) / n_tokens_strings
 
         loss = (loss_drums + loss_bass + loss_guitar + loss_strings) / 4  # mean loss per token
-        loss = loss.mean(dim=0)  # mean loss per batch sample
-
-        # loss_items = (loss_drums.item()/norm[1] if norm[1] != 0 else -1,
-        #               loss_bass.item()/norm[2] if norm[2] != 0 else -1,
-        #               loss_guitar.item()/norm[3] if norm[3] != 0 else -1,
-        #               loss_strings.item()/norm[4]if norm[4] != 0 else -1)
 
         return loss, (loss_drums, loss_bass, loss_guitar, loss_strings)

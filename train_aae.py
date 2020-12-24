@@ -9,8 +9,8 @@ from create_dataset import NoteRepresentationManager
 import glob
 import wandb
 from midi_converter import midi_to_wav
-import torch.nn.functional as F
-from aae import Q_net, P_net, D_net_gauss
+import torch.nn.functional as f
+from discriminator import Discriminator
 from torch.autograd import Variable
 from config import max_bar_length
 
@@ -82,7 +82,7 @@ class AAETrainer:
         EPS = 1e-15
         latents = torch.stack(latents)
         to_pad = self.max_bars - latents.shape[0]
-        latents = F.pad(latents, (0, 0, 0, 0, 0, to_pad), value=0.)
+        latents = f.pad(latents, (0, 0, 0, 0, 0, to_pad), value=0.)
         latents = latents.transpose(0, 1)
         latents = torch.reshape(latents, (self.batch_size, -1)).to(self.device)
         # Reconstruction loss: optimize encoder Q and decoder P to reconstruct input
@@ -93,7 +93,7 @@ class AAETrainer:
         z = self.Q_net(latents)
         x = self.P_net(z)
         # recon_loss = F.binary_cross_entropy(x+EPS, latents+EPS)  TODO mse or binary cross entropy?
-        recon_loss = F.mse_loss(x + EPS, latents + EPS)
+        recon_loss = f.mse_loss(x + EPS, latents + EPS)
         # recon_loss = recon_loss / (self.model.d_model*self.max_bars)
         if train:
             recon_loss.backward()
@@ -162,7 +162,7 @@ class AAETrainer:
             bar = bar.to(self.device)
             for i in range(max_bar_length-1):  # we start with sos token, so we stop une step before size
                 to_pad = max_bar_length - bar.shape[-1]
-                bar = F.pad(bar, (0, to_pad), value=config["tokens"]["pad_token"])
+                bar = f.pad(bar, (0, to_pad), value=config["tokens"]["pad_token"])
                 out, _, _, _, _ = self.model.decode(latent, bar, d_mems, d_cmems)
                 out = torch.max(out, dim=-2).indices
                 out = out.transpose(1, 2)
@@ -187,9 +187,7 @@ class AAETrainer:
         os.mkdir(self.save_path)
         # Models
         self.model.eval()
-        self.P_net = P_net(self.max_bars*self.model.d_model, self.mid_dim, self.z_dim).to(self.device)
-        self.Q_net = Q_net(self.max_bars*self.model.d_model, self.mid_dim, self.z_dim).to(self.device)
-        self.D_net_gauss = D_net_gauss(self.max_bars*self.model.d_model, self.z_dim).to(self.device)
+        self.discriminator = Discriminator(self.max_bars*self.model.d_model, self.z_dim).to(self.device)
         # Optimizers
         # gen_lr = 0.0001
         # reg_lr = 0.00005

@@ -6,26 +6,26 @@ from torch.autograd import Variable
 import copy
 from functools import partial
 from collections import namedtuple
-import wandb, numpy
+from config import config
 
 Memory = namedtuple('Memory', ['mem', 'compressed_mem'])
 
 
 class TransformerAutoencoder(nn.Module):
     def __init__(self,
-                 d_model=None,
-                 n_tracks=None,
-                 heads=None,
-                 d_ff=None,
-                 dropout=None,
-                 layers=None,
-                 vocab_size=None,
-                 seq_len=None,
-                 mem_len=None,
-                 cmem_len=None,
-                 cmem_ratio=None,
-                 pad_token=None,
-                 max_bars=None):
+                 d_model=config["model"]["d_model"],
+                 n_tracks=config["model"]["n_tracks"],
+                 heads=config["model"]["heads"],
+                 d_ff=config["model"]["d_ff"],
+                 dropout=config["model"]["dropout"],
+                 layers=config["model"]["layers"],
+                 vocab_size=config["tokens"]["vocab_size"],
+                 seq_len=config["data"]["max_bar_length"],
+                 mem_len=config["model"]["mem_len"],
+                 cmem_len=config["model"]["cmem_len"],
+                 cmem_ratio=config["model"]["cmem_ratio"],
+                 pad_token=config["tokens"]["pad_token"],
+                 max_bars=config["data"]["max_bars"]):
         super(TransformerAutoencoder, self).__init__()
 
         assert mem_len >= seq_len, 'length of memory should be at least the sequence length'
@@ -295,7 +295,7 @@ class MemoryMultiHeadedAttention(nn.Module):
         logits = self.to_out(out)
         logits = self.dropout(logits)
 
-        # new_mem = mem
+        new_mem = mem
         new_cmem = cmem
         aux_loss = torch.zeros(1, requires_grad=True, **to(q))
         ae_loss = torch.zeros(1, requires_grad=True, **to(q))
@@ -305,7 +305,7 @@ class MemoryMultiHeadedAttention(nn.Module):
         # return logits, Memory(new_mem, new_cmem), aux_loss
 
         # calculate memory and compressed memory
-        x = F.pad(x, (0, 0, 0, 1), value=0.0)  # pad x to match mem
+
         old_mem, new_mem = queue_fifo(mem, x, length=self.mem_len, dim=1)
         old_mem_padding = old_mem.shape[1] % self.cmem_ratio
 
@@ -344,12 +344,10 @@ class MemoryMultiHeadedAttention(nn.Module):
 
         # Calculate auto-encoding loss
         to_pad = self.cmem_len - new_cmem.shape[1]
-        if to_pad != 0:
-            new_cmem = F.pad(new_cmem, (0, 0, to_pad, 0), value=0.0)
+        new_cmem = F.pad(new_cmem, (0, 0, to_pad, 0), value=0.)
         reconstructed_mem = self.deconv(new_cmem.transpose(1, 2)).transpose(1, 2)
-        to_pad = old_mem.shape[1] - reconstructed_mem.shape[1]
-        if to_pad != 0:
-            reconstructed_mem = F.pad(reconstructed_mem, (0, 0, 0, to_pad), value=0.)
+        to_pad = self.mem_len - old_mem.shape[1]
+        old_mem = F.pad(old_mem, (0, 0, to_pad, 0), value=0.)
 
         ae_loss = F.mse_loss(
             old_mem,
