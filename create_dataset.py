@@ -75,18 +75,13 @@ class NoteRepresentationManager:
         return new
 
     def add_tokens(self, t, i, tokens):
-        """
-        Given a matrix track, row index, column index and tuple with tokens to add,
-        it add tokens into line if possible, otherwise it add what eob_token, goes in new bar and add sob and tokens
-        and if it is not possible to add another line, it adds eos.
-        """
         if i + len(tokens) < config["data"]["max_track_length"]:
             for tk in tokens:
                 t[i] = tk
                 i += 1
-            return t, i
+            return t, i, True
         self.log.write(str(self.count) + ": Reached max length of track\n")
-        return t, i
+        return t, i, False
 
     @staticmethod
     def min_max_scaling(value, old_interval, new_interval):
@@ -98,9 +93,6 @@ class NoteRepresentationManager:
         return round((((value - mn)*(b - a)) / (mx - mn)) + a)
 
     def transform_track(self, s):
-        """
-        It transform the notes notation into a list of numbers which are the bars
-        """
         track = np.full(config["data"]["max_track_length"], config["tokens"]["pad"], dtype=np.int16)
         time_signature = 4  # default time signature, if none starts from 0
         signatures = list(s.time_signatures)
@@ -124,16 +116,22 @@ class NoteRepresentationManager:
                         return None
                     time_signature, tok = res
                     signatures.remove(signature)
-                    track, idx = self.add_tokens(track, idx, (tok,))
+                    track, idx, success = self.add_tokens(track, idx, (tok,))
+                    if not success:
+                        return track
             for tempo in tempos:  # if time is activated, min-max scaling and print token
                 if tempo.time == 0:
                     tok = self.min_max_scaling(tempo.qpm, config["data"]["tempos_total"],
                                                config["data"]["tempos_compact"])
                     tempos.remove(tempo)
                     tok = tok + config["tokens"]["tempos_first"]
-                    track, idx = self.add_tokens(track, idx, (tok,))
+                    track, idx, success = self.add_tokens(track, idx, (tok,))
+                    if not success:
+                        return track
             while note[0] >= config["data"]["resolution"] * time_signature:  # add bar token
-                track, idx = self.add_tokens(track, idx, (config["tokens"]["bar"],))
+                track, idx, success = self.add_tokens(track, idx, (config["tokens"]["bar"],))
+                if not success:
+                    return track
                 notes[n:, 0] -= round(config["data"]["resolution"] * time_signature)  # decrease all time measures
                 for signature in signatures:
                     signature.time -= config["data"]["resolution"] * time_signature
@@ -150,7 +148,9 @@ class NoteRepresentationManager:
             if config["data"]["use_velocity"]:  # if velocity, use min-max normalization with new interval
                 note[3] = self.min_max_scaling(note[3], config["data"]["velocities_total"],  # it was clipped, so
                                                config["data"]["velocities_compact"])  # no need to check values
-            track, idx = self.add_tokens(track, idx, list(map(add, self.offsets, note)))
+            track, idx, success = self.add_tokens(track, idx, list(map(add, self.offsets, note)))
+            if not success:
+                return track
         return track
 
     def transform_song(self, s):
