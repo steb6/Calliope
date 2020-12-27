@@ -27,36 +27,25 @@ class Trainer:
         self.optimizer = None
         # Models
         self.model = model
-        self.compress_latents = CompressLatents(in_dim=config["model"]["d_model"],
-                                                z_dim=config["model"]["z_dim"],
-                                                n_bars=config["data"]["max_bars"]).to(config["train"]["device"])
-        self.decompress_latents = DecompressLatents(in_dim=config["model"]["d_model"],
-                                                    z_dim=config["model"]["z_dim"],
-                                                    n_bars=config["data"]["max_bars"]).to(config["train"]["device"])
-        self.discriminator = Discriminator(config["data"]["max_bars"] * config["model"]["d_model"],
-                                           config["model"]["z_dim"]).to(config["train"]["device"])
+        assert config["data"]["max_track_length"] % config["model"]["seq_len"] == 0, 'adjust max_track_length seq_len'
+        self.n_latents = config["data"]["max_track_length"] // config["model"]["seq_len"]
+        self.discriminator = Discriminator(self.n_latents * config["model"]["d_model"],
+                                           config["model"]["z_tot_dim"]).to(config["train"]["device"])
         # Optimizers
-        self.model_optimizer = CTOpt(torch.optim.Adam([{"params": self.model.parameters()},
-                                                       {"params": self.compress_latents.parameters()},
-                                                       {"params": self.decompress_latents.parameters()}], lr=0),
+        self.model_optimizer = CTOpt(torch.optim.Adam([{"params": self.model.parameters()}], lr=0),
                                      config["train"]["warmup_steps"],
                                      (config["train"]["lr_min"], config["train"]["lr_max"]))  # TODO add other
         self.discriminator_optimizer = torch.optim.Adam(self.discriminator.parameters(), lr=5e-5)
-        # Adversarial part
-        self.discriminator = None
-        self.discriminator_optimizer = None
 
     @staticmethod
     def get_memories():
         """
         :return: 4 empty memories with dimension taken from attributes of the self class
         """
-        a = config["model"]["n_tracks"]
+        a = 4
         b = config["model"]["layers"]
         c = config["train"]["batch_size"]
         e = config["model"]["d_model"]
-        # mem_len = config["model"]["mem_len"]
-        # cmem_len = config["model"]["cmem_len"]
         device = config["train"]["device"]
         e_mems = torch.zeros(a, b, c, 0, e, dtype=torch.float32, device=device)
         e_cmems = torch.zeros(a, b, c, 0, e, dtype=torch.float32, device=device)
@@ -71,8 +60,9 @@ class Trainer:
         :return: Tuple with total_loss, auxiliary_losses and instruments losses
         """
         # Train reconstruction
-        src = np.swapaxes(src, 0, 2)  # swap batch, tracks -> tracks, batch
-        bars = torch.LongTensor(src.long()).to(config["train"]["device"])
+        src = src.reshape(config["train"]["batch_size"], 4, self.n_latents, config["model"]["seq_len"])
+        src = src.transpose(0, 2)  # swap batches and sequences
+        src = torch.LongTensor(src.long()).to(config["train"]["device"])
         e_mems, e_cmems, d_mems, d_cmems = self.get_memories()
         e_attn_losses = []
         e_ae_losses = []
@@ -80,34 +70,40 @@ class Trainer:
         d_ae_losses = []
         latents = []
         outs = []
-        for bar in bars:
-            latent, e_mems, e_cmems, e_attn_loss, e_ae_loss = self.model.encode(bar, e_mems, e_cmems)
+        for seq in src:
+            latent, e_mems, e_cmems, e_attn_loss, e_ae_loss = self.model.encode(seq, e_mems, e_cmems)
             e_attn_losses.append(e_attn_loss)
             e_ae_losses.append(e_ae_loss)
             latents.append(latent)
-        latents = torch.stack(latents)
-        latents = self.compress_latents(latents)
-        latents = self.decompress_latents(latents)
-        for bar, latent in zip(bars, latents):
-            out, d_mems, d_cmems, d_attn_loss, d_ae_loss = self.model.decode(latent, bar, d_mems, d_cmems)
-            d_attn_losses.append(d_attn_loss)
+        latents = torch.stack(latents, dim=2)  # 1 x 4 x 10 x 301 x 32
+        latents = self.model.compress_latents(latents)  # 1 x z_dim
+        latents = self.model.decompress_latents(latents)
+        latents = latents.transpose(0, 2)
+        for seq, latent in zip(src, latents):
+            out, d_mems, d_cmems, d_attn_loss, d_ae_loss = self.model.decode(latent, seq, d_mems, d_cmems)
+            d_attn_losses.append(d_attn_loss)  # TODO fix loss compute
             d_ae_losses.append(d_ae_loss)
-            outs.append(out)
-        outs = torch.stack(outs)
+            outs.append(out[:, :-1, :, :])
+        outs = torch.stack(outs, dim=1)
+        outs = outs.reshape(config["train"]["batch_size"], -1, config["tokens"]["vocab_size"], 4)
         e_ae_losses = torch.stack(e_ae_losses).mean()
         e_attn_losses = torch.stack(e_attn_losses).mean()
         d_ae_losses = torch.stack(d_ae_losses).mean()
         d_attn_losses = torch.stack(d_attn_losses).mean()
-        n_tokens = torch.count_nonzero(bars)
-        n_tokens_drums = torch.count_nonzero(bars[:, 0, :, :])
-        n_tokens_bass = torch.count_nonzero(bars[:, 1, :, :])
-        n_tokens_guitar = torch.count_nonzero(bars[:, 2, :, :])
-        n_tokens_strings = torch.count_nonzero(bars[:, 3, :, :])
-        norm = (n_tokens, n_tokens_drums, n_tokens_bass, n_tokens_guitar, n_tokens_strings)
-        bars = bars.transpose(1, 2)
-        bars = bars.transpose(2, 3)
-        bars = bars[:, :, 1:, :]
-        loss, loss_items = self.loss_computer(outs, bars, norm)  # TODO pad token and model output...?
+        # n_tokens = torch.count_nonzero(src)
+        # n_tokens_drums = torch.count_nonzero(src[..., 0])
+        # n_tokens_bass = torch.count_nonzero(src[..., 1])
+        # n_tokens_guitar = torch.count_nonzero(src[..., 2])
+        # n_tokens_strings = torch.count_nonzero(src[..., 3])
+        # norm = (n_tokens, n_tokens_drums, n_tokens_bass, n_tokens_guitar, n_tokens_strings)
+        # bars = bars.transpose(1, 2)
+        # bars = bars.transpose(2, 3)
+        # bars = bars[:, :, 1:, :]  # 1, 5010, 4
+        src = src.transpose(1, 3)
+        src = src.transpose(0, 2)
+        src = src.transpose(1, 2)
+        src = src.reshape(config["train"]["batch_size"], -1, 4)
+        loss, loss_items = self.loss_computer(outs, src)  # , norm)  # TODO pad token and model output...?
         if self.model.training:
             self.model_optimizer.zero_grad()
             (loss + e_attn_losses + e_ae_losses + d_attn_losses + d_ae_losses).backward()
@@ -121,8 +117,6 @@ class Trainer:
             #     if parameter.grad is not None:
             #         print(name)
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), 0.1)
-            torch.nn.utils.clip_grad_norm_(self.compress_latents.parameters(), 0.1)
-            torch.nn.utils.clip_grad_norm_(self.decompress_latents.parameters(), 0.1)
             self.model_optimizer.optimize()  # TODO add cosine decay and decreasing optimization updating
 
         losses = (loss.item(), e_attn_losses.item(), e_ae_losses.item(), d_attn_losses.item(), d_ae_losses.item(),
@@ -184,25 +178,26 @@ class Trainer:
         # mode + "discriminator loss": losses[10],
         # mode + "generator loss": losses[11]})
 
-    def reconstruct(self, model, original_song, note_manager=None):
+    def reconstruct(self, model, src, note_manager=None):
         """
         :param model: The trained model
         :param original_song: Tensor with shape (n_bars, n_batch, timesteps)
         :param note_manager: NoteManager class to reconstruct the song
         :return: Music, Music: original Music and reconstructed Music
         """
-        model.to(config["train"]["device"])
-        model.eval()
-        src = np.swapaxes(original_song, 0, 2)  # swap batch, tracks -> tracks, batch
-        src = torch.LongTensor(src.long()).to(config["train"]["device"])
+
+
+        src = src.reshape(config["train"]["batch_size"], 4, self.n_latents, config["model"]["seq_len"])
+        src = src.transpose(0, 2)  # swap batches and sequences
+        src = torch.LongTensor(src.long()).to(config["train"]["device"])  # but is alread a tensor
         e_mems, e_cmems, d_mems, d_cmems = self.get_memories()
         outs = []
-        for bar in src:
-            n_tokens = np.count_nonzero(bar.cpu())
-            if n_tokens == 0:
-                continue
-            latent, e_mems, e_cmems, e_attn_loss, e_ae_loss = model.encode(bar, e_mems, e_cmems)
-            out, d_mems, d_cmems, d_attn_loss, d_ae_loss = model.decode(latent, bar, d_mems, d_cmems)
+        for seq in src:
+
+
+
+            latent, e_mems, e_cmems, _, _ = model.encode(seq, e_mems, e_cmems)
+            out, d_mems, d_cmems, _, _ = model.decode(latent, seq, d_mems, d_cmems)
             out = torch.max(out, dim=-2).indices
             outs.append(out)
         outs = torch.stack(outs)
@@ -274,20 +269,19 @@ class Trainer:
         # Models
         self.model.to(config["train"]["device"])
         # Optimizers
-
         # gen_lr = 0.0001
         # reg_lr = 0.00005
         # self.optim_discriminator = torch.optim.Adam(self.discriminator.parameters(), lr=reg_lr)
         # self.optim_generator = torch.optim.Adam(self.model.encoder.parameters(), lr=reg_lr)
         # Loss
         criterion = LabelSmoothing(size=config["tokens"]["vocab_size"],
-                                   padding_idx=config["tokens"]["pad_token"],
+                                   padding_idx=config["tokens"]["pad"],
                                    smoothing=config["train"]["label_smoothing"],
                                    device=config["train"]["device"])
         criterion.to(config["train"]["device"])
         self.loss_computer = SimpleLossCompute(criterion)
         # Dataset
-        dataset = SongIterator(dataset_path=config["paths"]["dataset_path"],
+        dataset = SongIterator(dataset_path=config["paths"]["dataset"],
                                test_size=config["train"]["test_size"],
                                batch_size=config["train"]["batch_size"],
                                n_workers=config["train"]["n_workers"])
@@ -307,7 +301,7 @@ class Trainer:
         # best_aae_gen_loss = float("inf")
         for self.epoch in range(config["train"]["n_epochs"]):  # repeat for each epoch
             for it, src in enumerate(tr_loader):  # repeat for each mini-batch
-                if it % config["train"]["mb_before_eval"] == 0 and trained and False:  # TODO remove false
+                if it % config["train"]["mb_before_eval"] == 0 and trained:
                     train_progress.close()
                     ts_losses = []
                     self.model.eval()
@@ -316,6 +310,7 @@ class Trainer:
                     for test in tqdm(ts_loader, position=0, leave=True, desc=desc):  # remember test losses
                         ts_loss = self.run_mb(test)
                         ts_losses.append(ts_loss)
+                        break  # TODO remove, added just for debugging
                     final = ()  # average losses
                     for i in range(len(ts_losses[0])):  # for each loss value
                         aux = []
@@ -345,27 +340,28 @@ class Trainer:
                         torch.save(self.model, new_model)
                         print("Model saved")
                     self.log_to_wandb(final)
-                    # generated = self.generate(iterations=config["train"]["generated_iterations"])  # generation
-                    note_manager = NoteRepresentationManager(**config["tokens"], **config["data"], **config["paths"])
+                    # TODO reconstruction and generation
+                    # # generated = self.generate(iterations=config["train"]["generated_iterations"])  # generation
+                    note_manager = NoteRepresentationManager()
                     original, reconstructed = self.reconstruct(self.model, test, note_manager)
-                    prefix = "epoch_" + str(self.epoch) + "_mb_" + str(it)
-                    original.write_midi(os.path.join(wandb.run.dir, prefix + "_original.mid"))
-                    reconstructed.write_midi(os.path.join(wandb.run.dir, prefix + "_reconstructed.mid"))
-                    # generated.write_midi(os.path.join(wandb.run.dir, prefix+"_generated.mid"))
-                    midi_to_wav(os.path.join(wandb.run.dir, prefix + "_original.mid"),
-                                os.path.join(wandb.run.dir, prefix + "_original.wav"))
-                    midi_to_wav(os.path.join(wandb.run.dir, prefix + "_reconstructed.mid"),
-                                os.path.join(wandb.run.dir, prefix + "_reconstructed.wav"))
-                    # midi_to_wav(os.path.join(wandb.run.dir, prefix + "_generated.mid"),
-                    #             os.path.join(wandb.run.dir, prefix + "_generated.wav"))
-                    wandb.log({str(it_counter): [
-                        wandb.Audio(os.path.join(wandb.run.dir, prefix + "_original.wav"),
-                                    caption="original", sample_rate=32),
-                        wandb.Audio(os.path.join(wandb.run.dir, prefix + "_reconstructed.wav"),
-                                    caption="reconstructed", sample_rate=32),
-                        # wandb.Audio(os.path.join(wandb.run.dir, prefix + "_generated.wav"),
-                        #             caption="generated", sample_rate=32)
-                    ]})
+                    # prefix = "epoch_" + str(self.epoch) + "_mb_" + str(it)
+                    # original.write_midi(os.path.join(wandb.run.dir, prefix + "_original.mid"))
+                    # reconstructed.write_midi(os.path.join(wandb.run.dir, prefix + "_reconstructed.mid"))
+                    # # generated.write_midi(os.path.join(wandb.run.dir, prefix+"_generated.mid"))
+                    # midi_to_wav(os.path.join(wandb.run.dir, prefix + "_original.mid"),
+                    #             os.path.join(wandb.run.dir, prefix + "_original.wav"))
+                    # midi_to_wav(os.path.join(wandb.run.dir, prefix + "_reconstructed.mid"),
+                    #             os.path.join(wandb.run.dir, prefix + "_reconstructed.wav"))
+                    # # midi_to_wav(os.path.join(wandb.run.dir, prefix + "_generated.mid"),
+                    # #             os.path.join(wandb.run.dir, prefix + "_generated.wav"))
+                    # wandb.log({str(it_counter): [
+                    #     wandb.Audio(os.path.join(wandb.run.dir, prefix + "_original.wav"),
+                    #                 caption="original", sample_rate=32),
+                    #     wandb.Audio(os.path.join(wandb.run.dir, prefix + "_reconstructed.wav"),
+                    #                 caption="reconstructed", sample_rate=32),
+                    #     # wandb.Audio(os.path.join(wandb.run.dir, prefix + "_generated.wav"),
+                    #     #             caption="generated", sample_rate=32)
+                    # ]})
                     it_counter += 1
                     # wandb.save(os.path.join(wandb.run.dir, prefix + "_original.mid"))
                     # wandb.save(os.path.join(wandb.run.dir, prefix + "_reconstructed.mid"))

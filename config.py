@@ -5,82 +5,84 @@ remote = os.getcwd() != 'C:\\Users\\berti\\PycharmProjects\\MusAE'
 
 config = {
     "train": {
-        "create_dataset": True,
+        "create_dataset": False,
         "device": "cuda" if remote else "cpu",
         "batch_size": 1,
         "test_size": 0.1,
         "n_workers": 0,
         "n_epochs": 250,
         "label_smoothing": 0.1,
-        "mb_before_eval": 10,
-        "warmup_steps": 1000,
+        "mb_before_eval": 1,
+        "warmup_steps": 10000,
         "lr_min": 1e-6,
         "lr_max": 1e-4,
         "generated_iterations": 10,
     },
     "model": {
-        "seq_len": 500,
+        "seq_len": 300,
         "d_model": 32,
-        "n_tracks": 4,
         "heads": 4,
         "d_ff": 128,
-        "layers": 4 if remote else 1,  # 3 GB each
+        "layers": 4,  # if remote else 1,  # 3 GB each
         "dropout": 0.1,
         "mem_len": 1024,  # keep last 2 bars
-        "cmem_len": 32,  # keep one vector for each bar
+        "cmem_len": 256,  # keep one vector for each bar
         "cmem_ratio": 32,
-        "z_dim": 512
+        "z_i_dim": 300,
+        # max_track_length / seq_len = n_latents, n_latents * z_i_dim are compressed into z_tot_dim
+        "z_tot_dim": 1024
     },
     "data": {  # Parameters to create and listen the note representation
-        # "max_bars": 50,
-        "max_track_length": 5000,
+        "max_track_length": 3000,
         "use_velocity": True,
-        "reconstruct_programs": [0, 0, 32, 40],
+        "reconstruction_programs": [0, 0, 32, 40],
         "early_stop": 1000,  # set this to 0 to disable early stop
         "resolution": 24,
         "tempo": 120,
         "velocities_total": (0, 127),  # using min max scaling, limits are inclusive
-        "velocities_compat": (0, 31),  # using min max scaling, limits are inclusive
+        "velocities_compact": (0, 31),  # using min max scaling, limits are inclusive
         "tempos_total": (60, 180),  # using min max scaling, limits are inclusive
-        "tempos_compat": (0, 31)  # using min max scaling, limits are inclusive
+        "tempos_compact": (0, 31)  # using min max scaling, limits are inclusive
     },
     "tokens": {
-        "pad_token": 0,
-        "bar_token": 1,
-        "sos_token": 2,
-        "eos_token": 3,
-        "sob_token": 4,
-        "eob_token": 5,
+        "pad": 0,
+        "bar": 1,
+        "sos": 2,
+        "eos": 3,
         # Time signature
-        "two_two_token": 6,
+        # x/2
+        "two_two": 4,
         # x/4
-        "one_four_token": 7,
-        "two_four_token": 8,
-        "three_four_token": 9,
-        "four_four_token": 10,
-        "five_four_token": 11,
-        "six_four_token": 12,
-        "seven_four_token": 13,
-        "eight_four_token": 14,
+        "one_four": 5,
+        "two_four": 6,
+        "three_four": 7,
+        "four_four": 8,
+        "five_four": 9,
+        "six_four": 10,
+        "seven_four": 11,
+        "eight_four": 12,
         # x/8
-        "three_eight_token": 15,
-        "five_eight_token": 16,
-        "six_eight_token": 17,
-        "seven_eight_token": 18,
-        "nine_eight_token": 19,
-        "twelve_eight_token": 20,
+        "three_eight": 13,
+        "five_eight": 14,
+        "six_eight": 15,
+        "seven_eight": 16,
+        "nine_eight": 17,
+        "twelve_eight": 18,
         # Values
-        "num_values": 128,
-        "tempos_first_token": 21,
-        "time_first_token":     21 + 32,  # it has 128*2 values, because of 8/4 time signature
-        "pitch_first_token":    21 + 32 + 128*2,  # 132-259
-        "duration_first_token": 21 + 32 + 128*2 + 128,  # 260-387
-        "velocity_first_token": 21 + 32 + 128*2 + 128 + 128,  # this has 32 values
-        "vocab_size": 21 + 128*4 + 32*2
+        "time_n_values": 256,  # it has 128*2 values, because of 8/4 time signature
+        "pitch_n_values": 128,
+        "duration_n_values": 128,
+        "velocity_n_values": 32,
+        "tempos_first":   19,
+        "time_first":     19 + 32,
+        "pitch_first":    19 + 32 + 128*2,
+        "duration_first": 19 + 32 + 128*3,
+        "velocity_first": 19 + 32 + 128*4,
+        "vocab_size":     19 + 32 + 128*4 + 32
     },
     "paths": {
-        "raw_midi_path": "/data" if remote else "D:",
-        "dataset_path": ("/data" if remote else "D:") + os.sep + "lmd_matched_converted",
+        "raw_midi": "/data" if remote else "D:",
+        "dataset": ("/data" if remote else "D:") + os.sep + "lmd_matched_converted",
     }
 }
 

@@ -6,17 +6,16 @@ class SimpleLossCompute:
     def __init__(self, smooth_label):
         self.smooth_label = smooth_label
 
-    def __call__(self, x, y, norm):
+    def __call__(self, x, y):
         """
 
         :param x: computed song with shape (n_batch, time-steps, vocab_dim, n_tracks)
         :param y: real song with shape (n_batch, timesteps, n_tracks)
-        :param norm: Tuple with the total number of token and 4 respective number of token w.r.t. instruments
         :return: loss to use for back-propagation and instruments losses for plotting
         """
-        n_bar, n_batch, n_tok, vocab_dim, n_track = x.shape
-        x = x.reshape(n_batch, -1, vocab_dim, n_track)  # flat bars
-        y = y.reshape(n_batch, -1, n_track)  # flat bars
+        # n_bar, n_batch, n_tok, vocab_dim, n_track = x.shape
+        # x = x.reshape(n_batch, -1, vocab_dim, n_track)  # flat bars
+        # y = y.reshape(n_batch, -1, n_track)  # flat bars
 
         y_drums = y[..., 0]
         y_bass = y[..., 1]
@@ -40,4 +39,4 @@ class SimpleLossCompute:
 
         loss = (loss_drums + loss_bass + loss_guitar + loss_strings) / 4  # mean loss per token
 
-        return loss, (loss_drums, loss_bass, loss_guitar, loss_strings)
+        return loss, (loss_drums.item(), loss_bass.item(), loss_guitar.item(), loss_strings.item())

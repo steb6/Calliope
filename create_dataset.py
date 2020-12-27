@@ -7,6 +7,7 @@ from tqdm.auto import tqdm
 from manage_time_signature import TimeSignatureManager
 import copy
 from operator import add
+from config import config
 # 100'000 songs take 400 GB
 
 
@@ -15,17 +16,17 @@ class NoteRepresentationManager:
     This class has all the function needed to process a Note Representation and convert it
     """
 
-    def __init__(self, **kwargs):
-        for key in kwargs:
-            setattr(self, key, kwargs[key])
+    def __init__(self):
         self.log = None
         self.log_file = "dataset_converter_log.txt"
-        if self.use_velocity:
-            self.offsets = [self.time_first_token, self.pitch_first_token,
-                            self.duration_first_token, self.velocity_first_token]
+        if config["data"]["use_velocity"]:
+            self.offsets = [config["tokens"]["time_first"], config["tokens"]["pitch_first"],
+                            config["tokens"]["duration_first"], config["tokens"]["velocity_first"]]
         else:
-            self.offsets = [self.time_first_token, self.pitch_first_token, self.duration_first_token]
-        self.time_signature_manager = TimeSignatureManager(**kwargs)  # it uses only signature
+            self.offsets = [config["tokens"]["time_first"], config["tokens"]["pitch_first"],
+                            config["tokens"]["duration_first"]]
+        self.time_signature_manager = TimeSignatureManager()  # it uses only signature
+        self.count = 0
 
     def filter_song(self, s):
         """
@@ -42,9 +43,9 @@ class NoteRepresentationManager:
                 time.qpm = 60
             if time.qpm > 180:
                 time.qpm = 180
-        old_stdout = sys.stdout  # backup current stdout
+        old_stdout = sys.stdout  # backup current stdout because adjust_resolution is too verbose
         sys.stdout = open(os.devnull, "w")
-        s.adjust_resolution(self.resolution)  # computationally heavy
+        s.adjust_resolution(config["data"]["resolution"])  # computationally heavy
         s.clip()  # clip velocities into 0-127
         sys.stdout = old_stdout
         drum = None
@@ -68,32 +69,24 @@ class NoteRepresentationManager:
         new = muspy.Music(tempos=s.tempos if len(s.tempos) > 0 else [muspy.Tempo(time=0, qpm=120)],  # default tempo
                           time_signatures=s.time_signatures if len(s.time_signatures) > 0 else
                           [muspy.TimeSignature(time=0, numerator=4, denominator=4)],  # default time signature
-                          resolution=self.resolution,  # default resolution
+                          resolution=config["data"]["resolution"],  # default resolution
                           )
         new.tracks = [drum, guitar, bass, strings]
         return new
 
-    def add_tokens(self, t, i, j, tokens):
+    def add_tokens(self, t, i, tokens):
         """
         Given a matrix track, row index, column index and tuple with tokens to add,
         it add tokens into line if possible, otherwise it add what eob_token, goes in new bar and add sob and tokens
         and if it is not possible to add another line, it adds eos.
         """
-        if j + len(tokens) < self.max_bar_length:  # 95 + 4 < 100
+        if i + len(tokens) < config["data"]["max_track_length"]:
             for tk in tokens:
-                t[i][j] = tk
-                j += 1
-        elif i + 1 < self.max_bars:  # if adding a row, we are in limits
-            t[i][j] = self.eob_token
-            i += 1
-            j = 1
-            t[i][0] = self.sob_token
-            self.log.write(str(self.count) + ": Reached max length of bar\n")
-            return self.add_tokens(t, i, j, tokens)  # new line and recursion
-        else:
-            t[i][j] = self.eos_token
-            self.log.write(str(self.count) + ": Reached max length of track\n")
-        return t, i, j
+                t[i] = tk
+                i += 1
+            return t, i
+        self.log.write(str(self.count) + ": Reached max length of track\n")
+        return t, i
 
     @staticmethod
     def min_max_scaling(value, old_interval, new_interval):
@@ -108,7 +101,7 @@ class NoteRepresentationManager:
         """
         It transform the notes notation into a list of numbers which are the bars
         """
-        track = np.zeros((self.max_bars, self.max_bar_length), dtype=np.int16)
+        track = np.full(config["data"]["max_track_length"], config["tokens"]["pad"], dtype=np.int16)
         time_signature = 4  # default time signature, if none starts from 0
         signatures = list(s.time_signatures)
         tempos = list(s.tempos)
@@ -117,9 +110,7 @@ class NoteRepresentationManager:
         if len(tempos) == 0:
             tempos.append(muspy.Tempo(time=0, qpm=120.))
         notes = s.to_note_representation()
-        track[0, 0] = self.sos_token
-        row = 0
-        col = 1
+        idx = 0
         for n, note in enumerate(notes):  # for all note in the track
             for signature in signatures:  # If there is an activated signature
                 if signature.time == 0:
@@ -133,42 +124,33 @@ class NoteRepresentationManager:
                         return None
                     time_signature, tok = res
                     signatures.remove(signature)
-                    track, row, col = self.add_tokens(track, row, col, (tok,))
+                    track, idx = self.add_tokens(track, idx, (tok,))
             for tempo in tempos:  # if time is activated, min-max scaling and print token
                 if tempo.time == 0:
-                    t = self.min_max_scaling(tempo.qpm, self.tempos_total, self.tempos_compat)
+                    tok = self.min_max_scaling(tempo.qpm, config["data"]["tempos_total"],
+                                               config["data"]["tempos_compact"])
                     tempos.remove(tempo)
-                    tok = self.tempos_first_token + t
-                    track, row, col = self.add_tokens(track, row, col, (tok,))
-            while note[0] >= self.resolution * time_signature:  # add bar till note has time less than bar length
-                if row < self.max_bars - 1:  # if we can add another bar
-                    track[row][col] = self.eob_token
-                    col = 2
-                    row += 1
-                    track[row][0] = self.sob_token
-                    track[row][1] = self.bar_token
-                else:
-                    return track
-                notes[n:, 0] -= round(self.resolution * time_signature)  # decrease all time measures
+                    tok = tok + config["tokens"]["tempos_first"]
+                    track, idx = self.add_tokens(track, idx, (tok,))
+            while note[0] >= config["data"]["resolution"] * time_signature:  # add bar token
+                track, idx = self.add_tokens(track, idx, (config["tokens"]["bar"],))
+                notes[n:, 0] -= round(config["data"]["resolution"] * time_signature)  # decrease all time measures
                 for signature in signatures:
-                    signature.time -= self.resolution * time_signature
+                    signature.time -= config["data"]["resolution"] * time_signature
                 for tempo in tempos:
-                    tempo.time -= self.resolution * time_signature
-            if not note[0] < self.num_values * 2:  # check value of time
+                    tempo.time -= config["data"]["resolution"] * time_signature
+            if not note[0] < config["tokens"]["time_n_values"] * 2:  # check value of time
                 self.log.write(str(self.count) + ": Invalid time: " + str(note) + '\n')
-                continue
-            if not note[1] < self.num_values:  # check value of pitch
+                continue  # skip note: invalid time
+            if not note[1] < config["tokens"]["pitch_n_values"]:  # check value of pitch
                 self.log.write(str(self.count) + ": Invalid pitch: " + str(note[1]))
-                continue
-            if not note[2] < self.num_values:  # clip duration if > 127
-                note[2] = self.num_values - 1
-                continue
-            if self.use_velocity:  # if velocity, use min-max normalization with new interval
-                note[3] = self.min_max_scaling(note[3], self.velocities_total, self.velocities_compat)
-            else:
-                note = note[:-1]  # dont take last note
-            track, row, col = self.add_tokens(track, row, col, list(map(add, self.offsets, note)))
-        track[row][col] = self.eos_token
+                continue  # skip note: invalid pitch
+            if not note[2] < config["tokens"]["duration_n_values"]:  # clip duration if > 127
+                note[2] = config["tokens"]["duration_n_values"] - 1
+            if config["data"]["use_velocity"]:  # if velocity, use min-max normalization with new interval
+                note[3] = self.min_max_scaling(note[3], config["data"]["velocities_total"],  # it was clipped, so
+                                               config["data"]["velocities_compact"])  # no need to check values
+            track, idx = self.add_tokens(track, idx, list(map(add, self.offsets, note)))
         return track
 
     def transform_song(self, s):
@@ -176,56 +158,61 @@ class NoteRepresentationManager:
         It takes a filtered song and return the final tensor version of it, making a deep copy of it
         """
         processed = []
-        longest_track = 0
-
         for track in s.tracks:
-            just_track = muspy.Music(resolution=self.resolution, tempos=copy.deepcopy(s.tempos),
+            just_track = muspy.Music(resolution=config["data"]["resolution"], tempos=copy.deepcopy(s.tempos),
                                      time_signatures=copy.deepcopy(s.time_signatures))
             just_track.append(copy.deepcopy(track))
             adjusted_track = self.transform_track(just_track)
-            if adjusted_track is None:  # if one track is not valid, return None  # TODO this does not happen right?
+            if adjusted_track is None:  # unknown time signature
                 return None
             processed.append(adjusted_track)
-            if len(adjusted_track) > longest_track:
-                longest_track = len(adjusted_track)
-        return processed
+        return np.array(processed).astype(np.int16)
+
+    @staticmethod
+    def it_is_a_note(t, p, d, v):
+        x1 = config["tokens"]["time_first"]
+        x2 = config["tokens"]["pitch_first"]
+        x3 = config["tokens"]["duration_first"]
+        x4 = config["tokens"]["velocity_first"]
+        return x1 <= t < x2 <= p < x3 <= d < x4 <= v
 
     def reconstruct_music(self, s):
         """
         It takes a tensor song and return a muspy.Music element, music can be even in bar format,
         it use time_offset to move the beginning of the notes after n bars
         """
-        music = muspy.Music(resolution=self.resolution)
+        music = muspy.Music(resolution=config["data"]["resolution"])
         time_signature = 4
         for i, instrument in enumerate(s):  # for each encoder track
             time = 0
-            track = muspy.Track(is_drum=i == 0, program=self.reconstruct_programs[i])
-            # for bar in instrument:  # for each bar
+            track = muspy.Track(is_drum=i == 0, program=config["data"]["reconstruction_programs"][i])
             notes = instrument.flat
-            while len(notes) > 4:  # and bar[0] != self.pad_token:
+            while len(notes) > 4 and notes[0] != config["tokens"]["pad"]:
                 # If it is a note
-                if self.time_first_token <= notes[0] < self.pitch_first_token <= notes[1] < \
-                        self.duration_first_token <= notes[2] < self.velocity_first_token <= notes[3]:
-                    note = muspy.Note(notes[0] + time - self.time_first_token,
-                                      notes[1] - self.pitch_first_token,
-                                      notes[2] - self.duration_first_token,
-                                      self.min_max_scaling(notes[3] - self.velocity_first_token, self.velocities_compat,
-                                                           self.velocities_total))
+                if self.it_is_a_note(notes[0], notes[1], notes[2], notes[3]):
+                    note = muspy.Note(notes[0] + time - config["tokens"]["time_first"],
+                                      notes[1] - config["tokens"]["pitch_first"],
+                                      notes[2] - config["tokens"]["duration_first"],
+                                      self.min_max_scaling(notes[3] - config["tokens"]["velocity_first"],
+                                                           config["data"]["velocities_compact"],
+                                                           config["data"]["velocities_total"]))
                     track.append(note)
                     notes = notes[4:]
-                elif notes[0] == self.bar_token:  # if it is a bar
-                    time += round(self.resolution * time_signature)
+                elif notes[0] == config["tokens"]["bar"]:  # if it is a bar
+                    time += round(config["data"]["resolution"] * time_signature)  # round just to return int
                     notes = notes[1:]
-                    # track.notes.append(muspy.Note(time=time, pitch=60, duration=12, velocity=127))  # TODO bar sound
+                    # track.notes.append(muspy.Note(time=time, pitch=60, duration=12, velocity=127))  # bar sound
                 # check if it is a time signature
                 # TODO avoid to add signature or tempos 4 times
                 elif self.time_signature_manager.from_token_to_time_and_fraction(notes[0]) is not None:
                     time_signature, n, d = self.time_signature_manager.from_token_to_time_and_fraction(notes[0])
                     music.time_signatures.append(muspy.TimeSignature(time=time, numerator=n, denominator=d))
                     notes = notes[1:]
-                elif self.tempos_first_token <= notes[0] < self.tempos_first_token + self.tempos_compat[1]+1:  # tempo
-                    tempo = self.min_max_scaling(notes[0] - self.tempos_first_token,
-                                                 self.tempos_compat,  self.tempos_total)
+                elif config["tokens"]["tempos_first"] <= notes[0] <= config["tokens"]["tempos_first"] \
+                        + config["data"]["tempos_compact"][1]:  # tempos_compact is 31, so we have <=
+                    tempo = self.min_max_scaling(notes[0] - config["tokens"]["tempos_first"],
+                                                 config["data"]["tempos_compact"],
+                                                 config["data"]["tempos_total"])
                     music.tempos.append(muspy.Tempo(time=time, qpm=tempo))
                     notes = notes[1:]
                 else:  # unknown combination, just skip (maybe undertrained model)
@@ -259,24 +246,24 @@ class NoteRepresentationManager:
         Given a dataset path and a destination path, it walks all directories of dataset
         and for each song create a tensor
         """
-        if not os.path.exists(os.path.join(self.raw_midi_path, "lmd_matched")):
-            print("Downloading Lakh Dataset into "+self.raw_midi_path)
-            muspy.LakhMIDIMatchedDataset(self.raw_midi_path, download_and_extract=True)
-        print("Converting Lakh Dataset from " + self.raw_midi_path + " in " + self.dataset_path)
-        raw_midi = self.raw_midi_path + os.sep + "lmd_matched"
-        if self.early_stop == 0:
+        if not os.path.exists(os.path.join(config["paths"]["raw_midi"], "lmd_matched")):
+            print("Downloading Lakh Dataset into "+config["paths"]["raw_midi"])
+            muspy.LakhMIDIMatchedDataset(config["paths"]["raw_midi"], download_and_extract=True)
+        print("Converting Lakh Dataset from " + config["paths"]["raw_midi"] + " in " + config["paths"]["dataset"])
+        raw_midi = config["paths"]["raw_midi"] + os.sep + "lmd_matched"
+        if config["data"]["early_stop"] == 0:
             dataset_length = sum([len(files) for _, _, files in os.walk(raw_midi)])
         else:
-            dataset_length = self.early_stop
+            dataset_length = config["data"]["early_stop"]
         progbar = tqdm(total=dataset_length, leave=True, position=0, desc="Dataset creation")
         self.count = 0
-        os.makedirs(self.dataset_path)
+        os.makedirs(config["paths"]["dataset"])
         self.log = open(self.log_file, "w")
         self.log.write("Log of dataset_converter, to check if it is working right\n")
         # lengths = []
         for subdir, dirs, files in os.walk(raw_midi):  # iterate over all subdirectories
             for filename in files:  # iterate over all files
-                if self.early_stop == 0 and self.count > 0:  # if not early stop, update bar anyway
+                if config["data"]["early_stop"] == 0 and self.count > 0:  # if not early stop, update bar anyway
                     progbar.update()
                 filepath = subdir + os.sep + filename
                 try:
@@ -290,8 +277,6 @@ class NoteRepresentationManager:
                 tensor_song = self.transform_song(filtered_song)
                 if tensor_song is None:
                     continue
-                tensor_song = np.array(tensor_song).astype(np.int16)
-                # reconstructed_music = self.reconstruct_music(tensor_song)
                 # TODO to save length
                 # for elem in tensor_song:
                 # lengths.append(len(elem))
@@ -305,15 +290,17 @@ class NoteRepresentationManager:
                 # except Exception as e:
                 #     self.log.write(e.__str__()+'\n')
                 # try:
+                #     reconstructed_music = self.reconstruct_music(tensor_song)
                 #     reconstructed_music.write_midi("after.mid")
                 # except Exception as e:
                 #     self.log.write(e.__str__()+'\n')
-                with open(os.path.join(self.dataset_path, str(self.count) + '.pickle'), 'wb') as f:
+                # TODO end test
+                with open(os.path.join(config["paths"]["dataset"], str(self.count) + '.pickle'), 'wb') as f:
                     pickle.dump(tensor_song, f)
                 self.count += 1
-                if self.early_stop != 0:  # if early_stop, we update progbar only after a success
+                if config["data"]["early_stop"] != 0:  # if early_stop, we update progbar only after a success
                     progbar.update()
-                    if self.count >= self.early_stop:
+                    if self.count >= config["data"]["early_stop"]:
                         self.log.close()
                         # import matplotlib.pyplot as plt
                         # plt.hist(lengths, density=True, bins=30)  # `density=False` would make counts
@@ -322,8 +309,3 @@ class NoteRepresentationManager:
                         # plt.show()
                         return
         self.log.close()
-
-
-if __name__ == "__main__":
-    from config import config
-    manager = NoteRepresentationManager(**config["data"], **config["tokens"], **config["paths"])

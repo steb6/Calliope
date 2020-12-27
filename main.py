@@ -29,8 +29,8 @@ def train_ct():
     set_freer_gpu()
 
     if config["train"]["create_dataset"]:
-        shutil.rmtree(config["paths"]["dataset_path"], ignore_errors=True)
-        notes = NoteRepresentationManager(**config["tokens"], **config["data"], **config["paths"])
+        shutil.rmtree(config["paths"]["dataset"], ignore_errors=True)
+        notes = NoteRepresentationManager()
         notes.convert_dataset()
 
     m = TransformerAutoencoder()
