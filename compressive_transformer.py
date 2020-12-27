@@ -7,12 +7,12 @@ import copy
 from functools import partial
 from collections import namedtuple
 from config import config
-from compress_latents import CompressLatents, DecompressLatents
+# from compress_latents import CompressLatents, DecompressLatents
 
 Memory = namedtuple('Memory', ['mem', 'compressed_mem'])
 
 
-class TransformerAutoencoder(nn.Module):
+class CompressiveEncoder(nn.Module):
     def __init__(self,
                  d_model=config["model"]["d_model"],
                  heads=config["model"]["heads"],
@@ -25,111 +25,147 @@ class TransformerAutoencoder(nn.Module):
                  cmem_len=config["model"]["cmem_len"],
                  cmem_ratio=config["model"]["cmem_ratio"],
                  pad_token=config["tokens"]["pad"],
+                 z_i_dim=config["model"]["z_i_dim"],
+                 ):
+        super(CompressiveEncoder, self).__init__()
+        assert mem_len >= seq_len, 'length of memory should be at least the sequence length'
+        assert cmem_len >= (mem_len // cmem_ratio), f'len of cmem should be at least ' f'{int(mem_len // cmem_ratio)}' \
+                                                    f' but it is ' f'{int(cmem_len)}'
+        c = copy.deepcopy
+        e_mem_attn = Residual(PreNorm(d_model, MemoryMultiHeadedAttention(heads, d_model, seq_len,
+                                                                          mem_len, cmem_len, cmem_ratio,
+                                                                          mask_subsequent=False)))
+        ff = Residual(PreNorm(d_model, FeedForward(d_model, d_ff, dropout=0.1)))
+        encoder = Encoder(EncoderLayer(d_model, c(e_mem_attn), c(ff), dropout),
+                          layers, vocab_size, d_model, pad_token, seq_len, z_i_dim)
+        self.drums_encoder = c(encoder)
+        self.bass_encoder = c(encoder)
+        self.guitar_encoder = c(encoder)
+        self.strings_encoder = c(encoder)
+        for p in self.parameters():
+            if p.dim() > 1:
+                nn.init.xavier_uniform_(p)
+
+    def forward(self, bar, mems, cmems):
+        d_z, d_mem, d_cmem, d_l, d_ae = self.drums_encoder(bar[0, ...], mems[0, ...], cmems[0, ...])
+        b_z, b_mem, b_cmem, b_l, b_ae = self.bass_encoder(bar[1, ...], mems[1, ...], cmems[1, ...])
+        g_z, g_mem, g_cmem, g_l, g_ae = self.guitar_encoder(bar[2, ...], mems[2, ...], cmems[2, ...])
+        s_z, s_mem, s_cmem, s_l, s_ae = self.strings_encoder(bar[3, ...], mems[3, ...], cmems[3, ...])
+        mems = torch.stack([d_mem, b_mem, g_mem, s_mem])
+        cmems = torch.stack([d_cmem, b_cmem, g_cmem, s_cmem])
+        mems, cmems = map(torch.detach, (mems, cmems))
+        latents = torch.stack([d_z, b_z, g_z, s_z], dim=1)
+        aux_loss = torch.stack((d_l, b_l, g_l, s_l))
+        aux_loss = torch.mean(aux_loss)
+        ae_loss = torch.stack((d_ae, b_ae, g_ae, s_ae))
+        ae_loss = torch.mean(ae_loss)
+        return latents, mems, cmems, aux_loss, ae_loss
+
+
+class LatentsCompressor(nn.Module):
+    def __init__(self,
+                 d_model=config["model"]["d_model"],
+                 seq_len=config["model"]["seq_len"],
                  n_latents=config["data"]["max_track_length"] // config["model"]["seq_len"],
                  z_i_dim=config["model"]["z_i_dim"],
                  z_tot_dim=config["model"]["z_tot_dim"]
                  ):
-        super(TransformerAutoencoder, self).__init__()
+        super(LatentsCompressor, self).__init__()
+        assert config["data"]["max_track_length"] % config["model"]["seq_len"] == 0
+        self.sequence_compressor = nn.Linear((seq_len+1)*d_model, z_i_dim)  # +1 because adding sos and eos
+        self.track_compressor = nn.Linear(z_i_dim*n_latents, z_tot_dim)
+        self.song_compressor = nn.Linear(z_tot_dim*4, z_tot_dim)
 
+    def forward(self, latents):
+        latents = torch.flatten(latents, start_dim=3)
+        latents = self.sequence_compressor(latents)
+        latents = torch.flatten(latents, start_dim=2)
+        latents = self.track_compressor(latents)
+        latents = torch.flatten(latents, start_dim=1)
+        latents = self.song_compressor(latents)
+        return latents
+
+
+class LatentsDecompressor(nn.Module):
+    def __init__(self,
+                 d_model=config["model"]["d_model"],
+                 seq_len=config["model"]["seq_len"],
+                 n_latents=config["data"]["max_track_length"] // config["model"]["seq_len"],
+                 z_i_dim=config["model"]["z_i_dim"],
+                 z_tot_dim=config["model"]["z_tot_dim"]
+                 ):
+        super(LatentsDecompressor, self).__init__()
+        assert config["data"]["max_track_length"] % config["model"]["seq_len"] == 0
+        self.sequence_decompressor = nn.Linear(z_i_dim, (seq_len+1)*d_model)  # +1 because adding sos and eos
+        self.track_decompressor = nn.Linear(z_tot_dim, z_i_dim*n_latents)
+        self.song_decompressor = nn.Linear(z_tot_dim, z_tot_dim*4)
+        self.z_tot_dim = z_tot_dim
+        self.z_i_dim = z_i_dim
+        self.n_latents = n_latents
+        self.seq_len = seq_len
+        self.d_model = d_model
+
+    def forward(self, latents):  # 1 x 1024 -> 1 x 4 x 10 x 301 x 32
+        latents = self.song_decompressor(latents)
+        latents = latents.reshape(*latents.shape[:-1], 4, self.z_tot_dim)
+        latents = self.track_decompressor(latents)
+        latents = latents.reshape(*latents.shape[:-1], self.n_latents, self.z_i_dim)
+        latents = self.sequence_decompressor(latents)
+        latents = latents.reshape(*latents.shape[:-1], self.seq_len+1, self.d_model)
+        return latents
+
+
+class CompressiveDecoder(nn.Module):
+    def __init__(self,
+                 d_model=config["model"]["d_model"],
+                 heads=config["model"]["heads"],
+                 d_ff=config["model"]["d_ff"],
+                 dropout=config["model"]["dropout"],
+                 layers=config["model"]["layers"],
+                 vocab_size=config["tokens"]["vocab_size"],
+                 seq_len=config["model"]["seq_len"],
+                 mem_len=config["model"]["mem_len"],
+                 cmem_len=config["model"]["cmem_len"],
+                 cmem_ratio=config["model"]["cmem_ratio"],
+                 pad_token=config["tokens"]["pad"],
+                 z_i_dim=config["model"]["z_i_dim"],
+                 ):
+        super(CompressiveDecoder, self).__init__()
         assert mem_len >= seq_len, 'length of memory should be at least the sequence length'
         assert cmem_len >= (mem_len // cmem_ratio), f'len of cmem should be at least ' f'{int(mem_len // cmem_ratio)}' \
                                                     f' but it is ' f'{int(cmem_len)}'
-
         c = copy.deepcopy
-        # TODO check dropout, bias
-        e_mem_attn = Residual(PreNorm(d_model, MemoryMultiHeadedAttention(heads, d_model, seq_len,
-                                                                          mem_len, cmem_len, cmem_ratio,
-                                                                          mask_subsequent=False)))
         d_mem_attn = Residual(PreNorm(d_model, MemoryMultiHeadedAttention(heads, d_model, seq_len,
                                                                           mem_len, cmem_len, cmem_ratio,
                                                                           mask_subsequent=True)))
         mh_attn = Residual(PreNorm(d_model, MultiHeadedAttention(heads, d_model)))
         ff = Residual(PreNorm(d_model, FeedForward(d_model, d_ff, dropout=0.1)))
-
-        encoder = Encoder(EncoderLayer(d_model, c(e_mem_attn), c(ff), dropout),
-                          layers, vocab_size, d_model, pad_token, seq_len, z_i_dim)
         decoder = Decoder(DecoderLayer(d_model, c(d_mem_attn), c(mh_attn), c(ff), dropout, heads),
                           layers, vocab_size, d_model, pad_token, seq_len, z_i_dim)
-
-        self.drums_encoder = c(encoder)
-        self.bass_encoder = c(encoder)
-        self.guitar_encoder = c(encoder)
-        self.strings_encoder = c(encoder)
-
         self.drums_decoder = c(decoder)
         self.bass_decoder = c(decoder)
         self.guitar_decoder = c(decoder)
         self.strings_decoder = c(decoder)
-
         self.generator = Generator(d_model, vocab_size)
-
-        # TODO do not aggregate latents of tracks
-        self.linear_encoder = nn.Linear(z_i_dim * 4, z_i_dim)
-
-        self.latents_compressor = CompressLatents(d_model=d_model,
-                                                  seq_len=seq_len,
-                                                  n_latents=n_latents,
-                                                  z_i_dim=z_i_dim,
-                                                  z_tot_dim=z_tot_dim)
-        self.latents_decompressor = DecompressLatents(d_model=d_model,
-                                                      seq_len=seq_len,
-                                                      n_latents=n_latents,
-                                                      z_i_dim=z_i_dim,
-                                                      z_tot_dim=z_tot_dim)
         for p in self.parameters():
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
-    def encode(self, bar, mems, cmems):
-        d_z, d_mem, d_cmem, d_l, d_ae = self.drums_encoder(bar[0, ...], mems[0, ...], cmems[0, ...])
-        b_z, b_mem, b_cmem, b_l, b_ae = self.bass_encoder(bar[1, ...], mems[1, ...], cmems[1, ...])
-        g_z, g_mem, g_cmem, g_l, g_ae = self.guitar_encoder(bar[2, ...], mems[2, ...], cmems[2, ...])
-        s_z, s_mem, s_cmem, s_l, s_ae = self.strings_encoder(bar[3, ...], mems[3, ...], cmems[3, ...])
-
-        mems = torch.stack([d_mem, b_mem, g_mem, s_mem])
-        cmems = torch.stack([d_cmem, b_cmem, g_cmem, s_cmem])
-        mems, cmems = map(torch.detach, (mems, cmems))
-
-        latents = torch.stack([d_z, b_z, g_z, s_z], dim=1)
-        # latents = torch.sigmoid(latents)
-        # latents = torch.cat([d_z, b_z, g_z, s_z], dim=-1)
-        # latents = self.linear_encoder(latents)  # TODO do not aggregate
-        # latents = torch.sigmoid(latents)  # TODO is it right?
-
-        aux_loss = torch.stack((d_l, b_l, g_l, s_l))
-        aux_loss = torch.mean(aux_loss)
-
-        ae_loss = torch.stack((d_ae, b_ae, g_ae, s_ae))
-        ae_loss = torch.mean(ae_loss)
-
-        return latents, mems, cmems, aux_loss, ae_loss
-
-    def decode(self, latent, seq, mems, cmems):
+    def forward(self, latent, seq, mems, cmems):
         d_out, d_mem, d_cmem, d_l, d_ae = self.drums_decoder(latent, seq[0, ...], mems[0, ...], cmems[0, ...])
         b_out, b_mem, b_cmem, b_l, b_ae = self.bass_decoder(latent, seq[1, ...], mems[1, ...], cmems[1, ...])
         g_out, g_mem, g_cmem, g_l, g_ae = self.guitar_decoder(latent, seq[2, ...], mems[2, :, :, :, :], cmems[2, ...])
         s_out, s_mem, s_cmem, s_l, s_ae = self.strings_decoder(latent, seq[3, ...], mems[3, ...], cmems[3, ...])
-
         mems = torch.stack([d_mem, b_mem, g_mem, s_mem])
         cmems = torch.stack([d_cmem, b_cmem, g_cmem, s_cmem])
         mems, cmems = map(torch.detach, (mems, cmems))
-
         output = torch.stack([d_out, b_out, g_out, s_out], dim=-1)
         output = self.generator(output)
-
         aux_loss = torch.stack((d_l, b_l, g_l, s_l))
         aux_loss = torch.mean(aux_loss)
-
         ae_loss = torch.stack((d_ae, b_ae, g_ae, s_ae))
         ae_loss = torch.mean(ae_loss)
-
         return output, mems, cmems, aux_loss, ae_loss
-
-    def compress_latents(self, latents):
-        return self.latents_compressor(latents)
-
-    def decompress_latents(self, latents):
-        return self.latents_decompressor(latents)
 
 
 class Encoder(nn.Module):
@@ -234,7 +270,6 @@ class EncoderLayer(nn.Module):
 
 class DecoderLayer(nn.Module):
     """Decoder is made of self-attn, src-attn, and feed forward (defined below)"""
-
     def __init__(self, size, mem_attn, src_attn, feed_forward, dropout, heads):
         super(DecoderLayer, self).__init__()
         self.size = size
@@ -604,3 +639,123 @@ def split_at_index(dim, index, t):
 
 def cast_tuple(el):
     return el if isinstance(el, tuple) else (el,)
+
+
+# class TransformerAutoencoder(nn.Module):
+#     def __init__(self,
+#                  d_model=config["model"]["d_model"],
+#                  heads=config["model"]["heads"],
+#                  d_ff=config["model"]["d_ff"],
+#                  dropout=config["model"]["dropout"],
+#                  layers=config["model"]["layers"],
+#                  vocab_size=config["tokens"]["vocab_size"],
+#                  seq_len=config["model"]["seq_len"],
+#                  mem_len=config["model"]["mem_len"],
+#                  cmem_len=config["model"]["cmem_len"],
+#                  cmem_ratio=config["model"]["cmem_ratio"],
+#                  pad_token=config["tokens"]["pad"],
+#                  n_latents=config["data"]["max_track_length"] // config["model"]["seq_len"],
+#                  z_i_dim=config["model"]["z_i_dim"],
+#                  z_tot_dim=config["model"]["z_tot_dim"]
+#                  ):
+#         super(TransformerAutoencoder, self).__init__()
+#
+#         assert mem_len >= seq_len, 'length of memory should be at least the sequence length'
+#         assert cmem_len >= (mem_len // cmem_ratio), f'len of cmem should be at least ' f'{int(mem_len // cmem_ratio)}' \
+#                                                     f' but it is ' f'{int(cmem_len)}'
+#
+#         c = copy.deepcopy
+#         # TODO check dropout, bias
+#         e_mem_attn = Residual(PreNorm(d_model, MemoryMultiHeadedAttention(heads, d_model, seq_len,
+#                                                                           mem_len, cmem_len, cmem_ratio,
+#                                                                           mask_subsequent=False)))
+#         d_mem_attn = Residual(PreNorm(d_model, MemoryMultiHeadedAttention(heads, d_model, seq_len,
+#                                                                           mem_len, cmem_len, cmem_ratio,
+#                                                                           mask_subsequent=True)))
+#         mh_attn = Residual(PreNorm(d_model, MultiHeadedAttention(heads, d_model)))
+#         ff = Residual(PreNorm(d_model, FeedForward(d_model, d_ff, dropout=0.1)))
+#
+#         encoder = Encoder(EncoderLayer(d_model, c(e_mem_attn), c(ff), dropout),
+#                           layers, vocab_size, d_model, pad_token, seq_len, z_i_dim)
+#         decoder = Decoder(DecoderLayer(d_model, c(d_mem_attn), c(mh_attn), c(ff), dropout, heads),
+#                           layers, vocab_size, d_model, pad_token, seq_len, z_i_dim)
+#
+#         self.drums_encoder = c(encoder)
+#         self.bass_encoder = c(encoder)
+#         self.guitar_encoder = c(encoder)
+#         self.strings_encoder = c(encoder)
+#
+#         self.drums_decoder = c(decoder)
+#         self.bass_decoder = c(decoder)
+#         self.guitar_decoder = c(decoder)
+#         self.strings_decoder = c(decoder)
+#
+#         self.generator = Generator(d_model, vocab_size)
+#
+#         # TODO do not aggregate latents of tracks
+#         self.linear_encoder = nn.Linear(z_i_dim * 4, z_i_dim)
+#
+#         self.latents_compressor = CompressLatents(d_model=d_model,
+#                                                   seq_len=seq_len,
+#                                                   n_latents=n_latents,
+#                                                   z_i_dim=z_i_dim,
+#                                                   z_tot_dim=z_tot_dim)
+#         self.latents_decompressor = DecompressLatents(d_model=d_model,
+#                                                       seq_len=seq_len,
+#                                                       n_latents=n_latents,
+#                                                       z_i_dim=z_i_dim,
+#                                                       z_tot_dim=z_tot_dim)
+#         for p in self.parameters():
+#             if p.dim() > 1:
+#                 nn.init.xavier_uniform_(p)
+#
+#     def encode(self, bar, mems, cmems):
+#         d_z, d_mem, d_cmem, d_l, d_ae = self.drums_encoder(bar[0, ...], mems[0, ...], cmems[0, ...])
+#         b_z, b_mem, b_cmem, b_l, b_ae = self.bass_encoder(bar[1, ...], mems[1, ...], cmems[1, ...])
+#         g_z, g_mem, g_cmem, g_l, g_ae = self.guitar_encoder(bar[2, ...], mems[2, ...], cmems[2, ...])
+#         s_z, s_mem, s_cmem, s_l, s_ae = self.strings_encoder(bar[3, ...], mems[3, ...], cmems[3, ...])
+#
+#         mems = torch.stack([d_mem, b_mem, g_mem, s_mem])
+#         cmems = torch.stack([d_cmem, b_cmem, g_cmem, s_cmem])
+#         mems, cmems = map(torch.detach, (mems, cmems))
+#
+#         latents = torch.stack([d_z, b_z, g_z, s_z], dim=1)
+#         # latents = torch.sigmoid(latents)
+#         # latents = torch.cat([d_z, b_z, g_z, s_z], dim=-1)
+#         # latents = self.linear_encoder(latents)  # TODO do not aggregate
+#         # latents = torch.sigmoid(latents)  # TODO is it right?
+#
+#         aux_loss = torch.stack((d_l, b_l, g_l, s_l))
+#         aux_loss = torch.mean(aux_loss)
+#
+#         ae_loss = torch.stack((d_ae, b_ae, g_ae, s_ae))
+#         ae_loss = torch.mean(ae_loss)
+#
+#         return latents, mems, cmems, aux_loss, ae_loss
+#
+#     def decode(self, latent, seq, mems, cmems):
+#         d_out, d_mem, d_cmem, d_l, d_ae = self.drums_decoder(latent, seq[0, ...], mems[0, ...], cmems[0, ...])
+#         b_out, b_mem, b_cmem, b_l, b_ae = self.bass_decoder(latent, seq[1, ...], mems[1, ...], cmems[1, ...])
+#         g_out, g_mem, g_cmem, g_l, g_ae = self.guitar_decoder(latent, seq[2, ...], mems[2, :, :, :, :], cmems[2, ...])
+#         s_out, s_mem, s_cmem, s_l, s_ae = self.strings_decoder(latent, seq[3, ...], mems[3, ...], cmems[3, ...])
+#
+#         mems = torch.stack([d_mem, b_mem, g_mem, s_mem])
+#         cmems = torch.stack([d_cmem, b_cmem, g_cmem, s_cmem])
+#         mems, cmems = map(torch.detach, (mems, cmems))
+#
+#         output = torch.stack([d_out, b_out, g_out, s_out], dim=-1)
+#         output = self.generator(output)
+#
+#         aux_loss = torch.stack((d_l, b_l, g_l, s_l))
+#         aux_loss = torch.mean(aux_loss)
+#
+#         ae_loss = torch.stack((d_ae, b_ae, g_ae, s_ae))
+#         ae_loss = torch.mean(ae_loss)
+#
+#         return output, mems, cmems, aux_loss, ae_loss
+#
+#     def compress_latents(self, latents):
+#         return self.latents_compressor(latents)
+#
+#     def decompress_latents(self, latents):
+#         return self.latents_decompressor(latents)

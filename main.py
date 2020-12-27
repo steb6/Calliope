@@ -1,7 +1,6 @@
 from config import set_freer_gpu
 from create_dataset import NoteRepresentationManager
 from config import config
-from compressive_transformer import TransformerAutoencoder
 from train import Trainer
 # from train_aae import AAETrainer
 import shutil
@@ -33,12 +32,11 @@ def train_ct():
         notes = NoteRepresentationManager()
         notes.convert_dataset()
 
-    m = TransformerAutoencoder()
-
-    trainer = Trainer(model=m)
+    trainer = Trainer()
     trainer.train()
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # TODO put here assert I guess
+    assert config["data"]["max_track_length"] % config["model"]["seq_len"] == 0, 'adjust max_track_length seq_len'
     train_ct()
     # train_aae()
