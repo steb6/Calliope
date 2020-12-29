@@ -6,37 +6,40 @@ remote = os.getcwd() != 'C:\\Users\\berti\\PycharmProjects\\MusAE'
 config = {
     "train": {
         "create_dataset": False,
-        "device": "cuda" if remote else "cpu",
+        "device": "cuda" if remote else "cuda",
         "batch_size": 1,
-        "test_size": 0.1,
+        "test_size": 0.001 if remote else 0.1,  # 100 on remote
         "n_workers": 0,
         "n_epochs": 250,
         "label_smoothing": 0.1,
-        "mb_before_eval": 1,
-        "warmup_steps": 10000,
+        "mb_before_eval": 1000 if remote else 10,  # if >= early_stopping, happens at each epoch
+        "warmup_steps": 100000 if remote else 10,
         "lr_min": 1e-6,
         "lr_max": 1e-4,
+        "decay_steps": 100000 if remote else 1000000,
+        "minimum_lr": 1e-6,
         "generated_iterations": 10,
     },
     "model": {
+        "total_seq_len": 3000 if remote else 900,
         "seq_len": 300,
         "d_model": 32,
         "heads": 4,
         "d_ff": 128,
-        "layers": 4,  # if remote else 1,  # 3 GB each
+        "layers": 4 if remote else 1,  # if remote else 1,  # 3 GB each
         "dropout": 0.1,
-        "mem_len": 1024,  # keep last 2 bars
-        "cmem_len": 256,  # keep one vector for each bar
+        "mem_len": 602,  # keep last 2 seq
+        "cmem_len": 76,  # keep 4 compression
         "cmem_ratio": 32,
         "z_i_dim": 300,
         # max_track_length / seq_len = n_latents, n_latents * z_i_dim are compressed into z_tot_dim
         "z_tot_dim": 1024
     },
     "data": {  # Parameters to create and listen the note representation
-        "max_track_length": 3000,
+        "max_track_length": 10000,
         "use_velocity": True,
         "reconstruction_programs": [0, 0, 32, 40],
-        "early_stop": 1000,  # set this to 0 to disable early stop
+        "early_stop": 0 if remote else 10,  # set this to 0 to disable early stop
         "resolution": 24,
         "tempo": 120,
         "velocities_total": (0, 127),  # using min max scaling, limits are inclusive

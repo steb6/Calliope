@@ -101,7 +101,11 @@ class NoteRepresentationManager:
             signatures.append(muspy.TimeSignature(time=0, numerator=4, denominator=4))
         if len(tempos) == 0:
             tempos.append(muspy.Tempo(time=0, qpm=120.))
-        notes = s.to_note_representation()
+        try:
+            notes = s.to_note_representation()
+        except Exception as e:
+            self.log.write(str(self.count)+': '+e.__str__()+'\n')
+            return None
         idx = 0
         for n, note in enumerate(notes):  # for all note in the track
             for signature in signatures:  # If there is an activated signature

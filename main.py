@@ -17,11 +17,6 @@ import os
 # TO DETACH ctrl+b d
 # TO VISUALIZE GPUs STATUS: nvidia-smi
 # TO GET RESULTS: scp -r berti@131.114.137.168:MusAE/2020* C:\Users\berti\PycharmProjects\MusAE\remote_results
-# def train_aae():
-#     set_freer_gpu()
-#     ct = torch.load(os.path.join("remote_results", "checkpoint_16.pt"))
-#     trainer = AAETrainer(model=ct, dataset_path=config["paths"]["dataset_path"], **config["train"], config=config)
-#     trainer.train()
 
 
 def train_ct():
@@ -37,6 +32,6 @@ def train_ct():
 
 
 if __name__ == "__main__":  # TODO put here assert I guess
-    assert config["data"]["max_track_length"] % config["model"]["seq_len"] == 0, 'adjust max_track_length seq_len'
+    assert config["model"]["total_seq_len"] % config["model"]["seq_len"] == 0, 'adjust total_seq_len seq_len'
     train_ct()
     # train_aae()

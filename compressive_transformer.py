@@ -55,10 +55,8 @@ class CompressiveEncoder(nn.Module):
         cmems = torch.stack([d_cmem, b_cmem, g_cmem, s_cmem])
         mems, cmems = map(torch.detach, (mems, cmems))
         latents = torch.stack([d_z, b_z, g_z, s_z], dim=1)
-        aux_loss = torch.stack((d_l, b_l, g_l, s_l))
-        aux_loss = torch.mean(aux_loss)
-        ae_loss = torch.stack((d_ae, b_ae, g_ae, s_ae))
-        ae_loss = torch.mean(ae_loss)
+        aux_loss = torch.stack((d_l, b_l, g_l, s_l)).mean()
+        ae_loss = torch.stack((d_ae, b_ae, g_ae, s_ae)).mean()
         return latents, mems, cmems, aux_loss, ae_loss
 
 
@@ -66,23 +64,26 @@ class LatentsCompressor(nn.Module):
     def __init__(self,
                  d_model=config["model"]["d_model"],
                  seq_len=config["model"]["seq_len"],
-                 n_latents=config["data"]["max_track_length"] // config["model"]["seq_len"],
+                 n_latents=config["model"]["total_seq_len"] // config["model"]["seq_len"],
                  z_i_dim=config["model"]["z_i_dim"],
                  z_tot_dim=config["model"]["z_tot_dim"]
                  ):
         super(LatentsCompressor, self).__init__()
-        assert config["data"]["max_track_length"] % config["model"]["seq_len"] == 0
         self.sequence_compressor = nn.Linear((seq_len+1)*d_model, z_i_dim)  # +1 because adding sos and eos
         self.track_compressor = nn.Linear(z_i_dim*n_latents, z_tot_dim)
         self.song_compressor = nn.Linear(z_tot_dim*4, z_tot_dim)
+        self.act = torch.nn.ReLU()
 
     def forward(self, latents):
         latents = torch.flatten(latents, start_dim=3)
         latents = self.sequence_compressor(latents)
+        # latents = self.act(latents)
         latents = torch.flatten(latents, start_dim=2)
         latents = self.track_compressor(latents)
+        # latents = self.act(latents)
         latents = torch.flatten(latents, start_dim=1)
         latents = self.song_compressor(latents)
+        # latents = self.act(latents)
         return latents
 
 
@@ -90,12 +91,11 @@ class LatentsDecompressor(nn.Module):
     def __init__(self,
                  d_model=config["model"]["d_model"],
                  seq_len=config["model"]["seq_len"],
-                 n_latents=config["data"]["max_track_length"] // config["model"]["seq_len"],
+                 n_latents=config["model"]["total_seq_len"] // config["model"]["seq_len"],
                  z_i_dim=config["model"]["z_i_dim"],
                  z_tot_dim=config["model"]["z_tot_dim"]
                  ):
         super(LatentsDecompressor, self).__init__()
-        assert config["data"]["max_track_length"] % config["model"]["seq_len"] == 0
         self.sequence_decompressor = nn.Linear(z_i_dim, (seq_len+1)*d_model)  # +1 because adding sos and eos
         self.track_decompressor = nn.Linear(z_tot_dim, z_i_dim*n_latents)
         self.song_decompressor = nn.Linear(z_tot_dim, z_tot_dim*4)
@@ -104,12 +104,16 @@ class LatentsDecompressor(nn.Module):
         self.n_latents = n_latents
         self.seq_len = seq_len
         self.d_model = d_model
+        self.act = torch.nn.ReLU()
 
     def forward(self, latents):  # 1 x 1024 -> 1 x 4 x 10 x 301 x 32
+        # latents = self.act(latents)
         latents = self.song_decompressor(latents)
         latents = latents.reshape(*latents.shape[:-1], 4, self.z_tot_dim)
+        # latents = self.act(latents)
         latents = self.track_decompressor(latents)
         latents = latents.reshape(*latents.shape[:-1], self.n_latents, self.z_i_dim)
+        # latents = self.act(latents)
         latents = self.sequence_decompressor(latents)
         latents = latents.reshape(*latents.shape[:-1], self.seq_len+1, self.d_model)
         return latents
@@ -186,7 +190,9 @@ class Encoder(nn.Module):
         seq = torch.cat((seq, pad), dim=-1)
         for b, s in enumerate(seq):  # add eos token
             idx = torch.nonzero(s == config["tokens"]["pad"])
-            seq[b][idx] = config["tokens"]["eos"]
+            if s.shape[0] == idx.shape[0]:
+                continue  # all pad, do nothing
+            seq[b][idx[0]] = config["tokens"]["eos"]
 
         attn_losses = torch.tensor(0., requires_grad=True, device=seq.device, dtype=torch.float32)
         ae_losses = torch.tensor(0., requires_grad=True, device=seq.device, dtype=torch.float32)
@@ -203,8 +209,6 @@ class Encoder(nn.Module):
             ae_losses = ae_losses + ae_loss
         mems = torch.stack(new_mem)
         cmems = torch.stack(new_cmem)
-        # seq = seq.reshape(n_batches, (seq_len + 1) * self.d_model)  # flat bar tokens
-        # seq = self.compress_bar(seq)  # compress bar tokens
         attn_loss = attn_losses / self.N  # normalize w.r.t number of layers
         ae_loss = ae_losses / self.N  # normalize w.r.t number of layers
         return seq, mems, cmems, attn_loss, ae_loss
@@ -228,13 +232,12 @@ class Decoder(nn.Module):
         sos = torch.empty((seq.shape[0], 1), dtype=torch.int64).fill_(config["tokens"]["sos"]
                                                                       ).to(config["train"]["device"])
         seq = torch.cat((sos, seq), dim=-1)
-        for b, s in enumerate(seq):  # add eos token
+        for b, s in enumerate(seq):  # add eos token if possible
             idx = torch.nonzero(s == config["tokens"]["pad"])
-            if idx.dim() > 0:
-                seq[b][idx] = config["tokens"]["eos"]
-        n_batches, seq_len = seq.shape
-        # latent = self.decompress_bar(latent)
-        # latent = latent.reshape(n_batches, self.seq_len - 1, self.d_model)
+            if idx.shape[0] > 0:
+                if idx.shape[0] == s.shape[0]:  # all pad token
+                    continue
+                seq[b][idx[0]] = config["tokens"]["eos"]
         attn_losses = torch.tensor(0., requires_grad=True, device=seq.device, dtype=torch.float32)
         ae_losses = torch.tensor(0., requires_grad=True, device=seq.device, dtype=torch.float32)
         input_mask = seq != self.pad_token
@@ -287,7 +290,7 @@ class DecoderLayer(nn.Module):
 
 class MemoryMultiHeadedAttention(nn.Module):
     def __init__(self, h, dim, seq_len, mem_len, cmem_len, cmem_ratio, dropout=0.1, attn_dropout=0.1,
-                 reconstruction_attn_dropout=0.1, mask_subsequent=None):
+                 reconstruction_attn_dropout=0.1, ae_dropout=0.1, mask_subsequent=None):
         super(MemoryMultiHeadedAttention, self).__init__()
         assert dim % h == 0
         # We assume d_v always equals d_k
@@ -309,6 +312,7 @@ class MemoryMultiHeadedAttention(nn.Module):
         self.to_kv = nn.Linear(dim, kv_dim * 2, bias=False)
         self.to_out = nn.Linear(dim, dim)
         self.attn_dropout = nn.Dropout(attn_dropout)
+        self.ae_dropout = nn.Dropout(ae_dropout)
         self.dropout = nn.Dropout(dropout)
         self.reconstruction_attn_dropout = nn.Dropout(reconstruction_attn_dropout)
         self.deconv = nn.Linear(cmem_len, mem_len)
@@ -340,23 +344,15 @@ class MemoryMultiHeadedAttention(nn.Module):
             mask = input_mask[:, None, :, None] * input_mask[:, None, None, :]
             mask = F.pad(mask, (mem_len + cmem_len, 0), value=True)
             dots.masked_fill_(~mask, mask_value)  # dots has values in the upper square, the rest is -inf
-
+        # here we add +1 to have a pattern t, f, f -> t, t, f -> t, t, t (without memory, which are always t)
         if self.mask_subsequent:
             total_mem_len = mem_len + cmem_len
-            mask = torch.ones(t, t + total_mem_len, **to(x)).triu_(diagonal=1 + total_mem_len).bool()
+            mask = torch.ones(t, t + total_mem_len, **to(x)).triu_(diagonal=total_mem_len+1).bool()  # TODO +1 or not????
             dots.masked_fill_(mask[None, None, ...], mask_value)  # init with all memories and just first of sequence
 
         attn = dots.softmax(dim=-1)
         attn = self.attn_dropout(attn)
-
-        # if not self.training:
-        #     if self.attn_imgs < 10:
-        #         att_image = numpy.clip(attn[0][0].data.cpu().numpy(), 0, 1)
-        #         wandb.log({'heatmap_with_text': wandb.plots.HeatMap(["x"] * 100, ["y"]*100, att_image[:100, :100], show_text=False)})
-        #         self.attn_imgs += 1
-        # else:
-        #     self.attn_imgs = 0
-
+        # TODO add here way to see where attention is focusing
         out = torch.einsum('bhij,bhjd->bhid', attn, v)
         out = out.transpose(1, 2).reshape(b, t, -1)
         logits = self.to_out(out)
@@ -368,8 +364,8 @@ class MemoryMultiHeadedAttention(nn.Module):
         ae_loss = torch.zeros(1, requires_grad=True, **to(q))
 
         # if seq_len > t means that the sequence is over, so no more memory update is needed
-        # if self.seq_len > t or not calc_memory:  # TODO removed, we never enter here because t = self.seq_len
-        # return logits, Memory(new_mem, new_cmem), aux_loss
+        if self.seq_len > t or not calc_memory:  # TODO removed, we never enter here because t = self.seq_len
+            return logits, Memory(new_mem, new_cmem), aux_loss, ae_loss
 
         # calculate memory and compressed memory
 
@@ -413,6 +409,7 @@ class MemoryMultiHeadedAttention(nn.Module):
         to_pad = self.cmem_len - new_cmem.shape[1]
         new_cmem = F.pad(new_cmem, (0, 0, to_pad, 0), value=0.)
         reconstructed_mem = self.deconv(new_cmem.transpose(1, 2)).transpose(1, 2)
+        reconstructed_mem = self.ae_dropout(reconstructed_mem)
         to_pad = self.mem_len - old_mem.shape[1]
         old_mem = F.pad(old_mem, (0, 0, to_pad, 0), value=0.)
 

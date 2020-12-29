@@ -6,7 +6,7 @@ from torch.utils.data import SubsetRandomSampler
 
 
 class SongIterator(torch.utils.data.Dataset):
-    def __init__(self, dataset_path, test_size, batch_size=3, n_workers=1):
+    def __init__(self, dataset_path, test_size, max_len=3000, batch_size=3, n_workers=1):
         self.dataset_path = dataset_path
         _, _, songs = next(os.walk(self.dataset_path))
         self.songs = [x.split(".")[0] for x in songs]
@@ -15,6 +15,7 @@ class SongIterator(torch.utils.data.Dataset):
         self.ts_set = self.songs[:ts_length]
         self.tr_set = self.songs[ts_length:]
         self.batch_size = batch_size
+        self.max_len = max_len
         if len(self.tr_set) < batch_size:
             raise Exception("Training set is too little w.r.t. the batch size")
         if len(self.ts_set) < batch_size:
@@ -24,7 +25,7 @@ class SongIterator(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         with open(os.path.join(self.dataset_path, idx+str('.pickle')), 'rb') as file:
             song = pickle.load(file)
-        return song
+        return song[:, :self.max_len]
 
     def __len__(self, train=None):
         if train:
