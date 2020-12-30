@@ -17,8 +17,8 @@ class CTOpt:
         self.minimum = minimum
         self.lr = 0
 
-    def zero_grad(self):
-        self.optimizer.zero_grad()
+    def zero_grad(self, set_to_none=False):
+        self.optimizer.zero_grad(set_to_none=set_to_none)
 
     def get_lr(self):
         if self.step < self.warmup_steps:

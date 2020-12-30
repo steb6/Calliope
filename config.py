@@ -5,6 +5,7 @@ remote = os.getcwd() != 'C:\\Users\\berti\\PycharmProjects\\MusAE'
 
 config = {
     "train": {
+        "aae": True,
         "create_dataset": False,
         "device": "cuda" if remote else "cuda",
         "batch_size": 1,
@@ -12,11 +13,11 @@ config = {
         "n_workers": 0,
         "n_epochs": 250,
         "label_smoothing": 0.1,
-        "mb_before_eval": 1000 if remote else 10,  # if >= early_stopping, happens at each epoch
+        "mb_before_eval": 10000 if remote else 10,  # if >= early_stopping, happens at each epoch
         "warmup_steps": 100000 if remote else 10,
-        "lr_min": 1e-6,
-        "lr_max": 1e-4,
-        "decay_steps": 100000 if remote else 1000000,
+        "lr_min": 1e-6 if remote else 1e-7,
+        "lr_max": 1e-4 if remote else 1e-5,
+        "decay_steps": 500000 if remote else 1000000,
         "minimum_lr": 1e-6,
         "generated_iterations": 10,
     },
@@ -28,9 +29,9 @@ config = {
         "d_ff": 128,
         "layers": 4 if remote else 1,  # if remote else 1,  # 3 GB each
         "dropout": 0.1,
-        "mem_len": 602,  # keep last 2 seq
-        "cmem_len": 76,  # keep 4 compression
-        "cmem_ratio": 32,
+        "mem_len": 301,  # keep last 2 seq
+        "cmem_len": 301,  # keep 4 compression
+        "cmem_ratio": 4,
         "z_i_dim": 300,
         # max_track_length / seq_len = n_latents, n_latents * z_i_dim are compressed into z_tot_dim
         "z_tot_dim": 1024

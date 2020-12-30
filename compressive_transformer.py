@@ -315,7 +315,7 @@ class MemoryMultiHeadedAttention(nn.Module):
         self.ae_dropout = nn.Dropout(ae_dropout)
         self.dropout = nn.Dropout(dropout)
         self.reconstruction_attn_dropout = nn.Dropout(reconstruction_attn_dropout)
-        self.deconv = nn.Linear(cmem_len, mem_len)
+        self.deconv = nn.Linear(mem_len // cmem_ratio, mem_len)
         self.attn_imgs = 0
         self.mask_subsequent = mask_subsequent
 
@@ -353,6 +353,7 @@ class MemoryMultiHeadedAttention(nn.Module):
         attn = dots.softmax(dim=-1)
         attn = self.attn_dropout(attn)
         # TODO add here way to see where attention is focusing
+
         out = torch.einsum('bhij,bhjd->bhid', attn, v)
         out = out.transpose(1, 2).reshape(b, t, -1)
         logits = self.to_out(out)
@@ -364,7 +365,7 @@ class MemoryMultiHeadedAttention(nn.Module):
         ae_loss = torch.zeros(1, requires_grad=True, **to(q))
 
         # if seq_len > t means that the sequence is over, so no more memory update is needed
-        if self.seq_len > t or not calc_memory:  # TODO removed, we never enter here because t = self.seq_len
+        if self.seq_len > t or not calc_memory:  # TODO ? don't compute memory when autoregressive
             return logits, Memory(new_mem, new_cmem), aux_loss, ae_loss
 
         # calculate memory and compressed memory
@@ -406,13 +407,11 @@ class MemoryMultiHeadedAttention(nn.Module):
         )
 
         # Calculate auto-encoding loss
-        to_pad = self.cmem_len - new_cmem.shape[1]
-        new_cmem = F.pad(new_cmem, (0, 0, to_pad, 0), value=0.)
-        reconstructed_mem = self.deconv(new_cmem.transpose(1, 2)).transpose(1, 2)
+        reconstructed_mem = self.deconv(compressed_mem.transpose(1, 2)).transpose(1, 2)
         reconstructed_mem = self.ae_dropout(reconstructed_mem)
-        to_pad = self.mem_len - old_mem.shape[1]
-        old_mem = F.pad(old_mem, (0, 0, to_pad, 0), value=0.)
-
+        to_cut = min(reconstructed_mem.shape[1], old_mem.shape[1])
+        old_mem = old_mem[:, :to_cut, :]
+        reconstructed_mem = reconstructed_mem[:, :to_cut, :]
         ae_loss = F.mse_loss(
             old_mem,
             reconstructed_mem
