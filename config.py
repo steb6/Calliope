@@ -5,24 +5,25 @@ remote = os.getcwd() != 'C:\\Users\\berti\\PycharmProjects\\MusAE'
 
 config = {
     "train": {
-        "aae": True,
+        "do_eval": False,
+        "aae": False,
         "create_dataset": False,
-        "device": "cuda" if remote else "cuda",
+        "device": "cuda" if remote else "cpu",
         "batch_size": 1,
-        "test_size": 0.001 if remote else 0.1,  # 100 on remote
+        "test_size": 0.0001 if remote else 0.1,  # 100 on remote
         "n_workers": 0,
-        "n_epochs": 250,
+        "n_epochs": 25000,
         "label_smoothing": 0.1,
-        "mb_before_eval": 10000 if remote else 10,  # if >= early_stopping, happens at each epoch
-        "warmup_steps": 100000 if remote else 10,
-        "lr_min": 1e-6 if remote else 1e-7,
-        "lr_max": 1e-4 if remote else 1e-5,
+        "mb_before_eval": 1000 if remote else 10,  # if >= early_stopping, happens at each epoch
+        "warmup_steps": 1000 if remote else 10,
+        "lr_min": 1e-4 if remote else 1e-2,
+        "lr_max": 1e-3 if remote else 1e-2,
         "decay_steps": 500000 if remote else 1000000,
-        "minimum_lr": 1e-6,
+        "minimum_lr": 1e-4 if remote else 1e-2,
         "generated_iterations": 10,
     },
     "model": {
-        "total_seq_len": 3000 if remote else 900,
+        "total_seq_len": 3000 if remote else 600,
         "seq_len": 300,
         "d_model": 32,
         "heads": 4,
@@ -32,9 +33,9 @@ config = {
         "mem_len": 301,  # keep last 2 seq
         "cmem_len": 301,  # keep 4 compression
         "cmem_ratio": 4,
-        "z_i_dim": 300,
+        "z_i_dim": 512 if remote else 10,
         # max_track_length / seq_len = n_latents, n_latents * z_i_dim are compressed into z_tot_dim
-        "z_tot_dim": 1024
+        "z_tot_dim": 2048 if remote else 30,
     },
     "data": {  # Parameters to create and listen the note representation
         "max_track_length": 10000,

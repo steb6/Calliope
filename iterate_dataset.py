@@ -3,6 +3,8 @@ import os
 import random
 import pickle
 from torch.utils.data import SubsetRandomSampler
+from config import config
+import numpy as np
 
 
 class SongIterator(torch.utils.data.Dataset):
@@ -24,8 +26,24 @@ class SongIterator(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
         with open(os.path.join(self.dataset_path, idx+str('.pickle')), 'rb') as file:
-            song = pickle.load(file)
-        return song[:, :self.max_len]
+            src = pickle.load(file)
+        src = src[:, :config["model"]["total_seq_len"]]
+        src = src.reshape((4, -1, config["model"]["seq_len"]))
+        src = np.swapaxes(src, 0, 1)
+        sos = np.full(src.shape[:-1]+(1,), config["tokens"]["sos"], dtype=src.dtype)
+        src = np.append(sos, src, axis=2)
+        src_mask = src != config["tokens"]["pad"]
+        trg = src[..., :-1]
+        trg_y = src[..., 1:]
+        trg_mask = np.full(trg.shape+(trg.shape[-1],), True)
+        for s, seq in enumerate(trg):
+            for i, instrument in enumerate(seq):
+                line_mask = instrument != config["tokens"]["pad"]
+                pad_mask = np.matmul(line_mask[:, np.newaxis], line_mask[np.newaxis, :])
+                subsequent_mask = np.expand_dims(np.tril(np.ones((trg.shape[-1], trg.shape[-1]))), (0, 1))
+                subsequent_mask = subsequent_mask.astype(np.bool)
+                trg_mask[s][i] = pad_mask & subsequent_mask
+        return src, trg, src_mask, trg_mask, trg_y
 
     def __len__(self, train=None):
         if train:
@@ -53,3 +71,14 @@ class SongIterator(torch.utils.data.Dataset):
             drop_last=True
         )
         return tr_loader, ts_loader
+
+
+        # n_batches, seq_len = seq.shape
+        # pad = torch.empty((n_batches, 1), dtype=torch.int64).fill_(config["tokens"]["pad"]
+        #                                                            ).to(config["train"]["device"])
+        # seq = torch.cat((seq, pad), dim=-1)
+        # for b, s in enumerate(seq):  # add eos token
+        #     idx = torch.nonzero(s == config["tokens"]["pad"])
+        #     if s.shape[0] == idx.shape[0]:
+        #         continue  # all pad, do nothing
+        #     seq[b][idx[0]] = config["tokens"]["eos"]

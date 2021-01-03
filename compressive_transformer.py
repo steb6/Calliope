@@ -35,6 +35,7 @@ class CompressiveEncoder(nn.Module):
         e_mem_attn = Residual(PreNorm(d_model, MemoryMultiHeadedAttention(heads, d_model, seq_len,
                                                                           mem_len, cmem_len, cmem_ratio,
                                                                           mask_subsequent=False)))
+        # e_mem_attn = Residual(PreNorm(d_model, MultiHeadedAttention(heads, d_model)))
         ff = Residual(PreNorm(d_model, FeedForward(d_model, d_ff, dropout=0.1)))
         encoder = Encoder(EncoderLayer(d_model, c(e_mem_attn), c(ff), dropout),
                           layers, vocab_size, d_model, pad_token, seq_len, z_i_dim)
@@ -46,11 +47,11 @@ class CompressiveEncoder(nn.Module):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
-    def forward(self, bar, mems, cmems):
-        d_z, d_mem, d_cmem, d_l, d_ae = self.drums_encoder(bar[0, ...], mems[0, ...], cmems[0, ...])
-        b_z, b_mem, b_cmem, b_l, b_ae = self.bass_encoder(bar[1, ...], mems[1, ...], cmems[1, ...])
-        g_z, g_mem, g_cmem, g_l, g_ae = self.guitar_encoder(bar[2, ...], mems[2, ...], cmems[2, ...])
-        s_z, s_mem, s_cmem, s_l, s_ae = self.strings_encoder(bar[3, ...], mems[3, ...], cmems[3, ...])
+    def forward(self, seq, mask, mems, cmems):
+        d_z, d_mem, d_cmem, d_l, d_ae = self.drums_encoder(seq[:, 0, :], mask[:, 0, :], mems[0, ...], cmems[0, ...])
+        b_z, b_mem, b_cmem, b_l, b_ae = self.bass_encoder(seq[:, 1, :], mask[:, 1, :], mems[1, ...], cmems[1, ...])
+        g_z, g_mem, g_cmem, g_l, g_ae = self.guitar_encoder(seq[:, 2, :], mask[:, 2, :], mems[2, ...], cmems[2, ...])
+        s_z, s_mem, s_cmem, s_l, s_ae = self.strings_encoder(seq[:, 3, :], mask[:, 3, :], mems[3, ...], cmems[3, ...])
         mems = torch.stack([d_mem, b_mem, g_mem, s_mem])
         cmems = torch.stack([d_cmem, b_cmem, g_cmem, s_cmem])
         mems, cmems = map(torch.detach, (mems, cmems))
@@ -69,22 +70,26 @@ class LatentsCompressor(nn.Module):
                  z_tot_dim=config["model"]["z_tot_dim"]
                  ):
         super(LatentsCompressor, self).__init__()
-        self.sequence_compressor = nn.Linear((seq_len+1)*d_model, z_i_dim)  # +1 because adding sos and eos
-        self.track_compressor = nn.Linear(z_i_dim*n_latents, z_tot_dim)
-        self.song_compressor = nn.Linear(z_tot_dim*4, z_tot_dim)
         self.act = torch.nn.ReLU()
+        self.compress_token = nn.Linear(d_model, d_model//4)
+        self.compress_latent = nn.Linear((seq_len+1)*d_model//4, z_i_dim)
+        self.compress_track = nn.Linear(z_i_dim*n_latents, z_tot_dim)
+        self.final_compressor = nn.Linear(z_tot_dim*4, z_tot_dim)
 
     def forward(self, latents):
-        latents = torch.flatten(latents, start_dim=3)
-        latents = self.sequence_compressor(latents)
-        # latents = self.act(latents)
-        latents = torch.flatten(latents, start_dim=2)
-        latents = self.track_compressor(latents)
-        # latents = self.act(latents)
-        latents = torch.flatten(latents, start_dim=1)
-        latents = self.song_compressor(latents)
-        # latents = self.act(latents)
-        return latents
+        n_batch, n_track, n_latents, n_tok, dim = latents.shape  # 1 x 4 x 10 x 301 x 32
+        latents = self.act(latents)  # 1 x 4 x 10 x 301 x 32
+        latents = self.compress_token(latents)  # 1 x 4 x 10 x 301 x 8
+        latents = self.act(latents)  # 1 x 4 x 10 x 301 x 8
+        latents = latents.reshape(n_batch, n_track, n_latents, n_tok*(dim//4))  # 1 x 4 x 10 x 2408
+        latents = self.compress_latent(latents)  # 1 x 4 x 10 x 1024
+        latents = self.act(latents)
+        latents = latents.reshape(n_batch, n_track, -1)  # 1 x 4 x 10240
+        latents = self.compress_track(latents)  # 1 x 4 x 5120
+        latents = self.act(latents)
+        latents = latents.reshape(n_batch, -1)  # 1 x 20480
+        latents = self.final_compressor(latents)  # 1 x 5120
+        return self.act(latents)
 
 
 class LatentsDecompressor(nn.Module):
@@ -105,17 +110,27 @@ class LatentsDecompressor(nn.Module):
         self.seq_len = seq_len
         self.d_model = d_model
         self.act = torch.nn.ReLU()
+        self.final_act = torch.nn.Tanh()
+        self.decompressor = nn.Linear(d_model, d_model*4)
+
+        self.final_decompressor = nn.Linear(z_tot_dim, z_tot_dim*4)
+        self.decompress_track = nn.Linear(z_tot_dim, z_i_dim*n_latents)
+        self.decompress_latent = nn.Linear(z_i_dim, (seq_len+1)*d_model//4)
+        self.decompress_token = nn.Linear(d_model//4, d_model)
 
     def forward(self, latents):  # 1 x 1024 -> 1 x 4 x 10 x 301 x 32
-        # latents = self.act(latents)
-        latents = self.song_decompressor(latents)
-        latents = latents.reshape(*latents.shape[:-1], 4, self.z_tot_dim)
-        # latents = self.act(latents)
-        latents = self.track_decompressor(latents)
-        latents = latents.reshape(*latents.shape[:-1], self.n_latents, self.z_i_dim)
-        # latents = self.act(latents)
-        latents = self.sequence_decompressor(latents)
-        latents = latents.reshape(*latents.shape[:-1], self.seq_len+1, self.d_model)
+        n_batch, z_tot_dim = latents.shape  # 1 x 5120
+        latents = self.final_decompressor(latents)  # 1 x 20480
+        latents = self.act(latents)
+        latents = latents.reshape(n_batch, 4, z_tot_dim)  # 1 x 4 x 5120
+        latents = self.decompress_track(latents)  # 1 x 4 x 10240
+        latents = self.act(latents)
+        latents = latents.reshape(n_batch, 4, self.n_latents, self.z_i_dim)  # 1 x 4 x 10 x 1024
+        latents = self.decompress_latent(latents)  # 1 x 4 x 10 x 2408
+        latents = self.act(latents)
+        latents = latents.reshape(n_batch, 4, self.n_latents, self.seq_len+1, self.d_model//4)  # 1 x 4 x 301 x 8
+        latents = self.decompress_token(latents)
+        latents = self.final_act(latents)
         return latents
 
 
@@ -142,9 +157,11 @@ class CompressiveDecoder(nn.Module):
         d_mem_attn = Residual(PreNorm(d_model, MemoryMultiHeadedAttention(heads, d_model, seq_len,
                                                                           mem_len, cmem_len, cmem_ratio,
                                                                           mask_subsequent=True)))
+        d_attn = Residual(PreNorm(d_model, MultiHeadedAttention(heads, d_model)))
+        # d_mem_attn = Residual(PreNorm(d_model, MultiHeadedAttention(heads, d_model)))
         mh_attn = Residual(PreNorm(d_model, MultiHeadedAttention(heads, d_model)))
         ff = Residual(PreNorm(d_model, FeedForward(d_model, d_ff, dropout=0.1)))
-        decoder = Decoder(DecoderLayer(d_model, c(d_mem_attn), c(mh_attn), c(ff), dropout, heads),
+        decoder = Decoder(DecoderLayer(d_model, c(d_attn), c(mh_attn), c(ff), dropout, heads),
                           layers, vocab_size, d_model, pad_token, seq_len, z_i_dim)
         self.drums_decoder = c(decoder)
         self.bass_decoder = c(decoder)
@@ -155,21 +172,26 @@ class CompressiveDecoder(nn.Module):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
-    def forward(self, latent, seq, mems, cmems):
-        d_out, d_mem, d_cmem, d_l, d_ae = self.drums_decoder(latent, seq[0, ...], mems[0, ...], cmems[0, ...])
-        b_out, b_mem, b_cmem, b_l, b_ae = self.bass_decoder(latent, seq[1, ...], mems[1, ...], cmems[1, ...])
-        g_out, g_mem, g_cmem, g_l, g_ae = self.guitar_decoder(latent, seq[2, ...], mems[2, :, :, :, :], cmems[2, ...])
-        s_out, s_mem, s_cmem, s_l, s_ae = self.strings_decoder(latent, seq[3, ...], mems[3, ...], cmems[3, ...])
-        mems = torch.stack([d_mem, b_mem, g_mem, s_mem])
-        cmems = torch.stack([d_cmem, b_cmem, g_cmem, s_cmem])
-        mems, cmems = map(torch.detach, (mems, cmems))
+    def forward(self, trg, latent, src_mask, trg_mask):  # , d_mems, d_cmems):
+        # d_out, d_mem, d_cmem, d_l, d_ae
+        d_out = self.drums_decoder(trg[:, 0, :], latent[0, ...], src_mask[:, 0, :],
+                                                             trg_mask[:, 0, ...])  # , d_mems[0, ...], d_cmems[0, ...])
+        b_out = self.bass_decoder(trg[:, 1, :], latent[1, ...], src_mask[:, 1, :],
+                                                            trg_mask[:, 1, ...])  # , d_mems[1, ...], d_cmems[1, ...])
+        g_out = self.guitar_decoder(trg[:, 2, :], latent[2, ...], src_mask[:, 2, :],
+                                                              trg_mask[:, 2, ...])  # , d_mems[2, ...], d_cmems[2, ...])
+        s_out = self.strings_decoder(trg[:, 3, :], latent[3, ...], src_mask[:, 3, :],
+                                                               trg_mask[:, 3, ...])  # d_mems[3, ...], d_cmems[3, ...])
+        # mems = torch.stack([d_mem, b_mem, g_mem, s_mem])
+        # cmems = torch.stack([d_cmem, b_cmem, g_cmem, s_cmem])
+        # mems, cmems = map(torch.detach, (mems, cmems))
         output = torch.stack([d_out, b_out, g_out, s_out], dim=-1)
         output = self.generator(output)
-        aux_loss = torch.stack((d_l, b_l, g_l, s_l))
-        aux_loss = torch.mean(aux_loss)
-        ae_loss = torch.stack((d_ae, b_ae, g_ae, s_ae))
-        ae_loss = torch.mean(ae_loss)
-        return output, mems, cmems, aux_loss, ae_loss
+        # aux_loss = torch.stack((d_l, b_l, g_l, s_l))
+        # aux_loss = torch.mean(aux_loss)
+        # ae_loss = torch.stack((d_ae, b_ae, g_ae, s_ae))
+        # ae_loss = torch.mean(ae_loss)
+        return output  # , mems, cmems, aux_loss, ae_loss
 
 
 class Encoder(nn.Module):
@@ -183,26 +205,15 @@ class Encoder(nn.Module):
         self.d_model = d_model
         self.compress_bar = nn.Linear(d_model * (seq_len + 1), z_i_dim)  # for eos token
 
-    def forward(self, seq, mems, cmems):
-        n_batches, seq_len = seq.shape
-        pad = torch.empty((n_batches, 1), dtype=torch.int64).fill_(config["tokens"]["pad"]
-                                                                   ).to(config["train"]["device"])
-        seq = torch.cat((seq, pad), dim=-1)
-        for b, s in enumerate(seq):  # add eos token
-            idx = torch.nonzero(s == config["tokens"]["pad"])
-            if s.shape[0] == idx.shape[0]:
-                continue  # all pad, do nothing
-            seq[b][idx[0]] = config["tokens"]["eos"]
-
+    def forward(self, seq, mask, mems, cmems):
         attn_losses = torch.tensor(0., requires_grad=True, device=seq.device, dtype=torch.float32)
         ae_losses = torch.tensor(0., requires_grad=True, device=seq.device, dtype=torch.float32)
-        input_mask = seq != self.pad_token
         seq = self.embed(seq)
         seq = self.position(seq)
         new_mem = []
         new_cmem = []
         for layer, mem, cmem in zip(self.layers, mems, cmems):
-            seq, new_memories, attn_loss, ae_loss = layer(seq, (mem, cmem), input_mask)
+            seq, new_memories, attn_loss, ae_loss = layer(seq, (mem, cmem), mask)
             new_mem.append(new_memories[0])
             new_cmem.append(new_memories[1])
             attn_losses = attn_losses + attn_loss
@@ -228,34 +239,26 @@ class Decoder(nn.Module):
         self.decompress_bar = nn.Linear(z_i_dim, d_model * (seq_len - 1))
         self.seq_len = seq_len
 
-    def forward(self, latent, seq, mems, cmems):
-        sos = torch.empty((seq.shape[0], 1), dtype=torch.int64).fill_(config["tokens"]["sos"]
-                                                                      ).to(config["train"]["device"])
-        seq = torch.cat((sos, seq), dim=-1)
-        for b, s in enumerate(seq):  # add eos token if possible
-            idx = torch.nonzero(s == config["tokens"]["pad"])
-            if idx.shape[0] > 0:
-                if idx.shape[0] == s.shape[0]:  # all pad token
-                    continue
-                seq[b][idx[0]] = config["tokens"]["eos"]
-        attn_losses = torch.tensor(0., requires_grad=True, device=seq.device, dtype=torch.float32)
-        ae_losses = torch.tensor(0., requires_grad=True, device=seq.device, dtype=torch.float32)
-        input_mask = seq != self.pad_token
-        seq = self.embed(seq)
-        seq = self.position(seq)
+    def forward(self, trg, latent, src_mask, trg_mask):  # , mems, cmems):
+        attn_losses = torch.tensor(0., requires_grad=True, device=trg.device, dtype=torch.float32)
+        ae_losses = torch.tensor(0., requires_grad=True, device=trg.device, dtype=torch.float32)
+        trg = self.embed(trg)
+        trg = self.position(trg)
         new_mem = []
         new_cmem = []
-        for layer, mem, cmem in zip(self.layers, mems, cmems):
-            seq, new_memories, attn_loss, ae_loss = layer(latent, seq, (mem, cmem), input_mask)
-            new_mem.append(new_memories[0])
-            new_cmem.append(new_memories[1])
-            attn_losses = attn_losses + attn_loss
-            ae_losses = ae_losses + ae_loss
-        mems = torch.stack(new_mem)
-        cmems = torch.stack(new_cmem)
-        attn_losses = attn_losses / self.N  # normalize w.r.t number of layers
-        ae_losses = ae_losses / self.N  # normalize w.r.t number of layers
-        return seq, mems, cmems, attn_losses, ae_losses
+        # for layer, mem, cmem in zip(self.layers, mems, cmems):
+        for layer in self.layers:
+            # trg, new_memories, attn_loss, ae_loss = layer(trg, latent, src_mask, trg_mask, (mem, cmem))
+            trg = layer(trg, latent, src_mask, trg_mask)
+            # new_mem.append(new_memories[0])
+            # new_cmem.append(new_memories[1])
+            # attn_losses = attn_losses + attn_loss
+            # ae_losses = ae_losses + ae_loss
+        # mems = torch.stack(new_mem)
+        # cmems = torch.stack(new_cmem)
+        # attn_losses = attn_losses / self.N  # normalize w.r.t number of layers
+        # ae_losses = ae_losses / self.N  # normalize w.r.t number of layers
+        return trg  # , mems, cmems, attn_losses, ae_losses
 
 
 class EncoderLayer(nn.Module):
@@ -267,8 +270,11 @@ class EncoderLayer(nn.Module):
 
     def forward(self, x, memories, input_mask):
         x, new_memories, attn_loss, ae_loss = self.mem_attn(x, memories=memories, input_mask=input_mask)
+        # x, = self.mem_attn(x, key=x, value=x, mask=input_mask)
         x, = self.feed_forward(x)
         return x, new_memories, attn_loss, ae_loss
+        # return x, (torch.zeros(1, requires_grad=True, **to(x)), torch.zeros(1, requires_grad=True, **to(x))), \
+        #        torch.zeros(1, requires_grad=True, **to(x)), torch.zeros(1, requires_grad=True, **to(x))
 
 
 class DecoderLayer(nn.Module):
@@ -281,11 +287,14 @@ class DecoderLayer(nn.Module):
         self.feed_forward = feed_forward
         self.heads = heads
 
-    def forward(self, latent, bar, memories, bar_mask):
-        x, new_memories, attn_loss, ae_loss = self.mem_attn(bar, memories=memories, input_mask=bar_mask)
-        x, = self.src_attn(x, key=latent, value=latent, mask=None)  # TODO fix
+    def forward(self, trg, latent, src_mask, trg_mask):  # , memories):
+        # x, new_memories, attn_loss, ae_loss = self.mem_attn(trg, memories=memories, input_mask=trg_mask)
+        x, = self.mem_attn(trg, key=trg, value=trg, mask=trg_mask)
+        x, = self.src_attn(x, key=latent, value=latent, mask=src_mask)
         x, = self.feed_forward(x)
-        return x, new_memories, attn_loss, ae_loss
+        return x  # , new_memories, attn_loss, ae_loss
+        # return x, (torch.zeros(1, requires_grad=True, **to(x)), torch.zeros(1, requires_grad=True, **to(x))), \
+        #        torch.zeros(1, requires_grad=True, **to(x)), torch.zeros(1, requires_grad=True, **to(x))
 
 
 class MemoryMultiHeadedAttention(nn.Module):
@@ -341,14 +350,19 @@ class MemoryMultiHeadedAttention(nn.Module):
         #     dots = dots + pos_dots
 
         if input_mask is not None:  # set -inf under and right of the mask
-            mask = input_mask[:, None, :, None] * input_mask[:, None, None, :]
+            if input_mask.dim() == 2:  # encoder mask, cover just pad
+                mask = input_mask[:, None, :, None] * input_mask[:, None, None, :]
+            elif input_mask.dim() == 3:  # decoder mask, dover pad and subsequent
+                mask = input_mask.unsqueeze(1)
+            else:
+                raise Exception("Wrong mask provided")
             mask = F.pad(mask, (mem_len + cmem_len, 0), value=True)
             dots.masked_fill_(~mask, mask_value)  # dots has values in the upper square, the rest is -inf
         # here we add +1 to have a pattern t, f, f -> t, t, f -> t, t, t (without memory, which are always t)
-        if self.mask_subsequent:
-            total_mem_len = mem_len + cmem_len
-            mask = torch.ones(t, t + total_mem_len, **to(x)).triu_(diagonal=total_mem_len+1).bool()  # TODO +1 or not????
-            dots.masked_fill_(mask[None, None, ...], mask_value)  # init with all memories and just first of sequence
+        # if self.mask_subsequent:
+        #     total_mem_len = mem_len + cmem_len
+        #     mask = torch.ones(t, t + total_mem_len, **to(x)).triu_(diagonal=total_mem_len+1).bool()  # TODO +1 or no
+        #     dots.masked_fill_(mask[None, None, ...], mask_value)  # init with all memories and just first of sequence
 
         attn = dots.softmax(dim=-1)
         attn = self.attn_dropout(attn)
