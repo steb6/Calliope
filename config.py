@@ -24,14 +24,14 @@ config = {
     },
     "model": {
         "total_seq_len": 3000 if remote else 600,
-        "seq_len": 300,
+        "seq_len": 300 if remote else 100,
         "d_model": 32,
         "heads": 4,
         "d_ff": 128,
         "layers": 4 if remote else 1,  # if remote else 1,  # 3 GB each
         "dropout": 0.1,
-        "mem_len": 301,  # keep last 2 seq
-        "cmem_len": 301,  # keep 4 compression
+        "mem_len": 301 if remote else 101,  # keep last 2 seq
+        "cmem_len": 301 if remote else 101,  # keep 4 compression
         "cmem_ratio": 4,
         "z_i_dim": 512 if remote else 10,
         # max_track_length / seq_len = n_latents, n_latents * z_i_dim are compressed into z_tot_dim

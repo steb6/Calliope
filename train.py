@@ -15,6 +15,8 @@ from midi_converter import midi_to_wav
 from discriminator import Discriminator
 from compressive_transformer import CompressiveEncoder, CompressiveDecoder, LatentsCompressor, LatentsDecompressor
 import numpy as np
+from PIL import Image
+from torch.nn import functional as f
 
 
 class Trainer:
@@ -51,6 +53,48 @@ class Trainer:
                 for module_name, parameter in model.named_parameters():
                     if parameter.grad is not None:
                         print(module_name)
+
+    @staticmethod
+    def log_attn_images(mem_weights, self_weights, lat_weights):
+        mem_img = mem_weights.detach().cpu().numpy()
+        mem_formatted = (mem_img * 255 / np.max(mem_img)).astype('uint8')
+        mem_img = Image.fromarray(mem_formatted)
+
+        self_img = self_weights.detach().cpu().numpy()
+        self_formatted = (self_img * 255 / np.max(self_img)).astype('uint8')
+        self_img = Image.fromarray(self_formatted)
+
+        lat_img = lat_weights.detach().cpu().numpy()
+        lat_formatted = (lat_img * 255 / np.max(lat_img)).astype('uint8')
+        lat_img = Image.fromarray(lat_formatted)
+        pad = np.array([255 * (i % 2) for i in range(len(mem_formatted) * 9)]).reshape(-1, 9)
+        pad_img = Image.fromarray(pad)
+        # CONCATENATE IMAGES
+        images = [mem_img, pad_img, self_img, pad_img, lat_img]
+        widths, heights = zip(*(i.size for i in images))
+        total_width = sum(widths)
+        max_height = max(heights)
+        new_im = Image.new('RGB', (total_width, max_height))
+        x_offset = 0
+        for im in images:
+            new_im.paste(im, (x_offset, 0))
+            x_offset += im.size[0]
+        wandb.log({"examples": [wandb.Image(new_im, caption="Encoder memory attention weights, decoder self"
+                                                            " attention weights and decoder source attention"
+                                                            " weights")]})
+
+    @staticmethod
+    def log_examples(e_in, d_in, pred, exp):
+        enc_input = e_in.permute(1, 2, 0, 3)[0].reshape(4, -1).cpu().numpy()
+        dec_input = d_in.permute(1, 2, 0, 3)[0].reshape(4, -1).cpu().numpy()
+        predicted = torch.max(pred, dim=-2).indices.permute(0, 2, 1)[0].reshape(4, -1).cpu().numpy()
+        expected = exp.permute(1, 2, 0, 3)[0].reshape(4, -1).cpu().numpy()
+        table = wandb.Table(columns=["Encoder Input: " + str(enc_input.shape),
+                                     "Decoder Input: " + str(dec_input.shape),
+                                     "Predicted: " + str(predicted.shape),
+                                     "Expected: " + str(expected.shape)])
+        table.add_data(enc_input, dec_input, predicted, expected)
+        wandb.log({"out": table})
 
     @staticmethod
     def get_memories():
@@ -107,51 +151,65 @@ class Trainer:
         d_ae_losses = []
         latents = []
         outs = []
+        aws = []
         # Encode
         for src, src_mask in zip(srcs, src_masks):
-            latent, e_mems, e_cmems, e_attn_loss, e_ae_loss = self.encoder(src, src_mask, e_mems, e_cmems)
+            latent, e_mems, e_cmems, e_attn_loss, e_ae_loss, aw = self.encoder(src, src_mask, e_mems, e_cmems)
+            aws.append(aw)
             e_attn_losses.append(e_attn_loss)
             e_ae_losses.append(e_ae_loss)
             latents.append(latent)
+        # Compress and decompress latents  # TODO detach all attn weights
+        # PAD AWS
+        length = max([s.shape[-1] for s in aws])
+        for count, aw in enumerate(aws):
+            aws[count] = f.pad(aw, (length - aw.shape[-1], 0))
+        aws = torch.mean(torch.stack(aws, dim=0), dim=0)
+        # END PAD AWS
         act = torch.nn.Tanh()
         original_latents = torch.stack(latents, dim=2)  # 1 x 4 x 10 x 301 x 32
-        original_latents = act(original_latents)
         # original_latents = act(original_latents)
-        z = self.compressor(original_latents)  # 1 x z_dim
+        # z = self.compressor(original_latents)  # 1 x z_dim
+        # reconstructed_latent = self.decompressor(z)
+        # loss = torch.nn.MSELoss()
+        # latents_reconstruction_loss = loss(reconstructed_latent, original_latents)
+        # reconstructed_latent = reconstructed_latent.transpose(0, 2)
+        original_latents = original_latents.transpose(0, 2)
         # Decode
-        reconstructed_latent = self.decompressor(z)
-        # reconstructed_latent = act(reconstructed_latent)
-        loss = torch.nn.MSELoss()
-        latents_reconstruction_loss = loss(reconstructed_latent, original_latents)
-        reconstructed_latent = reconstructed_latent.transpose(0, 2)
-        for latent, src_mask, trg, trg_mask in zip(reconstructed_latent, src_masks, trgs, trg_masks):
+        latents_weight = []
+        self_weights = []
+        for latent, src_mask, trg, trg_mask in zip(original_latents, src_masks, trgs, trg_masks):
             if not self.decoder.training:  # do not use teacher forcing
                 trg, trg_mask = self.greedy_decoding(latent, src_mask, d_mems, d_cmems)
             # out, d_mems, d_cmems, d_attn_loss, d_ae_loss
-            out = self.decoder(trg, latent, src_mask, trg_mask)  #, d_mems, d_cmems)
+            out, latent_weight, self_weight = self.decoder(trg, latent, src_mask, trg_mask)  # , d_mems, d_cmems)
             # d_attn_losses.append(d_attn_loss)
             # d_ae_losses.append(d_ae_loss)
             outs.append(out)
+            latents_weight.append(latent_weight)
+            self_weights.append(self_weight)
+        latents_weight = torch.mean(torch.stack(latents_weight, dim=0), dim=0)
+        self_weights = torch.mean(torch.stack(self_weights, dim=0), dim=0)
+        # TODO log reconstruction distrubution
+        # wandb.log({"original_latents:": original_latents.cpu(),
+        #            "z": z.cpu(),
+        #            "reconstructed_latents": reconstructed_latent.cpu()})
+        # wandb.log({"original_latents:": original_latents.cpu()})
+        # LOG ATTENTION IMAGES
+        if self.step % 10 == 0:
+            self.log_attn_images(aws, self_weights, latents_weight)
+
         outs = torch.stack(outs, dim=1)
         outs = outs.reshape(config["train"]["batch_size"], -1, config["tokens"]["vocab_size"], 4)
         e_ae_losses = torch.stack(e_ae_losses).mean()
         e_attn_losses = torch.stack(e_attn_losses).mean()
         # d_ae_losses = torch.stack(d_ae_losses).mean()
         # d_attn_losses = torch.stack(d_attn_losses).mean()
-        # ins = src.transpose(1, 3)
-        # ins = ins.transpose(0, 2)
-        # ins = ins.transpose(1, 2)
-        # ins = ins.reshape(config["train"]["batch_size"], -1, 4)
         #
         # # TODO log example of src and outs sometimes
-        # if self.step % 1000 == 0:
-        #     predicted = torch.max(outs, dim=-2).indices
-        #     inp = ins[0].cpu().transpose(0, 1).numpy()
-        #     x = predicted[0].cpu().transpose(0, 1).numpy()
-        #     y = ins[0].cpu().transpose(0, 1).cpu().numpy()
-        #     table = wandb.Table(columns=["Input", "Predicted", "Expected"])
-        #     table.add_data(inp, x, y)
-        #     wandb.log({"out_" + str(self.step): table})
+        if self.step % 10 == 0:
+            self.log_examples(srcs, trgs, outs, trg_ys)
+
         trg_ys = trg_ys.permute(1, 0, 3, 2)
         trg_ys = trg_ys.reshape(config["train"]["batch_size"], -1, 4)
         loss, loss_items = self.loss_computer(outs, trg_ys)
@@ -162,8 +220,8 @@ class Trainer:
             self.model_optimizer.zero_grad()
             self.compressor_optimizer.zero_grad()
             #  (loss + e_attn_losses + e_ae_losses + d_attn_losses + d_ae_losses + latents_reconstruction_loss).backward()
-            (loss + e_attn_losses + e_ae_losses + latents_reconstruction_loss).backward()
-            # (loss + e_attn_losses + e_ae_losses).backward()
+            # (loss + e_attn_losses + e_ae_losses + latents_reconstruction_loss).backward()
+            (loss + e_attn_losses + e_ae_losses).backward()
             torch.nn.utils.clip_grad_norm_(self.encoder.parameters(), 0.1)
             torch.nn.utils.clip_grad_norm_(self.compressor.parameters(), 0.1)
             torch.nn.utils.clip_grad_norm_(self.decompressor.parameters(), 0.1)
@@ -176,7 +234,7 @@ class Trainer:
         # losses = (loss.item(), e_attn_losses.item(), e_ae_losses.item(), 0, 0,
         #           *loss_items, latents_reconstruction_loss.item())
         losses = (loss.item(), e_attn_losses.item(), e_ae_losses.item(), 0, 0,
-                  *loss_items, latents_reconstruction_loss.item())
+                  *loss_items, 0)  # TODO adjust values
         if not config["train"]["aae"]:
             return losses
         was_training = self.encoder.training

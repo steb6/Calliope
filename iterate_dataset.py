@@ -43,6 +43,9 @@ class SongIterator(torch.utils.data.Dataset):
                 subsequent_mask = np.expand_dims(np.tril(np.ones((trg.shape[-1], trg.shape[-1]))), (0, 1))
                 subsequent_mask = subsequent_mask.astype(np.bool)
                 trg_mask[s][i] = pad_mask & subsequent_mask
+        # TODO experimental, understand if this is right or not
+        src = src[..., 1:]
+        src_mask = src_mask[..., 1:]
         return src, trg, src_mask, trg_mask, trg_y
 
     def __len__(self, train=None):
