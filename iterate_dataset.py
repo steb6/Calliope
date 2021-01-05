@@ -35,6 +35,7 @@ class SongIterator(torch.utils.data.Dataset):
         src_mask = src != config["tokens"]["pad"]
         trg = src[..., :-1]
         trg_y = src[..., 1:]
+        # trg_y = src[..., :-1]  # TODO experiment following https://lionbridge.ai/articles/what-are-transformer-models-in-machine-learning/
         trg_mask = np.full(trg.shape+(trg.shape[-1],), True)
         for s, seq in enumerate(trg):
             for i, instrument in enumerate(seq):

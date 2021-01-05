@@ -67,7 +67,8 @@ class Trainer:
         lat_img = lat_weights.detach().cpu().numpy()
         lat_formatted = (lat_img * 255 / np.max(lat_img)).astype('uint8')
         lat_img = Image.fromarray(lat_formatted)
-        pad = np.array([255 * (i % 2) for i in range(len(mem_formatted) * 9)]).reshape(-1, 9)
+
+        pad = np.array([255 * (i % 2) for i in range(config["model"]["seq_len"] * 9)]).reshape(-1, 9).astype(np.uint8)
         pad_img = Image.fromarray(pad)
         # CONCATENATE IMAGES
         images = [mem_img, pad_img, self_img, pad_img, lat_img]
@@ -84,16 +85,18 @@ class Trainer:
                                                             " weights")]})
 
     @staticmethod
-    def log_examples(e_in, d_in, pred, exp):
-        enc_input = e_in.permute(1, 2, 0, 3)[0].reshape(4, -1).cpu().numpy()
-        dec_input = d_in.permute(1, 2, 0, 3)[0].reshape(4, -1).cpu().numpy()
-        predicted = torch.max(pred, dim=-2).indices.permute(0, 2, 1)[0].reshape(4, -1).cpu().numpy()
-        expected = exp.permute(1, 2, 0, 3)[0].reshape(4, -1).cpu().numpy()
+    def log_examples(e_in, d_in, pred, exp, lat):  # TODO log latents
+        enc_input = e_in.permute(1, 2, 0, 3)[0].reshape(4, -1).detach().cpu().numpy()
+        dec_input = d_in.permute(1, 2, 0, 3)[0].reshape(4, -1).detach().cpu().numpy()
+        predicted = torch.max(pred, dim=-2).indices.permute(0, 2, 1)[0].reshape(4, -1).detach().cpu().numpy()
+        expected = exp.permute(1, 2, 0, 3)[0].reshape(4, -1).detach().cpu().numpy()
+        latent = lat.permute(2, 1, 0, 3, 4)[0].reshape(4, -1, config["model"]["d_model"]).detach().cpu().numpy()
         table = wandb.Table(columns=["Encoder Input: " + str(enc_input.shape),
                                      "Decoder Input: " + str(dec_input.shape),
                                      "Predicted: " + str(predicted.shape),
-                                     "Expected: " + str(expected.shape)])
-        table.add_data(enc_input, dec_input, predicted, expected)
+                                     "Expected: " + str(expected.shape),
+                                     "Latent: " + str(latent.shape)])
+        table.add_data(enc_input, dec_input, predicted, expected, latent)
         wandb.log({"out": table})
 
     @staticmethod
@@ -168,6 +171,7 @@ class Trainer:
         # END PAD AWS
         act = torch.nn.Tanh()
         original_latents = torch.stack(latents, dim=2)  # 1 x 4 x 10 x 301 x 32
+        original_latents = act(original_latents)
         # original_latents = act(original_latents)
         # z = self.compressor(original_latents)  # 1 x z_dim
         # reconstructed_latent = self.decompressor(z)
@@ -196,7 +200,7 @@ class Trainer:
         #            "reconstructed_latents": reconstructed_latent.cpu()})
         # wandb.log({"original_latents:": original_latents.cpu()})
         # LOG ATTENTION IMAGES
-        if self.step % 10 == 0:
+        if self.step % config["train"]["after_mb_log_attn_img"] == 0:
             self.log_attn_images(aws, self_weights, latents_weight)
 
         outs = torch.stack(outs, dim=1)
@@ -207,8 +211,8 @@ class Trainer:
         # d_attn_losses = torch.stack(d_attn_losses).mean()
         #
         # # TODO log example of src and outs sometimes
-        if self.step % 10 == 0:
-            self.log_examples(srcs, trgs, outs, trg_ys)
+        if self.step % config["train"]["after_mb_log_examples"] == 0:
+            self.log_examples(srcs, trgs, outs, trg_ys, original_latents)
 
         trg_ys = trg_ys.permute(1, 0, 3, 2)
         trg_ys = trg_ys.reshape(config["train"]["batch_size"], -1, 4)
