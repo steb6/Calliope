@@ -85,18 +85,28 @@ class Trainer:
                                                             " weights")]})
 
     @staticmethod
-    def log_examples(e_in, d_in, pred, exp, lat):  # TODO log latents
+    def log_examples(e_in, d_in, pred, exp, lat, z, r_lat):  # TODO log latents
         enc_input = e_in.permute(1, 2, 0, 3)[0].reshape(4, -1).detach().cpu().numpy()
         dec_input = d_in.permute(1, 2, 0, 3)[0].reshape(4, -1).detach().cpu().numpy()
         predicted = torch.max(pred, dim=-2).indices.permute(0, 2, 1)[0].reshape(4, -1).detach().cpu().numpy()
         expected = exp.permute(1, 2, 0, 3)[0].reshape(4, -1).detach().cpu().numpy()
         latent = lat.permute(2, 1, 0, 3, 4)[0].reshape(4, -1, config["model"]["d_model"]).detach().cpu().numpy()
-        table = wandb.Table(columns=["Encoder Input: " + str(enc_input.shape),
-                                     "Decoder Input: " + str(dec_input.shape),
-                                     "Predicted: " + str(predicted.shape),
-                                     "Expected: " + str(expected.shape),
-                                     "Latent: " + str(latent.shape)])
-        table.add_data(enc_input, dec_input, predicted, expected, latent)
+        columns = ["Encoder Input: " + str(enc_input.shape),
+                   "Decoder Input: " + str(dec_input.shape),
+                   "Predicted: " + str(predicted.shape),
+                   "Expected: " + str(expected.shape),
+                   "Original latents: " + str(latent.shape)]
+        inputs = (enc_input, dec_input, predicted, expected, latent)
+        if z is not None:
+            zeta = z[0].detach().cpu().numpy()
+            inputs = inputs + (zeta,)
+            columns.append("Z: " + str(z.shape))
+        if r_lat is not None:
+            recon_l = r_lat.permute(2, 1, 0, 3, 4)[0].reshape(4, -1, config["model"]["d_model"]).detach().cpu().numpy()
+            inputs = inputs + (recon_l,)
+            columns.append("Reconstructed latents: " + str(recon_l.shape))
+        table = wandb.Table(columns=columns)
+        table.add_data(*inputs)
         wandb.log({"out": table})
 
     @staticmethod
@@ -168,16 +178,20 @@ class Trainer:
         for count, aw in enumerate(aws):
             aws[count] = f.pad(aw, (length - aw.shape[-1], 0))
         aws = torch.mean(torch.stack(aws, dim=0), dim=0)
+        reconstructed_latents = None
+        z = None
         # END PAD AWS
-        act = torch.nn.Tanh()
-        original_latents = torch.stack(latents, dim=2)  # 1 x 4 x 10 x 301 x 32
-        original_latents = act(original_latents)
+        # act = torch.nn.Tanh()
         # original_latents = act(original_latents)
-        # z = self.compressor(original_latents)  # 1 x z_dim
-        # reconstructed_latent = self.decompressor(z)
-        # loss = torch.nn.MSELoss()
-        # latents_reconstruction_loss = loss(reconstructed_latent, original_latents)
-        # reconstructed_latent = reconstructed_latent.transpose(0, 2)
+        original_latents = torch.stack(latents, dim=2)  # 1 x 4 x 10 x 301 x 32
+        # TODO REMOVE TEST
+        # import copy
+        # original_latents_copy = copy.deepcopy(original_latents.data)
+        z = self.compressor(original_latents)  # 1 x z_dim
+        reconstructed_latents = self.decompressor(z)
+        loss = torch.nn.MSELoss()
+        latents_reconstruction_loss = loss(reconstructed_latents, original_latents)
+        reconstructed_latents = reconstructed_latents.transpose(0, 2)
         original_latents = original_latents.transpose(0, 2)
         # Decode
         latents_weight = []
@@ -194,11 +208,6 @@ class Trainer:
             self_weights.append(self_weight)
         latents_weight = torch.mean(torch.stack(latents_weight, dim=0), dim=0)
         self_weights = torch.mean(torch.stack(self_weights, dim=0), dim=0)
-        # TODO log reconstruction distrubution
-        # wandb.log({"original_latents:": original_latents.cpu(),
-        #            "z": z.cpu(),
-        #            "reconstructed_latents": reconstructed_latent.cpu()})
-        # wandb.log({"original_latents:": original_latents.cpu()})
         # LOG ATTENTION IMAGES
         if self.step % config["train"]["after_mb_log_attn_img"] == 0:
             self.log_attn_images(aws, self_weights, latents_weight)
@@ -212,7 +221,7 @@ class Trainer:
         #
         # # TODO log example of src and outs sometimes
         if self.step % config["train"]["after_mb_log_examples"] == 0:
-            self.log_examples(srcs, trgs, outs, trg_ys, original_latents)
+            self.log_examples(srcs, trgs, outs, trg_ys, original_latents, z, reconstructed_latents)
 
         trg_ys = trg_ys.permute(1, 0, 3, 2)
         trg_ys = trg_ys.reshape(config["train"]["batch_size"], -1, 4)
@@ -235,10 +244,8 @@ class Trainer:
 
         # losses = (loss.item(), e_attn_losses.item(), e_ae_losses.item(), d_attn_losses.item(), d_ae_losses.item(),
         #           *loss_items, latents_reconstruction_loss.item())
-        # losses = (loss.item(), e_attn_losses.item(), e_ae_losses.item(), 0, 0,
-        #           *loss_items, latents_reconstruction_loss.item())
         losses = (loss.item(), e_attn_losses.item(), e_ae_losses.item(), 0, 0,
-                  *loss_items, 0)  # TODO adjust values
+                  *loss_items, latents_reconstruction_loss.item())  # TODO adjust values
         if not config["train"]["aae"]:
             return losses
         was_training = self.encoder.training

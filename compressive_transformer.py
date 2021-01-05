@@ -75,24 +75,25 @@ class LatentsCompressor(nn.Module):
         self.act = torch.nn.ReLU()
         self.final_act = torch.nn.Tanh()
         self.compress_token = nn.Linear(d_model, d_model // 4)
-        self.compress_latent = nn.Linear((seq_len + 1) * d_model // 4, z_i_dim)
+        self.compress_latent = nn.Linear(seq_len * d_model // 4, z_i_dim)
         self.compress_track = nn.Linear(z_i_dim * n_latents, z_tot_dim)
         self.final_compressor = nn.Linear(z_tot_dim * 4, z_tot_dim)
 
     def forward(self, latents):
         n_batch, n_track, n_latents, n_tok, dim = latents.shape  # 1 x 4 x 10 x 301 x 32
-        latents = self.act(latents)  # 1 x 4 x 10 x 301 x 32
+        # latents = self.act(latents)  # 1 x 4 x 10 x 301 x 32
         latents = self.compress_token(latents)  # 1 x 4 x 10 x 301 x 8
-        latents = self.act(latents)  # 1 x 4 x 10 x 301 x 8
+        # latents = self.act(latents)  # 1 x 4 x 10 x 301 x 8
         latents = latents.reshape(n_batch, n_track, n_latents, n_tok * (dim // 4))  # 1 x 4 x 10 x 2408
         latents = self.compress_latent(latents)  # 1 x 4 x 10 x 1024
-        latents = self.act(latents)
+        # latents = self.act(latents)
         latents = latents.reshape(n_batch, n_track, -1)  # 1 x 4 x 10240
         latents = self.compress_track(latents)  # 1 x 4 x 5120
-        latents = self.act(latents)
+        # latents = self.act(latents)
         latents = latents.reshape(n_batch, -1)  # 1 x 20480
         latents = self.final_compressor(latents)  # 1 x 5120
-        return self.final_act(latents)
+        # latents = self.final_act(latents)
+        return latents
 
 
 class LatentsDecompressor(nn.Module):
@@ -104,7 +105,7 @@ class LatentsDecompressor(nn.Module):
                  z_tot_dim=config["model"]["z_tot_dim"]
                  ):
         super(LatentsDecompressor, self).__init__()
-        self.sequence_decompressor = nn.Linear(z_i_dim, (seq_len + 1) * d_model)  # +1 because adding sos and eos
+        self.sequence_decompressor = nn.Linear(z_i_dim, seq_len * d_model)  # +1 because adding sos and eos
         self.track_decompressor = nn.Linear(z_tot_dim, z_i_dim * n_latents)
         self.song_decompressor = nn.Linear(z_tot_dim, z_tot_dim * 4)
         self.z_tot_dim = z_tot_dim
@@ -118,22 +119,22 @@ class LatentsDecompressor(nn.Module):
 
         self.final_decompressor = nn.Linear(z_tot_dim, z_tot_dim * 4)
         self.decompress_track = nn.Linear(z_tot_dim, z_i_dim * n_latents)
-        self.decompress_latent = nn.Linear(z_i_dim, (seq_len + 1) * d_model // 4)
+        self.decompress_latent = nn.Linear(z_i_dim, seq_len * d_model // 4)
         self.decompress_token = nn.Linear(d_model // 4, d_model)
 
     def forward(self, latents):  # 1 x 1024 -> 1 x 4 x 10 x 301 x 32
         n_batch, z_tot_dim = latents.shape  # 1 x 5120
         latents = self.final_decompressor(latents)  # 1 x 20480
-        latents = self.act(latents)
+        # latents = self.act(latents)
         latents = latents.reshape(n_batch, 4, z_tot_dim)  # 1 x 4 x 5120
         latents = self.decompress_track(latents)  # 1 x 4 x 10240
-        latents = self.act(latents)
+        # latents = self.act(latents)
         latents = latents.reshape(n_batch, 4, self.n_latents, self.z_i_dim)  # 1 x 4 x 10 x 1024
         latents = self.decompress_latent(latents)  # 1 x 4 x 10 x 2408
-        latents = self.act(latents)
-        latents = latents.reshape(n_batch, 4, self.n_latents, self.seq_len + 1, self.d_model // 4)  # 1 x 4 x 301 x 8
+        # latents = self.act(latents)
+        latents = latents.reshape(n_batch, 4, self.n_latents, self.seq_len, self.d_model // 4)  # 1 x 4 x 301 x 8
         latents = self.decompress_token(latents)
-        latents = self.final_act(latents)
+        # latents = self.final_act(latents)
         return latents
 
 
