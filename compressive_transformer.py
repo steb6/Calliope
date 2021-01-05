@@ -49,10 +49,13 @@ class CompressiveEncoder(nn.Module):
                 nn.init.xavier_uniform_(p)
 
     def forward(self, seq, mask, mems, cmems):
-        d_z, d_mem, d_cmem, d_l, d_ae, daw = self.drums_encoder(seq[:, 0, :], mask[:, 0, :], mems[0, ...], cmems[0, ...])
+        d_z, d_mem, d_cmem, d_l, d_ae, daw = self.drums_encoder(seq[:, 0, :], mask[:, 0, :], mems[0, ...],
+                                                                cmems[0, ...])
         b_z, b_mem, b_cmem, b_l, b_ae, baw = self.bass_encoder(seq[:, 1, :], mask[:, 1, :], mems[1, ...], cmems[1, ...])
-        g_z, g_mem, g_cmem, g_l, g_ae, gaw = self.guitar_encoder(seq[:, 2, :], mask[:, 2, :], mems[2, ...], cmems[2, ...])
-        s_z, s_mem, s_cmem, s_l, s_ae, saw = self.strings_encoder(seq[:, 3, :], mask[:, 3, :], mems[3, ...], cmems[3, ...])
+        g_z, g_mem, g_cmem, g_l, g_ae, gaw = self.guitar_encoder(seq[:, 2, :], mask[:, 2, :], mems[2, ...],
+                                                                 cmems[2, ...])
+        s_z, s_mem, s_cmem, s_l, s_ae, saw = self.strings_encoder(seq[:, 3, :], mask[:, 3, :], mems[3, ...],
+                                                                  cmems[3, ...])
         mems = torch.stack([d_mem, b_mem, g_mem, s_mem])
         cmems = torch.stack([d_cmem, b_cmem, g_cmem, s_cmem])
         mems, cmems = map(torch.detach, (mems, cmems))
@@ -165,7 +168,7 @@ class CompressiveDecoder(nn.Module):
         # d_mem_attn = Residual(PreNorm(d_model, MultiHeadedAttention(heads, d_model)))
         mh_attn = Residual(PreNorm(d_model, MultiHeadedAttention(heads, d_model)))
         ff = Residual(PreNorm(d_model, FeedForward(d_model, d_ff, dropout=0.1)))
-        decoder = Decoder(DecoderLayer(d_model, c(d_attn), c(mh_attn), c(ff), dropout, heads),
+        decoder = Decoder(DecoderLayer(d_model, c(d_mem_attn), c(d_attn), c(ff), dropout, heads),
                           layers, vocab_size, d_model, pad_token, seq_len, z_i_dim)
         self.drums_decoder = c(decoder)
         self.bass_decoder = c(decoder)
@@ -176,28 +179,33 @@ class CompressiveDecoder(nn.Module):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
-    def forward(self, trg, latent, src_mask, trg_mask):  # , d_mems, d_cmems):
+    def forward(self, trg, latent, src_mask, trg_mask, d_mems, d_cmems):
         # d_out, d_mem, d_cmem, d_l, d_ae
-        d_out, dlw, dsw = self.drums_decoder(trg[:, 0, :], latent[0, ...], src_mask[:, 0, :],
-                                   trg_mask[:, 0, ...])  # , d_mems[0, ...], d_cmems[0, ...])
-        b_out, blw, bsw = self.bass_decoder(trg[:, 1, :], latent[1, ...], src_mask[:, 1, :],
-                                  trg_mask[:, 1, ...])  # , d_mems[1, ...], d_cmems[1, ...])
-        g_out, glw, gsw = self.guitar_decoder(trg[:, 2, :], latent[2, ...], src_mask[:, 2, :],
-                                    trg_mask[:, 2, ...])  # , d_mems[2, ...], d_cmems[2, ...])
-        s_out, slw, ssw = self.strings_decoder(trg[:, 3, :], latent[3, ...], src_mask[:, 3, :],
-                                     trg_mask[:, 3, ...])  # d_mems[3, ...], d_cmems[3, ...])
-        # mems = torch.stack([d_mem, b_mem, g_mem, s_mem])
-        # cmems = torch.stack([d_cmem, b_cmem, g_cmem, s_cmem])
-        # mems, cmems = map(torch.detach, (mems, cmems))
+        d_out, dlw, dsw, d_mem, d_cmem, d_l, d_ae = self.drums_decoder(trg[:, 0, :], latent[0, ...], src_mask[:, 0, :],
+                                                                       trg_mask[:, 0, ...], d_mems[0, ...],
+                                                                       d_cmems[0, ...])
+        b_out, blw, bsw, b_mem, b_cmem, b_l, b_ae = self.bass_decoder(trg[:, 1, :], latent[1, ...], src_mask[:, 1, :],
+                                                                      trg_mask[:, 1, ...], d_mems[1, ...],
+                                                                      d_cmems[1, ...])
+        g_out, glw, gsw, g_mem, g_cmem, g_l, g_ae = self.guitar_decoder(trg[:, 2, :], latent[2, ...], src_mask[:, 2, :],
+                                                                        trg_mask[:, 2, ...], d_mems[2, ...],
+                                                                        d_cmems[2, ...])
+        s_out, slw, ssw, s_mem, s_cmem, s_l, s_ae = self.strings_decoder(trg[:, 3, :], latent[3, ...],
+                                                                         src_mask[:, 3, :],
+                                                                         trg_mask[:, 3, ...], d_mems[3, ...],
+                                                                         d_cmems[3, ...])
+        mems = torch.stack([d_mem, b_mem, g_mem, s_mem])
+        cmems = torch.stack([d_cmem, b_cmem, g_cmem, s_cmem])
+        mems, cmems = map(torch.detach, (mems, cmems))
         output = torch.stack([d_out, b_out, g_out, s_out], dim=-1)
         output = self.generator(output)
-        # aux_loss = torch.stack((d_l, b_l, g_l, s_l))
-        # aux_loss = torch.mean(aux_loss)
-        # ae_loss = torch.stack((d_ae, b_ae, g_ae, s_ae))
-        # ae_loss = torch.mean(ae_loss)
+        aux_loss = torch.stack((d_l, b_l, g_l, s_l))
+        aux_loss = torch.mean(aux_loss)
+        ae_loss = torch.stack((d_ae, b_ae, g_ae, s_ae))
+        ae_loss = torch.mean(ae_loss)
         latents_weight = torch.mean(torch.stack([dlw, blw, glw, slw], dim=0), dim=0)
         self_weights = torch.mean(torch.stack([dsw, bsw, gsw, ssw], dim=0), dim=0)
-        return output, latents_weight, self_weights  # , mems, cmems, aux_loss, ae_loss
+        return output, latents_weight, self_weights, mems, cmems, aux_loss, ae_loss
 
 
 class Encoder(nn.Module):
@@ -250,7 +258,7 @@ class Decoder(nn.Module):
         self.decompress_bar = nn.Linear(z_i_dim, d_model * (seq_len - 1))
         self.seq_len = seq_len
 
-    def forward(self, trg, latent, src_mask, trg_mask):  # , mems, cmems):
+    def forward(self, trg, latent, src_mask, trg_mask, mems, cmems):
         attn_losses = torch.tensor(0., requires_grad=True, device=trg.device, dtype=torch.float32)
         ae_losses = torch.tensor(0., requires_grad=True, device=trg.device, dtype=torch.float32)
         trg = self.embed(trg)
@@ -259,23 +267,23 @@ class Decoder(nn.Module):
         new_cmem = []
         latents_weight = []
         self_weights = []
-        # for layer, mem, cmem in zip(self.layers, mems, cmems):
-        for layer in self.layers:
-            # trg, new_memories, attn_loss, ae_loss = layer(trg, latent, src_mask, trg_mask, (mem, cmem))
-            trg, latent_weight, self_weight = layer(trg, latent, src_mask, trg_mask)
+        for layer, mem, cmem in zip(self.layers, mems, cmems):
+        # for layer in self.layers:
+            trg, latent_weight, self_weight, new_memories, attn_loss, ae_loss = layer(trg, latent, src_mask, trg_mask, (mem, cmem))
+            # trg, latent_weight, self_weight = layer(trg, latent, src_mask, trg_mask)
             latents_weight.append(latent_weight)
             self_weights.append(self_weight)
-            # new_mem.append(new_memories[0])
-            # new_cmem.append(new_memories[1])
-            # attn_losses = attn_losses + attn_loss
-            # ae_losses = ae_losses + ae_loss
+            new_mem.append(new_memories[0])
+            new_cmem.append(new_memories[1])
+            attn_losses = attn_losses + attn_loss
+            ae_losses = ae_losses + ae_loss
         latents_weight = torch.mean(torch.stack(latents_weight, dim=0), dim=(0, 1, 2))  # mn of layer batch instruments
         self_weights = torch.mean(torch.stack(self_weights, dim=0), dim=(0, 1, 2))  # mn of layer batch instruments
-        # mems = torch.stack(new_mem)
-        # cmems = torch.stack(new_cmem)
-        # attn_losses = attn_losses / self.N  # normalize w.r.t number of layers
-        # ae_losses = ae_losses / self.N  # normalize w.r.t number of layers
-        return trg, latents_weight, self_weights  # , mems, cmems, attn_losses, ae_losses
+        mems = torch.stack(new_mem)
+        cmems = torch.stack(new_cmem)
+        attn_losses = attn_losses / self.N  # normalize w.r.t number of layers
+        ae_losses = ae_losses / self.N  # normalize w.r.t number of layers
+        return trg, latents_weight, self_weights, mems, cmems, attn_losses, ae_losses
 
 
 class EncoderLayer(nn.Module):
@@ -305,12 +313,12 @@ class DecoderLayer(nn.Module):
         self.feed_forward = feed_forward
         self.heads = heads
 
-    def forward(self, trg, latent, src_mask, trg_mask):  # , memories):
-        # x, new_memories, attn_loss, ae_loss = self.mem_attn(trg, memories=memories, input_mask=trg_mask)
-        x, self_weights = self.mem_attn(trg, key=trg, value=trg, mask=trg_mask)
+    def forward(self, trg, latent, src_mask, trg_mask, memories):
+        x, new_memories, attn_loss, ae_loss, self_weights = self.mem_attn(trg, memories=memories, input_mask=trg_mask)
+        # x, self_weights = self.mem_attn(trg, key=trg, value=trg, mask=trg_mask)
         x, latent_weights = self.src_attn(x, key=latent, value=latent, mask=src_mask)
         x, = self.feed_forward(x)
-        return x, latent_weights, self_weights  # , new_memories, attn_loss, ae_loss
+        return x, latent_weights, self_weights, new_memories, attn_loss, ae_loss
         # return x, (torch.zeros(1, requires_grad=True, **to(x)), torch.zeros(1, requires_grad=True, **to(x))), \
         #        torch.zeros(1, requires_grad=True, **to(x)), torch.zeros(1, requires_grad=True, **to(x))
 

@@ -172,15 +172,14 @@ class Trainer:
             e_attn_losses.append(e_attn_loss)
             e_ae_losses.append(e_ae_loss)
             latents.append(latent)
-        # Compress and decompress latents  # TODO detach all attn weights
         # PAD AWS
         length = max([s.shape[-1] for s in aws])
         for count, aw in enumerate(aws):
             aws[count] = f.pad(aw, (length - aw.shape[-1], 0))
         aws = torch.mean(torch.stack(aws, dim=0), dim=0)
+        # COMPRESS LATENTS
         reconstructed_latents = None
         z = None
-        # END PAD AWS
         # act = torch.nn.Tanh()
         # original_latents = act(original_latents)
         original_latents = torch.stack(latents, dim=2)  # 1 x 4 x 10 x 301 x 32
@@ -200,13 +199,19 @@ class Trainer:
             if not self.decoder.training:  # do not use teacher forcing
                 trg, trg_mask = self.greedy_decoding(latent, src_mask, d_mems, d_cmems)
             # out, d_mems, d_cmems, d_attn_loss, d_ae_loss
-            out, latent_weight, self_weight = self.decoder(trg, latent, src_mask, trg_mask)  # , d_mems, d_cmems)
-            # d_attn_losses.append(d_attn_loss)
-            # d_ae_losses.append(d_ae_loss)
+            out, latent_weight, self_weight, d_mems, d_cmems, d_attn_loss, d_ae_loss = self.decoder(trg, latent,
+                                                                                                    src_mask, trg_mask,
+                                                                                                    d_mems, d_cmems)
+            d_attn_losses.append(d_attn_loss)
+            d_ae_losses.append(d_ae_loss)
             outs.append(out)
             latents_weight.append(latent_weight)
             self_weights.append(self_weight)
         latents_weight = torch.mean(torch.stack(latents_weight, dim=0), dim=0)
+        # PAD SELF WEIGHTS
+        length = max([s.shape[-1] for s in self_weights])
+        for count, sw in enumerate(self_weights):
+            self_weights[count] = f.pad(sw, (length - sw.shape[-1], 0))
         self_weights = torch.mean(torch.stack(self_weights, dim=0), dim=0)
         # LOG ATTENTION IMAGES
         if self.step % config["train"]["after_mb_log_attn_img"] == 0:
@@ -216,8 +221,8 @@ class Trainer:
         outs = outs.reshape(config["train"]["batch_size"], -1, config["tokens"]["vocab_size"], 4)
         e_ae_losses = torch.stack(e_ae_losses).mean()
         e_attn_losses = torch.stack(e_attn_losses).mean()
-        # d_ae_losses = torch.stack(d_ae_losses).mean()
-        # d_attn_losses = torch.stack(d_attn_losses).mean()
+        d_ae_losses = torch.stack(d_ae_losses).mean()
+        d_attn_losses = torch.stack(d_attn_losses).mean()
         #
         # # TODO log example of src and outs sometimes
         if self.step % config["train"]["after_mb_log_examples"] == 0:
@@ -232,9 +237,9 @@ class Trainer:
         if self.encoder.training:
             self.model_optimizer.zero_grad()
             self.compressor_optimizer.zero_grad()
-            #  (loss + e_attn_losses + e_ae_losses + d_attn_losses + d_ae_losses + latents_reconstruction_loss).backward()
+            (loss + e_attn_losses + e_ae_losses + d_attn_losses + d_ae_losses).backward()
             # (loss + e_attn_losses + e_ae_losses + latents_reconstruction_loss).backward()
-            (loss + e_attn_losses + e_ae_losses).backward()
+            # (loss + e_attn_losses + e_ae_losses).backward()
             torch.nn.utils.clip_grad_norm_(self.encoder.parameters(), 0.1)
             torch.nn.utils.clip_grad_norm_(self.compressor.parameters(), 0.1)
             torch.nn.utils.clip_grad_norm_(self.decompressor.parameters(), 0.1)
@@ -244,7 +249,7 @@ class Trainer:
 
         # losses = (loss.item(), e_attn_losses.item(), e_ae_losses.item(), d_attn_losses.item(), d_ae_losses.item(),
         #           *loss_items, latents_reconstruction_loss.item())
-        losses = (loss.item(), e_attn_losses.item(), e_ae_losses.item(), 0, 0,
+        losses = (loss.item(), e_attn_losses.item(), e_ae_losses.item(), d_attn_losses.item(), d_ae_losses.item(),
                   *loss_items, latents_reconstruction_loss.item())  # TODO adjust values
         if not config["train"]["aae"]:
             return losses
