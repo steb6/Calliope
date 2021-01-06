@@ -90,7 +90,7 @@ class Trainer:
         dec_input = d_in.permute(1, 2, 0, 3)[0].reshape(4, -1).detach().cpu().numpy()
         predicted = torch.max(pred, dim=-2).indices.permute(0, 2, 1)[0].reshape(4, -1).detach().cpu().numpy()
         expected = exp.permute(1, 2, 0, 3)[0].reshape(4, -1).detach().cpu().numpy()
-        latent = lat.permute(2, 1, 0, 3, 4)[0].reshape(4, -1, config["model"]["d_model"]).detach().cpu().numpy()
+        latent = lat.detach().cpu().numpy()
         columns = ["Encoder Input: " + str(enc_input.shape),
                    "Decoder Input: " + str(dec_input.shape),
                    "Predicted: " + str(predicted.shape),
@@ -102,8 +102,7 @@ class Trainer:
             inputs = inputs + (zeta,)
             columns.append("Z: " + str(z.shape))
         if r_lat is not None:
-            recon_l = r_lat.permute(2, 1, 0, 3, 4)[0].reshape(4, -1, config["model"]["d_model"]).detach().cpu().numpy()
-            # recon_l = r_lat[0].detach().cpu().numpy()
+            recon_l = r_lat.detach().cpu().numpy()
             inputs = inputs + (recon_l,)
             columns.append("Reconstructed latents: " + str(recon_l.shape))
         table = wandb.Table(columns=columns)
@@ -179,25 +178,15 @@ class Trainer:
             aws[count] = f.pad(aw, (length - aw.shape[-1], 0))
         aws = torch.mean(torch.stack(aws, dim=0), dim=0)
         # COMPRESS LATENTS
-        reconstructed_latents = None
-        z = None
-        # act = torch.nn.Tanh()
-        # original_latents = act(original_latents)
         original_latents = torch.stack(latents, dim=2)  # 1 x 4 x 10 x 301 x 32
-        # TODO REMOVE TEST
-        # import copy
-        # original_latents_copy = copy.deepcopy(original_latents.data)
         z = self.compressor(original_latents)  # 1 x z_dim
         reconstructed_latents = self.decompressor(z)
-        loss = torch.nn.MSELoss()
-        latents_reconstruction_loss = loss(reconstructed_latents, original_latents)
         reconstructed_latents = reconstructed_latents.transpose(0, 2)
-        original_latents = original_latents.transpose(0, 2)
         # Decode
         latents_weight = []
         self_weights = []
 
-        for latent, src_mask, trg, trg_mask in zip(original_latents, src_masks, trgs, trg_masks):
+        for latent, src_mask, trg, trg_mask in zip(reconstructed_latents, src_masks, trgs, trg_masks):
         # for src_mask, trg, trg_mask in zip(src_masks, trgs, trg_masks):
             if not self.decoder.training:  # do not use teacher forcing
                 trg, trg_mask = self.greedy_decoding(latent, src_mask, d_mems, d_cmems)
@@ -229,7 +218,7 @@ class Trainer:
         #
         # # TODO log example of src and outs sometimes
         if self.step % config["train"]["after_mb_log_examples"] == 0:
-            self.log_examples(srcs, trgs, outs, trg_ys, original_latents, z, reconstructed_latents)
+            self.log_examples(srcs, trgs, outs, trg_ys, original_latents, z, reconstructed_latents.transpose(0, 2))
 
         trg_ys = trg_ys.permute(1, 0, 3, 2)
         trg_ys = trg_ys.reshape(config["train"]["batch_size"], -1, 4)

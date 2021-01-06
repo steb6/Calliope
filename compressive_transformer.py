@@ -98,10 +98,10 @@ class LatentsCompressor(nn.Module):
         latents = self.compress_token(latents)  # 1 x 4 x 6 x 100 x 8
         latents = latents.reshape(n_batch, n_track, n_latents, -1)  # 1 x 4 x 6 x 800
         latents = self.compress_sequence(latents)  # 1 x 4 x 6 x 200
-        latents = latents.reshape(n_batch, n_track, -1)  # 1 x 4 x 1200
-        latents = self.compress_instrument(latents)  # 1 x 4 x 6000  # TODO till here ok
-        latents = latents.reshape(n_batch, -1)  # 1 x 24000
-        latents = self.compress_tracks(latents)
+        # latents = latents.reshape(n_batch, n_track, -1)  # 1 x 4 x 1200
+        # latents = self.compress_instrument(latents)  # 1 x 4 x 6000  # TODO till here ok
+        # latents = latents.reshape(n_batch, -1)  # 1 x 24000
+        # latents = self.compress_tracks(latents)
         return latents
 
 
@@ -114,21 +114,11 @@ class LatentsDecompressor(nn.Module):
                  z_tot_dim=config["model"]["z_tot_dim"]
                  ):
         super(LatentsDecompressor, self).__init__()
-        self.sequence_decompressor = nn.Linear(z_i_dim, seq_len * d_model)  # +1 because adding sos and eos
-        self.track_decompressor = nn.Linear(z_tot_dim, z_i_dim * n_latents)
-        self.song_decompressor = nn.Linear(z_tot_dim, z_tot_dim * 4)
         self.z_tot_dim = z_tot_dim
         self.z_i_dim = z_i_dim
         self.n_latents = n_latents
         self.seq_len = seq_len
         self.d_model = d_model
-        self.act = torch.nn.ReLU()
-        self.final_act = torch.nn.Tanh()
-        self.decompressor = nn.Linear(d_model, d_model * 4)
-        self.final_decompressor = nn.Linear(z_tot_dim, z_tot_dim * 4)
-        self.decompress_track = nn.Linear(z_tot_dim, z_i_dim * n_latents)
-        self.decompress_latent = nn.Linear(z_i_dim, seq_len * d_model // 4)
-        self.prepare_for_decoder = nn.Linear(z_tot_dim, seq_len * d_model)
         # EXPERIMENTAL
         self.decompress_tracks = nn.Linear(n_latents * seq_len * d_model // 32, 4 * n_latents * seq_len * d_model // 32)
         self.decompress_instrument = nn.Linear(n_latents * seq_len * d_model // 32, n_latents * seq_len * d_model // 16)
@@ -136,11 +126,11 @@ class LatentsDecompressor(nn.Module):
         self.decompress_token = nn.Linear(d_model // 4, d_model)
 
     def forward(self, latents):  # 1 x 1024 -> 1 x 4 x 10 x 301 x 32
-        n_batch, _ = latents.shape
-        latents = self.decompress_tracks(latents)
-        latents = latents.reshape(n_batch, 4, -1)
-        latents = self.decompress_instrument(latents)
-        latents = latents.reshape(n_batch, 4, self.n_latents, self.seq_len * self.d_model // 16)
+        n_batch = latents.shape[0]
+        # latents = self.decompress_tracks(latents)
+        # latents = latents.reshape(n_batch, 4, -1)
+        # latents = self.decompress_instrument(latents)
+        # latents = latents.reshape(n_batch, 4, self.n_latents, self.seq_len * self.d_model // 16)
         latents = self.decompress_sequence(latents)
         latents = latents.reshape(n_batch, 4, self.n_latents, self.seq_len, -1)
         latents = self.decompress_token(latents)
@@ -353,7 +343,7 @@ class MemoryMultiHeadedAttention(nn.Module):
         self.ae_dropout = nn.Dropout(ae_dropout)
         self.dropout = nn.Dropout(dropout)
         self.reconstruction_attn_dropout = nn.Dropout(reconstruction_attn_dropout)
-        self.deconv = nn.Linear(mem_len // cmem_ratio, mem_len)
+        self.reconstruct_mem = nn.Linear(mem_len // cmem_ratio, mem_len)
         self.attn_imgs = 0
         self.mask_subsequent = mask_subsequent
 
@@ -362,15 +352,18 @@ class MemoryMultiHeadedAttention(nn.Module):
         mem_len = mem.shape[1]
         cmem_len = cmem.shape[1]
         b, t, d = x.shape
+        # Compute dots
         q = self.to_q(x)
         kv_input = torch.cat((cmem, mem, x), dim=1)
         k, v = self.to_kv(kv_input).chunk(2, dim=-1)
-        merge_heads = lambda x: reshape_dim(x, -1, (-1, self.dim_head)).transpose(1, 2)
-        q, k, v = map(merge_heads, (q, k, v))
-        # k, v = map(lambda x: x.expand(-1, self.h, -1, -1), (k, v))  # TODO does this function do something?
-        dots = torch.einsum('bhid,bhjd->bhij', q, k) * self.scale
-        mask_value = max_neg_value(dots)
 
+        def merge_heads(matrix):
+            return reshape_dim(matrix, -1, (-1, self.dim_head)).transpose(1, 2)
+
+        q, k, v = map(merge_heads, (q, k, v))
+        dots = torch.einsum('bhid,bhjd->bhij', q, k) * self.scale
+        # Prepare masks
+        mask_value = max_neg_value(dots)
         if input_mask is not None:  # set -inf under and right of the mask
             if input_mask.dim() == 2:  # encoder mask, cover just pad
                 mask = input_mask[:, None, :, None] * input_mask[:, None, None, :]
@@ -380,39 +373,28 @@ class MemoryMultiHeadedAttention(nn.Module):
                 raise Exception("Wrong mask provided")
             mask = F.pad(mask, (mem_len + cmem_len, 0), value=True)
             dots.masked_fill_(~mask, mask_value)  # dots has values in the upper square, the rest is -inf
-        # here we add +1 to have a pattern t, f, f -> t, t, f -> t, t, t (without memory, which are always t)
-        # if self.mask_subsequent:
-        #     total_mem_len = mem_len + cmem_len
-        #     mask = torch.ones(t, t + total_mem_len, **to(x)).triu_(diagonal=total_mem_len+1).bool()  # TODO +1 or no
-        #     dots.masked_fill_(mask[None, None, ...], mask_value)  # init with all memories and just first of sequence
-
+        # Compute weights
         attn = dots.softmax(dim=-1)
         attn = self.attn_dropout(attn)
-
+        # Compute logits
         out = torch.einsum('bhij,bhjd->bhid', attn, v)
         out = out.transpose(1, 2).reshape(b, t, -1)
         logits = self.to_out(out)
         logits = self.dropout(logits)
-
+        # Memories and auxiliary losses
         new_mem = mem
         new_cmem = cmem
         aux_loss = torch.zeros(1, requires_grad=True, **to(q))
         ae_loss = torch.zeros(1, requires_grad=True, **to(q))
-
-        # if seq_len > t means that the sequence is over, so no more memory update is needed
-        if self.seq_len > t or not calc_memory:  # TODO ? don't compute memory when autoregressive
+        if t < self.seq_len or not calc_memory:  # TODO set calc_memory to false when autoregressive
             return logits, Memory(new_mem, new_cmem), aux_loss, ae_loss, attn
-
-        # calculate memory and compressed memory
-
+        # Calculate memory and compressed memory
         old_mem, new_mem = queue_fifo(mem, x, length=self.mem_len, dim=1)
         old_mem_padding = old_mem.shape[1] % self.cmem_ratio
-
         if old_mem_padding != 0:
-            old_mem = F.pad(old_mem, (0, 0, old_mem_padding, 0), value=0.)
-
+            old_mem = F.pad(old_mem, (0, 0, old_mem_padding, 0), value=0.)  # Pad old memory to match cmem_ratio
         if old_mem.shape[1] == 0 or self.cmem_len <= 0:
-            return logits, Memory(new_mem, new_cmem), aux_loss, ae_loss, attn
+            return logits, Memory(new_mem, new_cmem), aux_loss, ae_loss, attn  # No memory to compress
         # STOP GRADIENT DETACHING MEMORY
         old_mem = old_mem.detach()
         compressed_mem = self.compress_mem_fn(old_mem)
@@ -421,7 +403,7 @@ class MemoryMultiHeadedAttention(nn.Module):
         # if not self.training:  # TODO without this, it does not use memory in evaluating new song
         # return logits, Memory(new_mem, new_cmem), aux_loss, ae_loss
 
-        # calculate compressed memory auxiliary loss if training
+        # Compute attention loss
         cmem_k, cmem_v = self.to_kv(compressed_mem).chunk(2, dim=-1)
         cmem_k, cmem_v = map(merge_heads, (cmem_k, cmem_v))
         cmem_k, cmem_v = map(lambda x: x.expand(-1, self.h, -1, -1), (cmem_k, cmem_v))
@@ -432,16 +414,14 @@ class MemoryMultiHeadedAttention(nn.Module):
         # TODO WHY THIS LINE WAS HERE IN A MODEL THAT WORKS? IS THERE ANY OTHER WAY? DO I NEED TO STOP THE GRADIENT?
         # q, old_mem_k, old_mem_v, cmem_k, cmem_v = map(torch.detach, (q, old_mem_k, old_mem_v, cmem_k, cmem_v))
         q, old_mem_k, old_mem_v = map(torch.detach, (q, old_mem_k, old_mem_v))
-
         attn_fn = partial(full_attn, dropout=self.reconstruction_attn_dropout)
-
         aux_loss = F.mse_loss(
             attn_fn(q, old_mem_k, old_mem_v)[0],
             attn_fn(q, cmem_k, cmem_v)[0]
         )
 
-        # Calculate auto-encoding loss
-        reconstructed_mem = self.deconv(compressed_mem.transpose(1, 2)).transpose(1, 2)
+        # Compute auto-encoding loss
+        reconstructed_mem = self.reconstruct_mem(compressed_mem.transpose(1, 2)).transpose(1, 2)
         reconstructed_mem = self.ae_dropout(reconstructed_mem)
         to_cut = min(reconstructed_mem.shape[1], old_mem.shape[1])
         old_mem = old_mem[:, :to_cut, :]
@@ -450,7 +430,6 @@ class MemoryMultiHeadedAttention(nn.Module):
             old_mem,
             reconstructed_mem
         )
-
         return logits, Memory(new_mem, new_cmem), aux_loss, ae_loss, attn
 
 
