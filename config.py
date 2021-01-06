@@ -35,9 +35,9 @@ config = {
         "mem_len": 300 if remote else 100,  # keep last 2 seq
         "cmem_len": 300 if remote else 100,  # keep 4 compression
         "cmem_ratio": 4,
-        "z_i_dim": 512 if remote else 50,
+        "z_i_dim": 512 if remote else 64,
         # max_track_length / seq_len = n_latents, n_latents * z_i_dim are compressed into z_tot_dim
-        "z_tot_dim": 2048 if remote else 300,
+        "z_tot_dim": 2048 if remote else 256,
     },
     "data": {  # Parameters to create and listen the note representation
         "max_track_length": 10000,

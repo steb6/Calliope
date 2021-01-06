@@ -103,6 +103,7 @@ class Trainer:
             columns.append("Z: " + str(z.shape))
         if r_lat is not None:
             recon_l = r_lat.permute(2, 1, 0, 3, 4)[0].reshape(4, -1, config["model"]["d_model"]).detach().cpu().numpy()
+            # recon_l = r_lat[0].detach().cpu().numpy()
             inputs = inputs + (recon_l,)
             columns.append("Reconstructed latents: " + str(recon_l.shape))
         table = wandb.Table(columns=columns)
@@ -195,7 +196,9 @@ class Trainer:
         # Decode
         latents_weight = []
         self_weights = []
+
         for latent, src_mask, trg, trg_mask in zip(original_latents, src_masks, trgs, trg_masks):
+        # for src_mask, trg, trg_mask in zip(src_masks, trgs, trg_masks):
             if not self.decoder.training:  # do not use teacher forcing
                 trg, trg_mask = self.greedy_decoding(latent, src_mask, d_mems, d_cmems)
             # out, d_mems, d_cmems, d_attn_loss, d_ae_loss
@@ -250,7 +253,7 @@ class Trainer:
         # losses = (loss.item(), e_attn_losses.item(), e_ae_losses.item(), d_attn_losses.item(), d_ae_losses.item(),
         #           *loss_items, latents_reconstruction_loss.item())
         losses = (loss.item(), e_attn_losses.item(), e_ae_losses.item(), d_attn_losses.item(), d_ae_losses.item(),
-                  *loss_items, latents_reconstruction_loss.item())  # TODO adjust values
+                  *loss_items, 0)  # TODO adjust values
         if not config["train"]["aae"]:
             return losses
         was_training = self.encoder.training
