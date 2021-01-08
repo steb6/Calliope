@@ -13,7 +13,8 @@ import glob
 import wandb
 from midi_converter import midi_to_wav
 from discriminator import Discriminator
-from compressive_transformer import CompressiveEncoder, CompressiveDecoder, LatentsCompressor, LatentsDecompressor
+from compressive_transformer import CompressiveEncoder, CompressiveDecoder
+from compress_latents import LatentsCompressor, LatentsDecompressor
 import numpy as np
 from PIL import Image
 from torch.nn import functional as f
@@ -41,6 +42,7 @@ class Trainer:
         if config["train"]["aae"]:
             self.discriminator_optimizer = None
             self.generator_optimizer = None
+        self.compress = False
 
     def test_losses(self, loss, e_attn_losses, e_ae_losses, d_attn_losses, d_ae_losses, recon_loss):
         losses = [loss, e_attn_losses, e_ae_losses, d_attn_losses, d_ae_losses, recon_loss]
@@ -85,7 +87,7 @@ class Trainer:
                                                             " weights")]})
 
     @staticmethod
-    def log_examples(e_in, d_in, pred, exp, lat, z, r_lat):  # TODO log latents
+    def log_examples(e_in, d_in, pred, exp, lat, z=None, r_lat=None):  # TODO log latents
         enc_input = e_in.permute(1, 2, 0, 3)[0].reshape(4, -1).detach().cpu().numpy()
         dec_input = d_in.permute(1, 2, 0, 3)[0].reshape(4, -1).detach().cpu().numpy()
         predicted = torch.max(pred, dim=-2).indices.permute(0, 2, 1)[0].reshape(4, -1).detach().cpu().numpy()
@@ -95,7 +97,7 @@ class Trainer:
                    "Decoder Input: " + str(dec_input.shape),
                    "Predicted: " + str(predicted.shape),
                    "Expected: " + str(expected.shape),
-                   "Original latents: " + str(latent.shape)]
+                   "Latents: " + str(latent.shape)]
         inputs = (enc_input, dec_input, predicted, expected, latent)
         if z is not None:
             zeta = z[0].detach().cpu().numpy()
@@ -104,7 +106,7 @@ class Trainer:
         if r_lat is not None:
             recon_l = r_lat.detach().cpu().numpy()
             inputs = inputs + (recon_l,)
-            columns.append("Reconstructed latents: " + str(recon_l.shape))
+            columns.append("Real latents: " + str(recon_l.shape))
         table = wandb.Table(columns=columns)
         table.add_data(*inputs)
         wandb.log({"out": table})
@@ -178,18 +180,28 @@ class Trainer:
             aws[count] = f.pad(aw, (length - aw.shape[-1], 0))
         aws = torch.mean(torch.stack(aws, dim=0), dim=0)
         # COMPRESS LATENTS
-        original_latents = torch.stack(latents, dim=2)  # 1 x 4 x 10 x 301 x 32
-        z = self.compressor(original_latents)  # 1 x z_dim
-        reconstructed_latents = self.decompressor(z)
-        reconstructed_latents = reconstructed_latents.transpose(0, 2)
+        latents = torch.stack(latents, dim=2)  # 1 x 4 x 10 x 301 x 32
+        original_latents = None
+        z = None
+        reconstruction_loss = 0
+        if self.compress:
+            import copy
+            loss_function = torch.nn.MSELoss()
+            original_latents = copy.deepcopy(latents.data)
+            z = self.compressor(latents)  # 1 x z_dim
+            latents = self.decompressor(z)
+            reconstruction_loss = loss_function(original_latents, latents)
+            original_latents = original_latents.transpose(0, 2)
+            # reconstruction_loss = reconstruction_loss.item()
+        latents = latents.transpose(0, 2)
         # Decode
         latents_weight = []
         self_weights = []
 
-        for latent, src_mask, trg, trg_mask in zip(reconstructed_latents, src_masks, trgs, trg_masks):
+        for latent, src_mask, trg, trg_mask in zip(latents, src_masks, trgs, trg_masks):
         # for src_mask, trg, trg_mask in zip(src_masks, trgs, trg_masks):
-            if not self.decoder.training:  # do not use teacher forcing
-                trg, trg_mask = self.greedy_decoding(latent, src_mask, d_mems, d_cmems)
+        #     if not self.decoder.training:  # do not use teacher forcing
+        #         trg, trg_mask = self.greedy_decoding(latent, src_mask, d_mems, d_cmems)
             # out, d_mems, d_cmems, d_attn_loss, d_ae_loss
             out, latent_weight, self_weight, d_mems, d_cmems, d_attn_loss, d_ae_loss = self.decoder(trg, latent,
                                                                                                     src_mask, trg_mask,
@@ -218,7 +230,7 @@ class Trainer:
         #
         # # TODO log example of src and outs sometimes
         if self.step % config["train"]["after_mb_log_examples"] == 0:
-            self.log_examples(srcs, trgs, outs, trg_ys, original_latents, z, reconstructed_latents.transpose(0, 2))
+            self.log_examples(srcs, trgs, outs, trg_ys, latents, z, original_latents)
 
         trg_ys = trg_ys.permute(1, 0, 3, 2)
         trg_ys = trg_ys.reshape(config["train"]["batch_size"], -1, 4)
@@ -228,23 +240,28 @@ class Trainer:
 
         if self.encoder.training:
             self.model_optimizer.zero_grad()
-            self.compressor_optimizer.zero_grad()
-            (loss + e_attn_losses + e_ae_losses + d_attn_losses + d_ae_losses).backward()
-            # (loss + e_attn_losses + e_ae_losses + latents_reconstruction_loss).backward()
-            # (loss + e_attn_losses + e_ae_losses).backward()
+            if self.compress:
+                self.compressor_optimizer.zero_grad()
+            optimizing_losses = loss + e_attn_losses + e_ae_losses + d_attn_losses + d_ae_losses
+            if self.compress:
+                optimizing_losses = optimizing_losses + reconstruction_loss
+            optimizing_losses.backward()
             torch.nn.utils.clip_grad_norm_(self.encoder.parameters(), 0.1)
-            torch.nn.utils.clip_grad_norm_(self.compressor.parameters(), 0.1)
-            torch.nn.utils.clip_grad_norm_(self.decompressor.parameters(), 0.1)
             torch.nn.utils.clip_grad_norm_(self.decoder.parameters(), 0.1)
-            self.compressor_optimizer.step()
             self.model_optimizer.optimize()  # TODO add decreasing optimization updating
+            if self.compress:
+                torch.nn.utils.clip_grad_norm_(self.compressor.parameters(), 0.1)
+                torch.nn.utils.clip_grad_norm_(self.decompressor.parameters(), 0.1)
+                self.compressor_optimizer.step()
 
         # losses = (loss.item(), e_attn_losses.item(), e_ae_losses.item(), d_attn_losses.item(), d_ae_losses.item(),
         #           *loss_items, latents_reconstruction_loss.item())
         losses = (loss.item(), e_attn_losses.item(), e_ae_losses.item(), d_attn_losses.item(), d_ae_losses.item(),
-                  *loss_items, 0)  # TODO adjust values
+                  *loss_items, reconstruction_loss)  # TODO adjust values
         if not config["train"]["aae"]:
             return losses
+
+
         was_training = self.encoder.training
         # TODO adversarial autoencoder
         self.model_optimizer.zero_grad()
@@ -290,7 +307,8 @@ class Trainer:
         return losses
 
     def log_to_wandb(self, losses):
-        mode = "train/" if self.encoder.training else "eval/"
+        # mode = "train/" if self.encoder.training else "eval/"
+        mode = "train/"  # TODO fix
         log = {"stuff/lr": self.model_optimizer.lr,
                mode + "loss": losses[0],
                mode + "encoder attention loss": losses[1],
@@ -504,6 +522,10 @@ class Trainer:
                     desc = "Train epoch " + str(self.epoch) + ", mb " + str(it)
                     train_progress = tqdm(total=config["train"]["mb_before_eval"], position=0, leave=True, desc=desc)
                 tr_losses = self.run_mb(batch)
+                if tr_losses[0] < 0.5:  # TODO check
+                    if not self.compress:
+                        print("Starting to compress")
+                        self.compress = True
                 self.log_to_wandb(tr_losses)
                 train_progress.update()
                 trained = True
