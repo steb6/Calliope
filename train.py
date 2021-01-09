@@ -43,6 +43,7 @@ class Trainer:
             self.discriminator_optimizer = None
             self.generator_optimizer = None
         self.compress = False
+        self.final_stage = False
 
     def test_losses(self, loss, e_attn_losses, e_ae_losses, d_attn_losses, d_ae_losses, recon_loss):
         losses = [loss, e_attn_losses, e_ae_losses, d_attn_losses, d_ae_losses, recon_loss]
@@ -184,15 +185,22 @@ class Trainer:
         original_latents = None
         z = None
         reconstruction_loss = 0
-        if self.compress:
-            import copy
-            loss_function = torch.nn.MSELoss()
-            original_latents = copy.deepcopy(latents.data)
-            z = self.compressor(latents)  # 1 x z_dim
-            latents = self.decompressor(z)
-            reconstruction_loss = loss_function(original_latents, latents)
-            original_latents = original_latents.transpose(0, 2)
-            # reconstruction_loss = reconstruction_loss.item()
+        # if self.compress:
+        #     import copy
+        #     loss_function = torch.nn.MSELoss()
+        # original_latents = copy.deepcopy(latents.data)
+        z = self.compressor(latents)  # 1 x z_dim
+        latents = self.decompressor(z)
+        # reconstruction_loss = loss_function(original_latents, latents)
+        # original_latents = original_latents.transpose(0, 2)
+        # if not self.final_stage:
+        #     self.compressor_optimizer.zero_grad()
+        #     reconstruction_loss.backward()
+        #     torch.nn.utils.clip_grad_norm_(self.compressor.parameters(), 0.1)
+        #     torch.nn.utils.clip_grad_norm_(self.decompressor.parameters(), 0.1)
+        #     self.compressor_optimizer.step()
+        # reconstruction_loss = reconstruction_loss.item()
+        latents = latents.unsqueeze(3)
         latents = latents.transpose(0, 2)
         # Decode
         latents_weight = []
@@ -240,19 +248,16 @@ class Trainer:
 
         if self.encoder.training:
             self.model_optimizer.zero_grad()
-            if self.compress:
-                self.compressor_optimizer.zero_grad()
             optimizing_losses = loss + e_attn_losses + e_ae_losses + d_attn_losses + d_ae_losses
-            if self.compress:
-                optimizing_losses = optimizing_losses + reconstruction_loss
+            # if self.final_stage:
+            #     optimizing_losses = optimizing_losses + reconstruction_loss
             optimizing_losses.backward()
             torch.nn.utils.clip_grad_norm_(self.encoder.parameters(), 0.1)
             torch.nn.utils.clip_grad_norm_(self.decoder.parameters(), 0.1)
+            # if self.final_stage:
+            torch.nn.utils.clip_grad_norm_(self.compressor.parameters(), 0.1)
+            torch.nn.utils.clip_grad_norm_(self.decompressor.parameters(), 0.1)
             self.model_optimizer.optimize()  # TODO add decreasing optimization updating
-            if self.compress:
-                torch.nn.utils.clip_grad_norm_(self.compressor.parameters(), 0.1)
-                torch.nn.utils.clip_grad_norm_(self.decompressor.parameters(), 0.1)
-                self.compressor_optimizer.step()
 
         # losses = (loss.item(), e_attn_losses.item(), e_ae_losses.item(), d_attn_losses.item(), d_ae_losses.item(),
         #           *loss_items, latents_reconstruction_loss.item())
@@ -260,51 +265,6 @@ class Trainer:
                   *loss_items, reconstruction_loss)  # TODO adjust values
         if not config["train"]["aae"]:
             return losses
-
-
-        was_training = self.encoder.training
-        # TODO adversarial autoencoder
-        self.model_optimizer.zero_grad()
-        self.discriminator.zero_grad()
-        eps = 1e-15
-        # TODO Train discriminator
-        self.encoder.eval()
-        self.compressor.eval()
-        self.decompressor.eval()
-        self.decoder.eval()
-        latents = []
-        for seq in src:
-            latent, e_mems, e_cmems, e_attn_loss, e_ae_loss = self.encoder(seq, e_mems, e_cmems)
-            latents.append(latent)
-        latents = torch.stack(latents, dim=2)  # 1 x 4 x 10 x 301 x 32
-        latents = self.compressor(latents)  # 1 x z_dim
-        z_real_gauss = Variable(torch.randn_like(latents)).to(config["train"]["device"])  # TODO scale
-        d_real_gauss = self.discriminator(z_real_gauss)
-        d_fake_gauss = self.discriminator(latents)
-        d_loss = -torch.mean(torch.log(d_real_gauss + eps) + torch.log(1 - d_fake_gauss + eps))
-        if was_training:
-            d_loss.backward()
-            self.discriminator_optimizer.step()
-        # TODO Train generator
-        if was_training:
-            self.encoder.train()
-            self.compressor.train()
-        latents = []
-        for seq in src:
-            latent, e_mems, e_cmems, e_attn_loss, e_ae_loss = self.encoder(seq, e_mems, e_cmems)
-            latents.append(latent)
-        latents = torch.stack(latents, dim=2)  # 1 x 4 x 10 x 301 x 32
-        latents = self.compressor(latents)  # 1 x z_dim
-        d_fake_gauss = self.discriminator(latents)
-        g_loss = -torch.mean(torch.log(d_fake_gauss + eps))
-        if was_training:
-            g_loss.backward()
-            self.generator_optimizer.step()
-        if was_training:
-            self.decompressor.train()
-            self.decoder.train()
-        losses = losses + (d_loss.item(), g_loss.item())
-        return losses
 
     def log_to_wandb(self, losses):
         # mode = "train/" if self.encoder.training else "eval/"
@@ -522,11 +482,62 @@ class Trainer:
                     desc = "Train epoch " + str(self.epoch) + ", mb " + str(it)
                     train_progress = tqdm(total=config["train"]["mb_before_eval"], position=0, leave=True, desc=desc)
                 tr_losses = self.run_mb(batch)
-                if tr_losses[0] < 0.5:  # TODO check
-                    if not self.compress:
-                        print("Starting to compress")
-                        self.compress = True
+                # if tr_losses[0] < 0.3:  # TODO check
+                #     if not self.compress:
+                #         print("Starting to compress")
+                #         self.encoder.eval()
+                #         self.decoder.eval()
+                #         self.compress = True
+                #     if tr_losses[-1] < 0:  # this seems to be a bad idea
+                #         print("Final stage")
+                #         self.encoder.train()
+                #         self.decoder.train()
+                #         self.final_stage = True
                 self.log_to_wandb(tr_losses)
                 train_progress.update()
                 trained = True
                 self.step += 1
+
+        # was_training = self.encoder.training
+        # # TODO adversarial autoencoder
+        # self.model_optimizer.zero_grad()
+        # self.discriminator.zero_grad()
+        # eps = 1e-15
+        # # TODO Train discriminator
+        # self.encoder.eval()
+        # self.compressor.eval()
+        # self.decompressor.eval()
+        # self.decoder.eval()
+        # latents = []
+        # for seq in src:
+        #     latent, e_mems, e_cmems, e_attn_loss, e_ae_loss = self.encoder(seq, e_mems, e_cmems)
+        #     latents.append(latent)
+        # latents = torch.stack(latents, dim=2)  # 1 x 4 x 10 x 301 x 32
+        # latents = self.compressor(latents)  # 1 x z_dim
+        # z_real_gauss = Variable(torch.randn_like(latents)).to(config["train"]["device"])  # TODO scale
+        # d_real_gauss = self.discriminator(z_real_gauss)
+        # d_fake_gauss = self.discriminator(latents)
+        # d_loss = -torch.mean(torch.log(d_real_gauss + eps) + torch.log(1 - d_fake_gauss + eps))
+        # if was_training:
+        #     d_loss.backward()
+        #     self.discriminator_optimizer.step()
+        # # TODO Train generator
+        # if was_training:
+        #     self.encoder.train()
+        #     self.compressor.train()
+        # latents = []
+        # for seq in src:
+        #     latent, e_mems, e_cmems, e_attn_loss, e_ae_loss = self.encoder(seq, e_mems, e_cmems)
+        #     latents.append(latent)
+        # latents = torch.stack(latents, dim=2)  # 1 x 4 x 10 x 301 x 32
+        # latents = self.compressor(latents)  # 1 x z_dim
+        # d_fake_gauss = self.discriminator(latents)
+        # g_loss = -torch.mean(torch.log(d_fake_gauss + eps))
+        # if was_training:
+        #     g_loss.backward()
+        #     self.generator_optimizer.step()
+        # if was_training:
+        #     self.decompressor.train()
+        #     self.decoder.train()
+        # losses = losses + (d_loss.item(), g_loss.item())
+        # return losses

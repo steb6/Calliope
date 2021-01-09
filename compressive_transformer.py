@@ -242,6 +242,7 @@ class DecoderLayer(nn.Module):
     def forward(self, trg, latent, src_mask, trg_mask, memories):
         x, new_memories, attn_loss, ae_loss, self_weights = self.mem_attn(trg, memories=memories, input_mask=trg_mask)
         # x, self_weights = self.mem_attn(trg, key=trg, value=trg, mask=trg_mask)
+        src_mask = None
         x, latent_weights = self.src_attn(x, key=latent, value=latent, mask=src_mask)
         x, = self.feed_forward(x)
         return x, latent_weights, self_weights, new_memories, attn_loss, ae_loss
@@ -489,8 +490,8 @@ class PositionalEncoding(nn.Module):
 def full_attn(q, k, v, mask=None, dropout=None):
     *_, dim = q.shape
     dots = torch.einsum('bhid,bhjd->bhij', q, k) * (dim ** -0.5)  # Q K^T
-    if mask is not None:
-        dots = dots.masked_fill(mask == 0, -1e9)  # 2, 4, 199, 199 and 2, 1, 1, 199 same mask for all heads
+    # if mask is not None:  # TODO fix this in decoder
+    #     dots = dots.masked_fill(mask == 0, -1e9)  # 2, 4, 199, 199 and 2, 1, 1, 199 same mask for all heads
     attn = dots.softmax(dim=-1)
     if dropout is not None:
         attn = dropout(attn)
