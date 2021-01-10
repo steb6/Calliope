@@ -7,6 +7,7 @@ import copy
 from functools import partial
 from collections import namedtuple
 from config import config
+from math import ceil
 
 # from compress_latents import CompressLatents, DecompressLatents
 
@@ -86,14 +87,14 @@ class CompressiveDecoder(nn.Module):
         assert cmem_len >= (mem_len // cmem_ratio), f'len of cmem should be at least ' f'{int(mem_len // cmem_ratio)}' \
                                                     f' but it is ' f'{int(cmem_len)}'
         c = copy.deepcopy
-        d_mem_attn = Residual(PreNorm(d_model, MemoryMultiHeadedAttention(heads, d_model, seq_len,
-                                                                          mem_len, cmem_len, cmem_ratio,
-                                                                          mask_subsequent=True)))
-        d_attn = Residual(PreNorm(d_model, MultiHeadedAttention(heads, d_model)))
-        # d_mem_attn = Residual(PreNorm(d_model, MultiHeadedAttention(heads, d_model)))
-        mh_attn = Residual(PreNorm(d_model, MultiHeadedAttention(heads, d_model)))
+        # self_mem_attn = Residual(PreNorm(d_model, MemoryMultiHeadedAttention(heads, d_model, seq_len,
+        #                                                                      mem_len, cmem_len, cmem_ratio,
+        #                                                                      mask_subsequent=True)))
+        self_mem_attn = Residual(PreNorm(d_model, MultiHeadedAttention(heads, d_model)))
+        src_attn = Residual(PreNorm(d_model, MultiHeadedAttention(heads, d_model)))
+
         ff = Residual(PreNorm(d_model, FeedForward(d_model, d_ff, dropout=0.1)))
-        decoder = Decoder(DecoderLayer(d_model, c(d_mem_attn), c(d_attn), c(ff), dropout, heads),
+        decoder = Decoder(DecoderLayer(d_model, c(self_mem_attn), c(src_attn), c(ff), dropout, heads),
                           layers, vocab_size, d_model, pad_token, seq_len, z_i_dim)
         self.drums_decoder = c(decoder)
         self.bass_decoder = c(decoder)
@@ -240,9 +241,13 @@ class DecoderLayer(nn.Module):
         self.heads = heads
 
     def forward(self, trg, latent, src_mask, trg_mask, memories):
-        x, new_memories, attn_loss, ae_loss, self_weights = self.mem_attn(trg, memories=memories, input_mask=trg_mask)
-        # x, self_weights = self.mem_attn(trg, key=trg, value=trg, mask=trg_mask)
-        src_mask = None
+        # x, new_memories, attn_loss, ae_loss, self_weights = self.mem_attn(trg, memories=memories, input_mask=trg_mask)
+        attn_loss = torch.zeros(1, requires_grad=True, **to(trg))
+        ae_loss = torch.zeros(1, requires_grad=True, **to(trg))
+        new_memories = memories
+        x, self_weights = self.mem_attn(trg, key=trg, value=trg, mask=trg_mask)
+
+        src_mask = None  # we only have one latent for the full sequence
         x, latent_weights = self.src_attn(x, key=latent, value=latent, mask=src_mask)
         x, = self.feed_forward(x)
         return x, latent_weights, self_weights, new_memories, attn_loss, ae_loss
@@ -273,7 +278,7 @@ class MemoryMultiHeadedAttention(nn.Module):
         self.ae_dropout = nn.Dropout(ae_dropout)
         self.dropout = nn.Dropout(dropout)
         self.reconstruction_attn_dropout = nn.Dropout(reconstruction_attn_dropout)
-        self.reconstruct_mem = nn.Linear(mem_len // cmem_ratio, mem_len)
+        self.reconstruct_mem = nn.Linear(ceil(mem_len / cmem_ratio), mem_len)
         self.attn_imgs = 0
         self.mask_subsequent = mask_subsequent
 
@@ -326,7 +331,7 @@ class MemoryMultiHeadedAttention(nn.Module):
         if old_mem.shape[1] == 0 or self.cmem_len <= 0:
             return logits, Memory(new_mem, new_cmem), aux_loss, ae_loss, attn  # No memory to compress
         # STOP GRADIENT DETACHING MEMORY
-        old_mem = old_mem.detach()
+        # old_mem = old_mem.detach()
         compressed_mem = self.compress_mem_fn(old_mem)
         old_cmem, new_cmem = split_at_index(1, -self.cmem_len, torch.cat((cmem, compressed_mem), dim=1))
 
@@ -342,24 +347,26 @@ class MemoryMultiHeadedAttention(nn.Module):
         old_mem_k, old_mem_v = map(lambda x: x[:, :, old_mem_range].clone(), (k, v))
         # TODO DANGER:  UNDERSTAND WHY IN ORDER TO TRAIN THE COMPRESSOR I NEEDED TO REMOVE THIS LINE
         # TODO WHY THIS LINE WAS HERE IN A MODEL THAT WORKS? IS THERE ANY OTHER WAY? DO I NEED TO STOP THE GRADIENT?
-        # q, old_mem_k, old_mem_v, cmem_k, cmem_v = map(torch.detach, (q, old_mem_k, old_mem_v, cmem_k, cmem_v))
-        q, old_mem_k, old_mem_v = map(torch.detach, (q, old_mem_k, old_mem_v))
+        q, old_mem_k, old_mem_v, cmem_k, cmem_v = map(torch.detach, (q, old_mem_k, old_mem_v, cmem_k, cmem_v))
+        # q, old_mem_k, old_mem_v = map(torch.detach, (q, old_mem_k, old_mem_v))
         attn_fn = partial(full_attn, dropout=self.reconstruction_attn_dropout)
         aux_loss = F.mse_loss(
             attn_fn(q, old_mem_k, old_mem_v)[0],
             attn_fn(q, cmem_k, cmem_v)[0]
         )
 
-        # Compute auto-encoding loss
-        reconstructed_mem = self.reconstruct_mem(compressed_mem.transpose(1, 2)).transpose(1, 2)
-        reconstructed_mem = self.ae_dropout(reconstructed_mem)
-        to_cut = min(reconstructed_mem.shape[1], old_mem.shape[1])
-        old_mem = old_mem[:, :to_cut, :]
-        reconstructed_mem = reconstructed_mem[:, :to_cut, :]
-        ae_loss = F.mse_loss(
-            old_mem,
-            reconstructed_mem
-        )
+        # Compute auto-encoding loss TODO how to do it?
+        ae_loss = torch.zeros(1, requires_grad=True, **to(q))
+        # reconstructed_mem = self.reconstruct_mem(compressed_mem.transpose(1, 2)).transpose(1, 2)
+        # reconstructed_mem = self.ae_dropout(reconstructed_mem)
+        # to_cut = min(reconstructed_mem.shape[1], old_mem.shape[1])
+        # old_mem = old_mem[:, :to_cut, :]
+        # reconstructed_mem = reconstructed_mem[:, :to_cut, :]
+        # ae_loss = F.mse_loss(
+        #     old_mem,
+        #     reconstructed_mem
+        # )
+
         return logits, Memory(new_mem, new_cmem), aux_loss, ae_loss, attn
 
 
@@ -490,8 +497,8 @@ class PositionalEncoding(nn.Module):
 def full_attn(q, k, v, mask=None, dropout=None):
     *_, dim = q.shape
     dots = torch.einsum('bhid,bhjd->bhij', q, k) * (dim ** -0.5)  # Q K^T
-    # if mask is not None:  # TODO fix this in decoder
-    #     dots = dots.masked_fill(mask == 0, -1e9)  # 2, 4, 199, 199 and 2, 1, 1, 199 same mask for all heads
+    if mask is not None:  # TODO fix this in decoder
+        dots = dots.masked_fill(mask == 0, -1e9)  # 2, 4, 199, 199 and 2, 1, 1, 199 same mask for all heads
     attn = dots.softmax(dim=-1)
     if dropout is not None:
         attn = dropout(attn)

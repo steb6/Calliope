@@ -2,6 +2,7 @@ import os
 import numpy as np
 
 remote = os.getcwd() != 'C:\\Users\\berti\\PycharmProjects\\MusAE'
+seq_len = 50 if remote else 50
 
 config = {
     "train": {
@@ -15,8 +16,8 @@ config = {
         "n_epochs": 25000,
         "label_smoothing": 0.1,
         "mb_before_eval": 1000 if remote else 10,  # if >= early_stopping, happens at each epoch
-        "after_mb_log_attn_img": 100 if remote else 10,
-        "after_mb_log_examples": 100 if remote else 10,
+        "after_mb_log_attn_img": 1000 if remote else 10,
+        "after_mb_log_examples": 1000 if remote else 10,
         "warmup_steps": 1000 if remote else 10,
         "lr_min": 1e-4 if remote else 1e-2,
         "lr_max": 1e-3 if remote else 1e-2,
@@ -25,15 +26,15 @@ config = {
         "generated_iterations": 10,
     },
     "model": {
-        "total_seq_len": 3000 if remote else 600,
-        "seq_len": 300 if remote else 100,
+        "total_seq_len": 5000 if remote else 600,
+        "seq_len": seq_len,
         "d_model": 32,
         "heads": 4,
         "d_ff": 128,
-        "layers": 4 if remote else 1,  # if remote else 1,  # 3 GB each
+        "layers": 6 if remote else 1,  # if remote else 1,  # 3 GB each
         "dropout": 0.1,
-        "mem_len": 300 if remote else 100,  # keep last 2 seq
-        "cmem_len": 300 if remote else 100,  # keep 4 compression
+        "mem_len": seq_len,  # keep last 2 seq
+        "cmem_len": seq_len,  # keep 4 compression
         "cmem_ratio": 4,
         "z_i_dim": 512 if remote else 64,
         # max_track_length / seq_len = n_latents, n_latents * z_i_dim are compressed into z_tot_dim

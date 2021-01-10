@@ -7,7 +7,6 @@ from iterate_dataset import SongIterator
 from optimizer import CTOpt
 from label_smoother import LabelSmoothing
 from loss_computer import SimpleLossCompute
-from torch.autograd import Variable
 from create_dataset import NoteRepresentationManager
 import glob
 import wandb
@@ -45,9 +44,9 @@ class Trainer:
         self.compress = False
         self.final_stage = False
 
-    def test_losses(self, loss, e_attn_losses, e_ae_losses, d_attn_losses, d_ae_losses, recon_loss):
-        losses = [loss, e_attn_losses, e_ae_losses, d_attn_losses, d_ae_losses, recon_loss]
-        names = ["loss", "e_att_losses", "e_ae_losses", "d_attn_losses", "d_ae_losses", "latents_reconstruction_loss"]
+    def test_losses(self, loss, e_attn_losses, e_ae_losses, d_attn_losses, d_ae_losses):
+        losses = [loss, e_attn_losses, e_ae_losses, d_attn_losses, d_ae_losses]
+        names = ["loss", "e_att_losses", "e_ae_losses", "d_attn_losses", "d_ae_losses"]
         for ls, name in zip(losses, names):
             print("********************** Optimized by " + name)
             self.model_optimizer.optimizer.zero_grad(set_to_none=True)
@@ -92,7 +91,7 @@ class Trainer:
         enc_input = e_in.permute(1, 2, 0, 3)[0].reshape(4, -1).detach().cpu().numpy()
         dec_input = d_in.permute(1, 2, 0, 3)[0].reshape(4, -1).detach().cpu().numpy()
         predicted = torch.max(pred, dim=-2).indices.permute(0, 2, 1)[0].reshape(4, -1).detach().cpu().numpy()
-        expected = exp.permute(1, 2, 0, 3)[0].reshape(4, -1).detach().cpu().numpy()
+        expected = exp[0].transpose(0, 1).detach().cpu().numpy()
         latent = lat.detach().cpu().numpy()
         columns = ["Encoder Input: " + str(enc_input.shape),
                    "Decoder Input: " + str(dec_input.shape),
@@ -152,8 +151,15 @@ class Trainer:
         trg = torch.LongTensor(trg).to(config["train"]["device"])
         return trg, trg_mask
 
+    @staticmethod
+    def pad_attention(attentions):
+        length = max([s.shape[-1] for s in attentions])
+        for count, attention in enumerate(attentions):
+            attentions[count] = f.pad(attention, (length - attention.shape[-1], 0))
+        return torch.mean(torch.stack(attentions, dim=0), dim=0)
+
     def run_mb(self, batch):
-        # Train reconstruction
+        # SETUP VARIABLES
         srcs, trgs, src_masks, trg_masks, trg_ys = batch
         srcs = torch.LongTensor(srcs.long()).to(config["train"]["device"]).transpose(0, 1)
         trgs = torch.LongTensor(trgs.long()).to(config["train"]["device"]).transpose(0, 1)  # invert batch and seq
@@ -168,6 +174,8 @@ class Trainer:
         latents = []
         outs = []
         aws = []
+        latents_weight = []
+        self_weights = []
         # Encode
         for src, src_mask in zip(srcs, src_masks):
             latent, e_mems, e_cmems, e_attn_loss, e_ae_loss, aw = self.encoder(src, src_mask, e_mems, e_cmems)
@@ -175,42 +183,17 @@ class Trainer:
             e_attn_losses.append(e_attn_loss)
             e_ae_losses.append(e_ae_loss)
             latents.append(latent)
-        # PAD AWS
-        length = max([s.shape[-1] for s in aws])
-        for count, aw in enumerate(aws):
-            aws[count] = f.pad(aw, (length - aw.shape[-1], 0))
-        aws = torch.mean(torch.stack(aws, dim=0), dim=0)
-        # COMPRESS LATENTS
-        latents = torch.stack(latents, dim=2)  # 1 x 4 x 10 x 301 x 32
-        original_latents = None
-        z = None
-        reconstruction_loss = 0
-        # if self.compress:
-        #     import copy
-        #     loss_function = torch.nn.MSELoss()
-        # original_latents = copy.deepcopy(latents.data)
-        z = self.compressor(latents)  # 1 x z_dim
+        # Compress latents
+        latents = torch.stack(latents, dim=2)  # 1 x 4 x 10 x 300 x 32
+        import copy
+        original_latents = copy.deepcopy(latents.data)
+        z = self.compressor(latents)
         latents = self.decompressor(z)
-        # reconstruction_loss = loss_function(original_latents, latents)
-        # original_latents = original_latents.transpose(0, 2)
-        # if not self.final_stage:
-        #     self.compressor_optimizer.zero_grad()
-        #     reconstruction_loss.backward()
-        #     torch.nn.utils.clip_grad_norm_(self.compressor.parameters(), 0.1)
-        #     torch.nn.utils.clip_grad_norm_(self.decompressor.parameters(), 0.1)
-        #     self.compressor_optimizer.step()
-        # reconstruction_loss = reconstruction_loss.item()
+        # latents = torch.mean(latents, dim=-2)
         latents = latents.unsqueeze(3)
         latents = latents.transpose(0, 2)
         # Decode
-        latents_weight = []
-        self_weights = []
-
         for latent, src_mask, trg, trg_mask in zip(latents, src_masks, trgs, trg_masks):
-        # for src_mask, trg, trg_mask in zip(src_masks, trgs, trg_masks):
-        #     if not self.decoder.training:  # do not use teacher forcing
-        #         trg, trg_mask = self.greedy_decoding(latent, src_mask, d_mems, d_cmems)
-            # out, d_mems, d_cmems, d_attn_loss, d_ae_loss
             out, latent_weight, self_weight, d_mems, d_cmems, d_attn_loss, d_ae_loss = self.decoder(trg, latent,
                                                                                                     src_mask, trg_mask,
                                                                                                     d_mems, d_cmems)
@@ -219,15 +202,6 @@ class Trainer:
             outs.append(out)
             latents_weight.append(latent_weight)
             self_weights.append(self_weight)
-        latents_weight = torch.mean(torch.stack(latents_weight, dim=0), dim=0)
-        # PAD SELF WEIGHTS
-        length = max([s.shape[-1] for s in self_weights])
-        for count, sw in enumerate(self_weights):
-            self_weights[count] = f.pad(sw, (length - sw.shape[-1], 0))
-        self_weights = torch.mean(torch.stack(self_weights, dim=0), dim=0)
-        # LOG ATTENTION IMAGES
-        if self.step % config["train"]["after_mb_log_attn_img"] == 0:
-            self.log_attn_images(aws, self_weights, latents_weight)
 
         outs = torch.stack(outs, dim=1)
         outs = outs.reshape(config["train"]["batch_size"], -1, config["tokens"]["vocab_size"], 4)
@@ -235,36 +209,37 @@ class Trainer:
         e_attn_losses = torch.stack(e_attn_losses).mean()
         d_ae_losses = torch.stack(d_ae_losses).mean()
         d_attn_losses = torch.stack(d_attn_losses).mean()
-        #
-        # # TODO log example of src and outs sometimes
-        if self.step % config["train"]["after_mb_log_examples"] == 0:
-            self.log_examples(srcs, trgs, outs, trg_ys, latents, z, original_latents)
 
         trg_ys = trg_ys.permute(1, 0, 3, 2)
         trg_ys = trg_ys.reshape(config["train"]["batch_size"], -1, 4)
         loss, loss_items = self.loss_computer(outs, trg_ys)
-        # if self.step == 0:
-        #     self.test_losses(loss, e_attn_losses, e_ae_losses, d_attn_losses, d_ae_losses, latents_reconstruction_loss)
 
         if self.encoder.training:
             self.model_optimizer.zero_grad()
             optimizing_losses = loss + e_attn_losses + e_ae_losses + d_attn_losses + d_ae_losses
-            # if self.final_stage:
-            #     optimizing_losses = optimizing_losses + reconstruction_loss
             optimizing_losses.backward()
             torch.nn.utils.clip_grad_norm_(self.encoder.parameters(), 0.1)
             torch.nn.utils.clip_grad_norm_(self.decoder.parameters(), 0.1)
-            # if self.final_stage:
             torch.nn.utils.clip_grad_norm_(self.compressor.parameters(), 0.1)
             torch.nn.utils.clip_grad_norm_(self.decompressor.parameters(), 0.1)
             self.model_optimizer.optimize()  # TODO add decreasing optimization updating
 
-        # losses = (loss.item(), e_attn_losses.item(), e_ae_losses.item(), d_attn_losses.item(), d_ae_losses.item(),
-        #           *loss_items, latents_reconstruction_loss.item())
+        # SOME TESTS
+        aws = self.pad_attention(aws)
+        self_weights = self.pad_attention(self_weights)
+        latents_weight = torch.mean(torch.stack(latents_weight, dim=0), dim=0)
+
+        if self.step % config["train"]["after_mb_log_attn_img"] == 0:
+            self.log_attn_images(aws, self_weights, latents_weight)
+        if self.step % config["train"]["after_mb_log_examples"] == 0:
+            self.log_examples(srcs, trgs, outs, trg_ys, latents, z, original_latents)
+        if self.step == 0 and False:
+            self.test_losses(loss, e_attn_losses, e_ae_losses, d_attn_losses, d_ae_losses)
+
         losses = (loss.item(), e_attn_losses.item(), e_ae_losses.item(), d_attn_losses.item(), d_ae_losses.item(),
-                  *loss_items, reconstruction_loss)  # TODO adjust values
-        if not config["train"]["aae"]:
-            return losses
+                  *loss_items)
+
+        return losses
 
     def log_to_wandb(self, losses):
         # mode = "train/" if self.encoder.training else "eval/"
@@ -276,13 +251,12 @@ class Trainer:
                mode + "decoder attention loss": losses[3],
                mode + "decoder autoencoder loss": losses[4],
                mode + "drums loss": losses[5],
-               mode + "bass loss": losses[6],
-               mode + "guitar loss": losses[7],
-               mode + "strings loss": losses[8],
-               mode + "latents reconstruction loss": losses[9]}
+               mode + "guitar loss": losses[6],
+               mode + "bass loss": losses[7],
+               mode + "strings loss": losses[8]}
         if config["train"]["aae"]:
-            log[mode + "discriminator_loss"] = losses[10]
-            log[mode + "generator_loss"] = losses[11]
+            log[mode + "discriminator_loss"] = losses[9]
+            log[mode + "generator_loss"] = losses[10]
         wandb.log(log)
 
     def reconstruct(self, batch, note_manager):
@@ -498,6 +472,8 @@ class Trainer:
                 trained = True
                 self.step += 1
 
+        # if not config["train"]["aae"]:
+        #     return losses
         # was_training = self.encoder.training
         # # TODO adversarial autoencoder
         # self.model_optimizer.zero_grad()
@@ -541,3 +517,24 @@ class Trainer:
         #     self.decoder.train()
         # losses = losses + (d_loss.item(), g_loss.item())
         # return losses
+
+    # TODO latents compression with loss
+    # latents = torch.stack(latents, dim=2)  # 1 x 4 x 10 x 301 x 32
+    # original_latents = None
+    # z = None
+    # reconstruction_loss = 0
+    # # if self.compress:
+    # #     import copy
+    # #     loss_function = torch.nn.MSELoss()
+    # # original_latents = copy.deepcopy(latents.data)
+    # z = self.compressor(latents)  # 1 x z_dim
+    # latents = self.decompressor(z)
+    # # reconstruction_loss = loss_function(original_latents, latents)
+    # # original_latents = original_latents.transpose(0, 2)
+    # # if not self.final_stage:
+    # #     self.compressor_optimizer.zero_grad()
+    # #     reconstruction_loss.backward()
+    # #     torch.nn.utils.clip_grad_norm_(self.compressor.parameters(), 0.1)
+    # #     torch.nn.utils.clip_grad_norm_(self.decompressor.parameters(), 0.1)
+    # #     self.compressor_optimizer.step()
+    # # reconstruction_loss = reconstruction_loss.item()
