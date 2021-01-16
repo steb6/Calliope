@@ -44,9 +44,9 @@ class Trainer:
         self.compress = False
         self.final_stage = False
 
-    def test_losses(self, loss, e_attn_losses, e_ae_losses, d_attn_losses, d_ae_losses):
-        losses = [loss, e_attn_losses, e_ae_losses, d_attn_losses, d_ae_losses]
-        names = ["loss", "e_att_losses", "e_ae_losses", "d_attn_losses", "d_ae_losses"]
+    def test_losses(self, loss, e_attn_losses, d_attn_losses):
+        losses = [loss, e_attn_losses, d_attn_losses]
+        names = ["loss", "e_att_losses", "d_attn_losses"]
         for ls, name in zip(losses, names):
             print("********************** Optimized by " + name)
             self.model_optimizer.optimizer.zero_grad(set_to_none=True)
@@ -118,10 +118,12 @@ class Trainer:
         c = config["train"]["batch_size"]
         e = config["model"]["d_model"]
         device = config["train"]["device"]
-        e_mems = torch.zeros(a, b, c, 0, e, dtype=torch.float32, device=device)
-        e_cmems = torch.zeros(a, b, c, 0, e, dtype=torch.float32, device=device)
-        d_mems = torch.zeros(a, b, c, 0, e, dtype=torch.float32, device=device)
-        d_cmems = torch.zeros(a, b, c, 0, e, dtype=torch.float32, device=device)
+        mem_len = config["model"]["mem_len"]
+        cmem_len = config["model"]["cmem_len"]
+        e_mems = torch.zeros(a, b, c, mem_len, e, dtype=torch.float32, device=device)
+        e_cmems = torch.zeros(a, b, c, cmem_len, e, dtype=torch.float32, device=device)
+        d_mems = torch.zeros(a, b, c, mem_len, e, dtype=torch.float32, device=device)
+        d_cmems = torch.zeros(a, b, c, cmem_len, e, dtype=torch.float32, device=device)
         return e_mems, e_cmems, d_mems, d_cmems
 
     @staticmethod
@@ -183,15 +185,20 @@ class Trainer:
             e_attn_losses.append(e_attn_loss)
             e_ae_losses.append(e_ae_loss)
             latents.append(latent)
+
         # Compress latents
+        z = None
+        original_latents = None
         latents = torch.stack(latents, dim=2)  # 1 x 4 x 10 x 300 x 32
-        import copy
-        original_latents = copy.deepcopy(latents.data)
-        z = self.compressor(latents)
-        latents = self.decompressor(z)
-        # latents = torch.mean(latents, dim=-2)
-        latents = latents.unsqueeze(3)
+        # import copy
+        original_latents = latents.data.clone()
+        # z = self.compressor(latents)
+        # latents = self.decompressor(z)
+
+        # latents = torch.mean(latents, dim=-2, keepdim=True)
+        # latents = latents.unsqueeze(-2)
         latents = latents.transpose(0, 2)
+
         # Decode
         for latent, src_mask, trg, trg_mask in zip(latents, src_masks, trgs, trg_masks):
             out, latent_weight, self_weight, d_mems, d_cmems, d_attn_loss, d_ae_loss = self.decoder(trg, latent,
@@ -214,9 +221,12 @@ class Trainer:
         trg_ys = trg_ys.reshape(config["train"]["batch_size"], -1, 4)
         loss, loss_items = self.loss_computer(outs, trg_ys)
 
+        if self.step == 0 and False:  # TODO remove
+            self.test_losses(loss, e_attn_losses, d_attn_losses)
+
         if self.encoder.training:
             self.model_optimizer.zero_grad()
-            optimizing_losses = loss + e_attn_losses + e_ae_losses + d_attn_losses + d_ae_losses
+            optimizing_losses = loss + e_attn_losses + d_attn_losses
             optimizing_losses.backward()
             torch.nn.utils.clip_grad_norm_(self.encoder.parameters(), 0.1)
             torch.nn.utils.clip_grad_norm_(self.decoder.parameters(), 0.1)
@@ -232,8 +242,8 @@ class Trainer:
         if self.step % config["train"]["after_mb_log_attn_img"] == 0:
             self.log_attn_images(aws, self_weights, latents_weight)
         if self.step % config["train"]["after_mb_log_examples"] == 0:
-            self.log_examples(srcs, trgs, outs, trg_ys, latents, z, original_latents)
-        if self.step == 0 and False:
+            self.log_examples(srcs, trgs, outs, trg_ys, latents, z=z, r_lat=original_latents)
+        if self.step == 0 and False:  # TODO remove
             self.test_losses(loss, e_attn_losses, e_ae_losses, d_attn_losses, d_ae_losses)
 
         losses = (loss.item(), e_attn_losses.item(), e_ae_losses.item(), d_attn_losses.item(), d_ae_losses.item(),
@@ -385,7 +395,7 @@ class Trainer:
         best_ts_loss = float("inf")
         for self.epoch in range(config["train"]["n_epochs"]):  # repeat for each epoch
             for it, batch in enumerate(tr_loader):  # repeat for each mini-batch
-                if it % config["train"]["mb_before_eval"] == 0 and trained and config["train"]["do_eval"]:  # TODO RMVE
+                if it % config["train"]["mb_before_eval"] == 0 and trained and config["train"]["do_eval"] and False:  # TODO RMVE
                     train_progress.close()
                     ts_losses = []
                     self.encoder.eval()

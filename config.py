@@ -2,7 +2,7 @@ import os
 import numpy as np
 
 remote = os.getcwd() != 'C:\\Users\\berti\\PycharmProjects\\MusAE'
-seq_len = 50 if remote else 50
+seq_len = 100 if remote else 50  # to initialize seq_len, mem_len and cmem_len
 
 config = {
     "train": {
@@ -10,27 +10,27 @@ config = {
         "aae": False,
         "create_dataset": False,
         "device": "cuda" if remote else "cpu",
-        "batch_size": 1,
-        "test_size": 0.0001 if remote else 0.1,  # 100 on remote
+        "batch_size": 3 if remote else 3,
+        "test_size": 0.0001 if remote else 0.3,  # 100 on remote
         "n_workers": 0,
         "n_epochs": 25000,
         "label_smoothing": 0.1,
         "mb_before_eval": 1000 if remote else 10,  # if >= early_stopping, happens at each epoch
         "after_mb_log_attn_img": 1000 if remote else 10,
         "after_mb_log_examples": 1000 if remote else 10,
-        "warmup_steps": 1000 if remote else 10,
+        "warmup_steps": 4000 if remote else 10,
         "lr_min": 1e-4 if remote else 1e-2,
         "lr_max": 1e-3 if remote else 1e-2,
-        "decay_steps": 500000 if remote else 1000000,
+        "decay_steps": 50000 if remote else 1000000,
         "minimum_lr": 1e-4 if remote else 1e-2,
         "generated_iterations": 10,
     },
     "model": {
-        "total_seq_len": 5000 if remote else 600,
+        "total_seq_len": 1000 if remote else 600,
         "seq_len": seq_len,
         "d_model": 32,
         "heads": 4,
-        "d_ff": 128,
+        "ff_mul": 2,
         "layers": 6 if remote else 1,  # if remote else 1,  # 3 GB each
         "dropout": 0.1,
         "mem_len": seq_len,  # keep last 2 seq

@@ -18,7 +18,7 @@ class CompressiveEncoder(nn.Module):
     def __init__(self,
                  d_model=config["model"]["d_model"],
                  heads=config["model"]["heads"],
-                 d_ff=config["model"]["d_ff"],
+                 ff_mul=config["model"]["ff_mul"],
                  dropout=config["model"]["dropout"],
                  layers=config["model"]["layers"],
                  vocab_size=config["tokens"]["vocab_size"],
@@ -34,12 +34,16 @@ class CompressiveEncoder(nn.Module):
         assert cmem_len >= (mem_len // cmem_ratio), f'len of cmem should be at least ' f'{int(mem_len // cmem_ratio)}' \
                                                     f' but it is ' f'{int(cmem_len)}'
         c = copy.deepcopy
-        e_mem_attn = Residual(PreNorm(d_model, MemoryMultiHeadedAttention(heads, d_model, seq_len,
+        # It works even by reversing Residual and PreNorm, but in this way it is faster and more stable
+        self_mem_attn = Residual(PreNorm(d_model, MyMemoryAttention(heads, d_model, seq_len,
                                                                           mem_len, cmem_len, cmem_ratio,
                                                                           mask_subsequent=False)))
-        # e_mem_attn = Residual(PreNorm(d_model, MultiHeadedAttention(heads, d_model)))
-        ff = Residual(PreNorm(d_model, FeedForward(d_model, d_ff, dropout=0.1)))
-        encoder = Encoder(EncoderLayer(d_model, c(e_mem_attn), c(ff), dropout),
+        # self_mem_attn = MyMemoryAttention(heads, d_model, seq_len, mem_len, cmem_len, cmem_ratio,  # TODO
+        #                                   mask_subsequent=False)
+        # self_mem_attn = Residual(PreNorm(d_model, MultiHeadedAttention(heads, d_model)))
+        ff = Residual(PreNorm(d_model, FeedForward(d_model, ff_mul, dropout=0.1)))
+        # ff = FeedForward(d_model, ff_mul, dropout=0.1)
+        encoder = Encoder(EncoderLayer(d_model, c(self_mem_attn), c(ff), dropout),
                           layers, vocab_size, d_model, pad_token, seq_len, z_i_dim)
         self.drums_encoder = c(encoder)
         self.bass_encoder = c(encoder)
@@ -71,7 +75,7 @@ class CompressiveDecoder(nn.Module):
     def __init__(self,
                  d_model=config["model"]["d_model"],
                  heads=config["model"]["heads"],
-                 d_ff=config["model"]["d_ff"],
+                 ff_mul=config["model"]["ff_mul"],
                  dropout=config["model"]["dropout"],
                  layers=config["model"]["layers"],
                  vocab_size=config["tokens"]["vocab_size"],
@@ -87,13 +91,15 @@ class CompressiveDecoder(nn.Module):
         assert cmem_len >= (mem_len // cmem_ratio), f'len of cmem should be at least ' f'{int(mem_len // cmem_ratio)}' \
                                                     f' but it is ' f'{int(cmem_len)}'
         c = copy.deepcopy
-        # self_mem_attn = Residual(PreNorm(d_model, MemoryMultiHeadedAttention(heads, d_model, seq_len,
-        #                                                                      mem_len, cmem_len, cmem_ratio,
-        #                                                                      mask_subsequent=True)))
-        self_mem_attn = Residual(PreNorm(d_model, MultiHeadedAttention(heads, d_model)))
+        self_mem_attn = Residual(PreNorm(d_model, MyMemoryAttention(heads, d_model, seq_len,
+                                                                             mem_len, cmem_len, cmem_ratio,
+                                                                             mask_subsequent=True)))
+        # self_mem_attn = MyMemoryAttention(heads, d_model, seq_len, mem_len, cmem_len, cmem_ratio,  # TODO
+        #                                   mask_subsequent=True)
+        # self_mem_attn = MultiHeadedAttention(heads, d_model)
         src_attn = Residual(PreNorm(d_model, MultiHeadedAttention(heads, d_model)))
 
-        ff = Residual(PreNorm(d_model, FeedForward(d_model, d_ff, dropout=0.1)))
+        ff = Residual(PreNorm(d_model, FeedForward(d_model, ff_mul, dropout=0.1)))
         decoder = Decoder(DecoderLayer(d_model, c(self_mem_attn), c(src_attn), c(ff), dropout, heads),
                           layers, vocab_size, d_model, pad_token, seq_len, z_i_dim)
         self.drums_decoder = c(decoder)
@@ -160,9 +166,7 @@ class Encoder(nn.Module):
             new_cmem.append(new_memories[1])
             attn_losses = attn_losses + attn_loss
             ae_losses = ae_losses + ae_loss
-        # PAD ATTNS
         attns = torch.mean(torch.stack(attns, dim=0), dim=(0, 1, 2))
-        # END PAD ATTNS
         mems = torch.stack(new_mem)
         cmems = torch.stack(new_cmem)
         attn_loss = attn_losses / self.N  # normalize w.r.t number of layers
@@ -219,14 +223,23 @@ class EncoderLayer(nn.Module):
         self.mem_attn = mem_attn
         self.feed_forward = feed_forward
         self.size = size
+        self.norm1 = nn.LayerNorm(size)
+        self.norm2 = nn.LayerNorm(size)
 
     def forward(self, x, memories, input_mask):
-        x, new_memories, attn_loss, ae_loss, attn = self.mem_attn(x, memories=memories, input_mask=input_mask)
-        # x, = self.mem_attn(x, key=x, value=x, mask=input_mask)
+        x, new_memories, attn_loss, ae_loss, attn = self.mem_attn(x, memories=memories, mask=input_mask)
+        # h, self_weights = self.mem_attn(x, key=x, value=x, mask=input_mask)
+
+        # x = self.norm1(x + h)
+
+        # attn_loss = torch.zeros(1, requires_grad=True, **to(x))
+        # ae_loss = torch.zeros(1, requires_grad=True, **to(x))
         x, = self.feed_forward(x)
+
+        # x = self.norm2(x + h)
+
         return x, new_memories, attn_loss, ae_loss, attn
-        # return x, (torch.zeros(1, requires_grad=True, **to(x)), torch.zeros(1, requires_grad=True, **to(x))), \
-        #        torch.zeros(1, requires_grad=True, **to(x)), torch.zeros(1, requires_grad=True, **to(x))
+        # return x, memories, attn_loss, ae_loss, self_weights
 
 
 class DecoderLayer(nn.Module):
@@ -239,20 +252,28 @@ class DecoderLayer(nn.Module):
         self.src_attn = src_attn
         self.feed_forward = feed_forward
         self.heads = heads
+        self.norm1 = nn.LayerNorm(size)
+        self.norm2 = nn.LayerNorm(size)
+        self.norm3 = nn.LayerNorm(size)
 
-    def forward(self, trg, latent, src_mask, trg_mask, memories):
-        # x, new_memories, attn_loss, ae_loss, self_weights = self.mem_attn(trg, memories=memories, input_mask=trg_mask)
-        attn_loss = torch.zeros(1, requires_grad=True, **to(trg))
-        ae_loss = torch.zeros(1, requires_grad=True, **to(trg))
-        new_memories = memories
-        x, self_weights = self.mem_attn(trg, key=trg, value=trg, mask=trg_mask)
+    def forward(self, x, latent, src_mask, trg_mask, memories):
+        x, new_memories, attn_loss, ae_loss, self_weights = self.mem_attn(x, memories=memories, mask=trg_mask)
+        # h, self_weights = self.mem_attn(x, key=x, value=x, mask=trg_mask)
 
-        src_mask = None  # we only have one latent for the full sequence
+        # x = self.norm1(x + h)
+
+        # attn_loss = torch.zeros(1, requires_grad=True, **to(x))
+        # ae_loss = torch.zeros(1, requires_grad=True, **to(x))
+        src_mask = None  # we only have one latent for the full sequence TODO remove when avg
         x, latent_weights = self.src_attn(x, key=latent, value=latent, mask=src_mask)
+
+        # x = self.norm2(x + h)
+
         x, = self.feed_forward(x)
+
+        # x = self.norm3(x + h)
         return x, latent_weights, self_weights, new_memories, attn_loss, ae_loss
-        # return x, (torch.zeros(1, requires_grad=True, **to(x)), torch.zeros(1, requires_grad=True, **to(x))), \
-        #        torch.zeros(1, requires_grad=True, **to(x)), torch.zeros(1, requires_grad=True, **to(x))
+        # return x, latent_weights, self_weights, memories, attn_loss, ae_loss
 
 
 class MemoryMultiHeadedAttention(nn.Module):
@@ -282,7 +303,8 @@ class MemoryMultiHeadedAttention(nn.Module):
         self.attn_imgs = 0
         self.mask_subsequent = mask_subsequent
 
-    def forward(self, x, memories=None, input_mask=None, calc_memory=True):
+    def forward(self, x, memories=None, mask=None, calc_memory=True):
+        input_mask = mask
         mem, cmem = memories
         mem_len = mem.shape[1]
         cmem_len = cmem.shape[1]
@@ -347,8 +369,8 @@ class MemoryMultiHeadedAttention(nn.Module):
         old_mem_k, old_mem_v = map(lambda x: x[:, :, old_mem_range].clone(), (k, v))
         # TODO DANGER:  UNDERSTAND WHY IN ORDER TO TRAIN THE COMPRESSOR I NEEDED TO REMOVE THIS LINE
         # TODO WHY THIS LINE WAS HERE IN A MODEL THAT WORKS? IS THERE ANY OTHER WAY? DO I NEED TO STOP THE GRADIENT?
-        q, old_mem_k, old_mem_v, cmem_k, cmem_v = map(torch.detach, (q, old_mem_k, old_mem_v, cmem_k, cmem_v))
-        # q, old_mem_k, old_mem_v = map(torch.detach, (q, old_mem_k, old_mem_v))
+        # q, old_mem_k, old_mem_v, cmem_k, cmem_v = map(torch.detach, (q, old_mem_k, old_mem_v, cmem_k, cmem_v))
+        q, old_mem_k, old_mem_v = map(torch.detach, (q, old_mem_k, old_mem_v))
         attn_fn = partial(full_attn, dropout=self.reconstruction_attn_dropout)
         aux_loss = F.mse_loss(
             attn_fn(q, old_mem_k, old_mem_v)[0],
@@ -370,13 +392,75 @@ class MemoryMultiHeadedAttention(nn.Module):
         return logits, Memory(new_mem, new_cmem), aux_loss, ae_loss, attn
 
 
+class MyMemoryAttention(nn.Module):
+    def __init__(self, h, dim, seq_len, mem_len, cmem_len, cmem_ratio, dropout=0.1, attn_dropout=0.1,
+                 reconstruction_attn_dropout=0.1, ae_dropout=0.1, mask_subsequent=None):
+        super(MyMemoryAttention, self).__init__()
+        assert dim % h == 0
+        self.dim_head = dim // h
+        self.h = h
+        self.attn = None
+        self.dropout = nn.Dropout(p=dropout)
+        self.seq_len = seq_len
+        self.mem_len = mem_len
+        self.cmem_len = cmem_len
+        self.cmem_ratio = cmem_ratio
+        self.scale = self.dim_head ** (-0.5)  # 1/root(dim_head)
+        self.compress_mem_fn = ConvCompress(dim, cmem_ratio)
+        self.attn_dropout = nn.Dropout(attn_dropout)
+
+        self.dropout = nn.Dropout(dropout)
+
+        self.multi_head_attention = MultiHeadedAttention(h, dim, dropout)
+        self.norm1 = nn.LayerNorm(dim)
+
+    def forward(self, h, memories=None, mask=None):
+        # Prepare mask
+        if mask.dim() == 2:  # encoder mask, cover just pad
+            mask = mask[:, :, None] * mask[:, None, :]
+        # elif mask.dim() == 3:  # decoder mask, cover pad and subsequent
+        #     mask = mask.unsqueeze(1)
+        mask = F.pad(mask, (self.cmem_len + self.mem_len, 0), value=True)
+
+        # Algorithm from paper
+        m, cm = memories
+        mem = torch.cat((cm, m, h), dim=1)  # TODO x too?
+        a, weights = self.multi_head_attention(h, key=mem, value=mem, mask=mask)
+        a = self.norm1(a + h)
+        old_mem = m[:, :self.seq_len, :]
+        new_cm = self.compress_mem_fn(old_mem)
+        m = torch.cat((m, h), dim=1)[:, -self.mem_len:, :]
+        cm = torch.cat((cm, new_cm), dim=1)[:, -self.cmem_len:, :]
+        h = a  # h = self.norm2(self.mlp(a) + a) DONT DO MLP HERE
+
+        # Attention reconstruction
+        h_copy = h.detach().clone()
+        old_mem = torch.detach(old_mem)
+        Q = torch.detach(self.multi_head_attention.linears[0].weight.data)
+        K = torch.detach(self.multi_head_attention.linears[1].weight.data)
+        V = torch.detach(self.multi_head_attention.linears[2].weight.data)
+
+        def attn(hh, mm):
+            hQ = torch.matmul(hh, Q)
+            mK = torch.matmul(mm, K)
+            mV = torch.matmul(mm, V)
+            z = torch.einsum("bxd,byd->bxy", hQ, mK)
+            z = z.softmax(dim=-1)
+            return torch.matmul(z, mV)
+
+        new_cm = self.compress_mem_fn(old_mem)
+        l_attn = F.mse_loss(attn(h_copy, old_mem), attn(h_copy, new_cm))
+
+        return h, Memory(m, cm), l_attn, 0, weights
+
+
 class MultiHeadedAttention(nn.Module):
     def __init__(self, h, d_model, dropout=0.1):
         super(MultiHeadedAttention, self).__init__()
         assert d_model % h == 0
         self.d_out = d_model // h
         self.h = h
-        self.linears = (clones(nn.Linear(d_model, d_model), 4))  # Wq Wk Wv Wout
+        self.linears = (clones(nn.Linear(d_model, d_model, bias=False), 4))  # TODO bias or not?
         self.attn = None
         self.dropout = nn.Dropout(p=dropout)
 
@@ -394,14 +478,14 @@ class MultiHeadedAttention(nn.Module):
 
 
 class FeedForward(nn.Module):
-    def __init__(self, dim, hidden, dropout=0.):
+    def __init__(self, dim, ff_mul, dropout=0.):
         super().__init__()
         activation = nn.GELU
 
-        self.w1 = nn.Linear(dim, hidden)
+        self.w1 = nn.Linear(dim, dim*ff_mul)
         self.act = activation()
         self.dropout = nn.Dropout(dropout)
-        self.w2 = nn.Linear(hidden, dim)
+        self.w2 = nn.Linear(dim*ff_mul, dim)
 
     def forward(self, x, **kwargs):
         x = self.w1(x)
