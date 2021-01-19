@@ -68,6 +68,7 @@ class Trainer:
 
         lat_img = lat_weights.detach().cpu().numpy()
         lat_formatted = (lat_img * 255 / np.max(lat_img)).astype('uint8')
+        lat_formatted = np.repeat(lat_formatted, lat_formatted.shape[0]//lat_formatted.shape[1], axis=1)
         lat_img = Image.fromarray(lat_formatted)
 
         pad = np.array([255 * (i % 2) for i in range(config["model"]["seq_len"] * 9)]).reshape(-1, 9).astype(np.uint8)
@@ -82,9 +83,7 @@ class Trainer:
         for im in images:
             new_im.paste(im, (x_offset, 0))
             x_offset += im.size[0]
-        wandb.log({"examples": [wandb.Image(new_im, caption="Encoder memory attention weights, decoder self"
-                                                            " attention weights and decoder source attention"
-                                                            " weights")]})
+        wandb.log({"examples": [wandb.Image(new_im, caption="Attention")]})
 
     @staticmethod
     def log_examples(e_in, d_in, pred, exp, lat, z=None, r_lat=None):  # TODO log latents
@@ -100,7 +99,7 @@ class Trainer:
                    "Latents: " + str(latent.shape)]
         inputs = (enc_input, dec_input, predicted, expected, latent)
         if z is not None:
-            zeta = z[0].detach().cpu().numpy()
+            zeta = z.detach().cpu().numpy()
             inputs = inputs + (zeta,)
             columns.append("Z: " + str(z.shape))
         if r_lat is not None:
@@ -170,9 +169,7 @@ class Trainer:
         trg_ys = torch.LongTensor(trg_ys.long()).to(config["train"]["device"]).transpose(0, 1)
         e_mems, e_cmems, d_mems, d_cmems = self.get_memories()
         e_attn_losses = []
-        e_ae_losses = []
         d_attn_losses = []
-        d_ae_losses = []
         latents = []
         outs = []
         aws = []
@@ -180,10 +177,9 @@ class Trainer:
         self_weights = []
         # Encode
         for src, src_mask in zip(srcs, src_masks):
-            latent, e_mems, e_cmems, e_attn_loss, e_ae_loss, aw = self.encoder(src, src_mask, e_mems, e_cmems)
+            latent, e_mems, e_cmems, e_attn_loss, aw = self.encoder(src, src_mask, e_mems, e_cmems)
             aws.append(aw)
             e_attn_losses.append(e_attn_loss)
-            e_ae_losses.append(e_ae_loss)
             latents.append(latent)
 
         # Compress latents
@@ -192,37 +188,34 @@ class Trainer:
         latents = torch.stack(latents, dim=2)  # 1 x 4 x 10 x 300 x 32
         # import copy
         original_latents = latents.data.clone()
-        # z = self.compressor(latents)
-        # latents = self.decompressor(z)
-
-        # latents = torch.mean(latents, dim=-2, keepdim=True)
-        # latents = latents.unsqueeze(-2)
+        z = self.compressor(latents)
+        latents = self.decompressor(z)
         latents = latents.transpose(0, 2)
 
         # Decode
         for latent, src_mask, trg, trg_mask in zip(latents, src_masks, trgs, trg_masks):
-            out, latent_weight, self_weight, d_mems, d_cmems, d_attn_loss, d_ae_loss = self.decoder(trg, latent,
+            out, latent_weight, self_weight, d_mems, d_cmems, d_attn_loss = self.decoder(trg, latent,
                                                                                                     src_mask, trg_mask,
                                                                                                     d_mems, d_cmems)
             d_attn_losses.append(d_attn_loss)
-            d_ae_losses.append(d_ae_loss)
             outs.append(out)
             latents_weight.append(latent_weight)
             self_weights.append(self_weight)
 
         outs = torch.stack(outs, dim=1)
         outs = outs.reshape(config["train"]["batch_size"], -1, config["tokens"]["vocab_size"], 4)
-        e_ae_losses = torch.stack(e_ae_losses).mean()
         e_attn_losses = torch.stack(e_attn_losses).mean()
-        d_ae_losses = torch.stack(d_ae_losses).mean()
         d_attn_losses = torch.stack(d_attn_losses).mean()
 
         trg_ys = trg_ys.permute(1, 0, 3, 2)
         trg_ys = trg_ys.reshape(config["train"]["batch_size"], -1, 4)
         loss, loss_items = self.loss_computer(outs, trg_ys)
 
-        if self.step == 0 and False:  # TODO remove
-            self.test_losses(loss, e_attn_losses, d_attn_losses)
+        if self.step == 0:  # and False:  # TODO remove
+            print("Original latents shape: "+str(original_latents.shape))
+            print("Z shape: "+str(z.shape))
+            print("Latents shape: "+str(latents.shape))
+            # self.test_losses(loss, e_attn_losses, d_attn_losses)
 
         if self.encoder.training:
             self.model_optimizer.zero_grad()
@@ -242,12 +235,11 @@ class Trainer:
         if self.step % config["train"]["after_mb_log_attn_img"] == 0:
             self.log_attn_images(aws, self_weights, latents_weight)
         if self.step % config["train"]["after_mb_log_examples"] == 0:
-            self.log_examples(srcs, trgs, outs, trg_ys, latents, z=z, r_lat=original_latents)
+            self.log_examples(srcs, trgs, outs, trg_ys, latents.transpose(0, 2), z=z, r_lat=original_latents)
         if self.step == 0 and False:  # TODO remove
-            self.test_losses(loss, e_attn_losses, e_ae_losses, d_attn_losses, d_ae_losses)
+            self.test_losses(loss, e_attn_losses, d_attn_losses)
 
-        losses = (loss.item(), e_attn_losses.item(), e_ae_losses.item(), d_attn_losses.item(), d_ae_losses.item(),
-                  *loss_items)
+        losses = (loss.item(), e_attn_losses.item(), d_attn_losses.item(), *loss_items)
 
         return losses
 
@@ -257,16 +249,14 @@ class Trainer:
         log = {"stuff/lr": self.model_optimizer.lr,
                mode + "loss": losses[0],
                mode + "encoder attention loss": losses[1],
-               mode + "encoder autoencoder loss": losses[2],
-               mode + "decoder attention loss": losses[3],
-               mode + "decoder autoencoder loss": losses[4],
-               mode + "drums loss": losses[5],
-               mode + "guitar loss": losses[6],
-               mode + "bass loss": losses[7],
-               mode + "strings loss": losses[8]}
+               mode + "decoder attention loss": losses[2],
+               mode + "drums loss": losses[3],
+               mode + "guitar loss": losses[4],
+               mode + "bass loss": losses[5],
+               mode + "strings loss": losses[6]}
         if config["train"]["aae"]:
-            log[mode + "discriminator_loss"] = losses[9]
-            log[mode + "generator_loss"] = losses[10]
+            log[mode + "discriminator_loss"] = losses[7]
+            log[mode + "generator_loss"] = losses[8]
         wandb.log(log)
 
     def reconstruct(self, batch, note_manager):

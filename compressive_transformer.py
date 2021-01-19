@@ -28,16 +28,19 @@ class CompressiveEncoder(nn.Module):
                  cmem_ratio=config["model"]["cmem_ratio"],
                  pad_token=config["tokens"]["pad"],
                  z_i_dim=config["model"]["z_i_dim"],
+                 device=config["train"]["device"]
                  ):
         super(CompressiveEncoder, self).__init__()
         assert mem_len >= seq_len, 'length of memory should be at least the sequence length'
         assert cmem_len >= (mem_len // cmem_ratio), f'len of cmem should be at least ' f'{int(mem_len // cmem_ratio)}' \
                                                     f' but it is ' f'{int(cmem_len)}'
+        self.pos_emb = torch.zeros(4, heads, seq_len+mem_len+cmem_len, d_model // heads, requires_grad=True,
+                                   device=device)
         c = copy.deepcopy
         # It works even by reversing Residual and PreNorm, but in this way it is faster and more stable
         self_mem_attn = Residual(PreNorm(d_model, MyMemoryAttention(heads, d_model, seq_len,
-                                                                          mem_len, cmem_len, cmem_ratio,
-                                                                          mask_subsequent=False)))
+                                                                    mem_len, cmem_len, cmem_ratio,
+                                                                    mask_subsequent=False)))
         # self_mem_attn = MyMemoryAttention(heads, d_model, seq_len, mem_len, cmem_len, cmem_ratio,  # TODO
         #                                   mask_subsequent=False)
         # self_mem_attn = Residual(PreNorm(d_model, MultiHeadedAttention(heads, d_model)))
@@ -54,21 +57,21 @@ class CompressiveEncoder(nn.Module):
                 nn.init.xavier_uniform_(p)
 
     def forward(self, seq, mask, mems, cmems):
-        d_z, d_mem, d_cmem, d_l, d_ae, daw = self.drums_encoder(seq[:, 0, :], mask[:, 0, :], mems[0, ...],
-                                                                cmems[0, ...])
-        b_z, b_mem, b_cmem, b_l, b_ae, baw = self.bass_encoder(seq[:, 1, :], mask[:, 1, :], mems[1, ...], cmems[1, ...])
-        g_z, g_mem, g_cmem, g_l, g_ae, gaw = self.guitar_encoder(seq[:, 2, :], mask[:, 2, :], mems[2, ...],
-                                                                 cmems[2, ...])
-        s_z, s_mem, s_cmem, s_l, s_ae, saw = self.strings_encoder(seq[:, 3, :], mask[:, 3, :], mems[3, ...],
-                                                                  cmems[3, ...])
+        d_z, d_mem, d_cmem, d_l, daw = self.drums_encoder(seq[:, 0, :], mask[:, 0, :], mems[0, ...],
+                                                          cmems[0, ...], self.pos_emb[0, ...])
+        b_z, b_mem, b_cmem, b_l, baw = self.bass_encoder(seq[:, 1, :], mask[:, 1, :], mems[1, ...],
+                                                         cmems[1, ...], self.pos_emb[1, ...])
+        g_z, g_mem, g_cmem, g_l, gaw = self.guitar_encoder(seq[:, 2, :], mask[:, 2, :], mems[2, ...],
+                                                           cmems[2, ...], self.pos_emb[2, ...])
+        s_z, s_mem, s_cmem, s_l, saw = self.strings_encoder(seq[:, 3, :], mask[:, 3, :], mems[3, ...],
+                                                            cmems[3, ...], self.pos_emb[3, ...])
         mems = torch.stack([d_mem, b_mem, g_mem, s_mem])
         cmems = torch.stack([d_cmem, b_cmem, g_cmem, s_cmem])
         mems, cmems = map(torch.detach, (mems, cmems))
         latents = torch.stack([d_z, b_z, g_z, s_z], dim=1)
         aux_loss = torch.stack((d_l, b_l, g_l, s_l)).mean()
-        ae_loss = torch.stack((d_ae, b_ae, g_ae, s_ae)).mean()
         aws = torch.mean(torch.stack([daw, baw, gaw, saw], dim=0), dim=0)
-        return latents, mems, cmems, aux_loss, ae_loss, aws
+        return latents, mems, cmems, aux_loss, aws
 
 
 class CompressiveDecoder(nn.Module):
@@ -85,15 +88,18 @@ class CompressiveDecoder(nn.Module):
                  cmem_ratio=config["model"]["cmem_ratio"],
                  pad_token=config["tokens"]["pad"],
                  z_i_dim=config["model"]["z_i_dim"],
+                 device=config["train"]["device"]
                  ):
         super(CompressiveDecoder, self).__init__()
         assert mem_len >= seq_len, 'length of memory should be at least the sequence length'
         assert cmem_len >= (mem_len // cmem_ratio), f'len of cmem should be at least ' f'{int(mem_len // cmem_ratio)}' \
                                                     f' but it is ' f'{int(cmem_len)}'
+        self.pos_emb = torch.zeros(4, heads, seq_len+mem_len+cmem_len, d_model // heads, requires_grad=True,
+                                   device=device)
         c = copy.deepcopy
         self_mem_attn = Residual(PreNorm(d_model, MyMemoryAttention(heads, d_model, seq_len,
-                                                                             mem_len, cmem_len, cmem_ratio,
-                                                                             mask_subsequent=True)))
+                                                                    mem_len, cmem_len, cmem_ratio,
+                                                                    mask_subsequent=True)))
         # self_mem_attn = MyMemoryAttention(heads, d_model, seq_len, mem_len, cmem_len, cmem_ratio,  # TODO
         #                                   mask_subsequent=True)
         # self_mem_attn = MultiHeadedAttention(heads, d_model)
@@ -113,19 +119,19 @@ class CompressiveDecoder(nn.Module):
 
     def forward(self, trg, latent, src_mask, trg_mask, d_mems, d_cmems):
         # d_out, d_mem, d_cmem, d_l, d_ae
-        d_out, dlw, dsw, d_mem, d_cmem, d_l, d_ae = self.drums_decoder(trg[:, 0, :], latent[0, ...], src_mask[:, 0, :],
-                                                                       trg_mask[:, 0, ...], d_mems[0, ...],
-                                                                       d_cmems[0, ...])
-        b_out, blw, bsw, b_mem, b_cmem, b_l, b_ae = self.bass_decoder(trg[:, 1, :], latent[1, ...], src_mask[:, 1, :],
-                                                                      trg_mask[:, 1, ...], d_mems[1, ...],
-                                                                      d_cmems[1, ...])
-        g_out, glw, gsw, g_mem, g_cmem, g_l, g_ae = self.guitar_decoder(trg[:, 2, :], latent[2, ...], src_mask[:, 2, :],
-                                                                        trg_mask[:, 2, ...], d_mems[2, ...],
-                                                                        d_cmems[2, ...])
-        s_out, slw, ssw, s_mem, s_cmem, s_l, s_ae = self.strings_decoder(trg[:, 3, :], latent[3, ...],
-                                                                         src_mask[:, 3, :],
-                                                                         trg_mask[:, 3, ...], d_mems[3, ...],
-                                                                         d_cmems[3, ...])
+        d_out, dlw, dsw, d_mem, d_cmem, d_l = self.drums_decoder(trg[:, 0, :], latent[0, ...], src_mask[:, 0, :],
+                                                                 trg_mask[:, 0, ...], d_mems[0, ...],
+                                                                 d_cmems[0, ...], self.pos_emb[0, ...])
+        b_out, blw, bsw, b_mem, b_cmem, b_l = self.bass_decoder(trg[:, 1, :], latent[1, ...], src_mask[:, 1, :],
+                                                                trg_mask[:, 1, ...], d_mems[1, ...],
+                                                                d_cmems[1, ...], self.pos_emb[1, ...])
+        g_out, glw, gsw, g_mem, g_cmem, g_l = self.guitar_decoder(trg[:, 2, :], latent[2, ...], src_mask[:, 2, :],
+                                                                  trg_mask[:, 2, ...], d_mems[2, ...],
+                                                                  d_cmems[2, ...], self.pos_emb[2, ...])
+        s_out, slw, ssw, s_mem, s_cmem, s_l = self.strings_decoder(trg[:, 3, :], latent[3, ...],
+                                                                   src_mask[:, 3, :],
+                                                                   trg_mask[:, 3, ...], d_mems[3, ...],
+                                                                   d_cmems[3, ...], self.pos_emb[3, ...])
         mems = torch.stack([d_mem, b_mem, g_mem, s_mem])
         cmems = torch.stack([d_cmem, b_cmem, g_cmem, s_cmem])
         mems, cmems = map(torch.detach, (mems, cmems))
@@ -133,11 +139,9 @@ class CompressiveDecoder(nn.Module):
         output = self.generator(output)
         aux_loss = torch.stack((d_l, b_l, g_l, s_l))
         aux_loss = torch.mean(aux_loss)
-        ae_loss = torch.stack((d_ae, b_ae, g_ae, s_ae))
-        ae_loss = torch.mean(ae_loss)
         latents_weight = torch.mean(torch.stack([dlw, blw, glw, slw], dim=0), dim=0)
         self_weights = torch.mean(torch.stack([dsw, bsw, gsw, ssw], dim=0), dim=0)
-        return output, latents_weight, self_weights, mems, cmems, aux_loss, ae_loss
+        return output, latents_weight, self_weights, mems, cmems, aux_loss
 
 
 class Encoder(nn.Module):
@@ -151,27 +155,24 @@ class Encoder(nn.Module):
         self.d_model = d_model
         self.compress_bar = nn.Linear(d_model * (seq_len + 1), z_i_dim)  # for eos token
 
-    def forward(self, seq, mask, mems, cmems):
+    def forward(self, seq, mask, mems, cmems, pos_emb):
         attn_losses = torch.tensor(0., requires_grad=True, device=seq.device, dtype=torch.float32)
-        ae_losses = torch.tensor(0., requires_grad=True, device=seq.device, dtype=torch.float32)
         seq = self.embed(seq)
-        seq = self.position(seq)
+        # seq = self.position(seq)
         new_mem = []
         new_cmem = []
         attns = []
         for layer, mem, cmem in zip(self.layers, mems, cmems):
-            seq, new_memories, attn_loss, ae_loss, attn = layer(seq, (mem, cmem), mask)
+            seq, new_memories, attn_loss, attn = layer(seq, (mem, cmem), mask, pos_emb)
             attns.append(attn)
             new_mem.append(new_memories[0])
             new_cmem.append(new_memories[1])
             attn_losses = attn_losses + attn_loss
-            ae_losses = ae_losses + ae_loss
         attns = torch.mean(torch.stack(attns, dim=0), dim=(0, 1, 2))
         mems = torch.stack(new_mem)
         cmems = torch.stack(new_cmem)
         attn_loss = attn_losses / self.N  # normalize w.r.t number of layers
-        ae_loss = ae_losses / self.N  # normalize w.r.t number of layers
-        return seq, mems, cmems, attn_loss, ae_loss, attns
+        return seq, mems, cmems, attn_loss, attns
 
 
 class Decoder(nn.Module):
@@ -188,33 +189,30 @@ class Decoder(nn.Module):
         self.decompress_bar = nn.Linear(z_i_dim, d_model * (seq_len - 1))
         self.seq_len = seq_len
 
-    def forward(self, trg, latent, src_mask, trg_mask, mems, cmems):
+    def forward(self, trg, latent, src_mask, trg_mask, mems, cmems, pos_emb):
         attn_losses = torch.tensor(0., requires_grad=True, device=trg.device, dtype=torch.float32)
-        ae_losses = torch.tensor(0., requires_grad=True, device=trg.device, dtype=torch.float32)
         trg = self.embed(trg)
-        trg = self.position(trg)
+        # trg = self.position(trg)
         new_mem = []
         new_cmem = []
         latents_weight = []
         self_weights = []
         for layer, mem, cmem in zip(self.layers, mems, cmems):
             # for layer in self.layers:
-            trg, latent_weight, self_weight, new_memories, attn_loss, ae_loss = layer(trg, latent, src_mask, trg_mask,
-                                                                                      (mem, cmem))
+            trg, latent_weight, self_weight, new_memories, attn_loss = layer(trg, latent, src_mask, trg_mask,
+                                                                                      (mem, cmem), pos_emb)
             # trg, latent_weight, self_weight = layer(trg, latent, src_mask, trg_mask)
             latents_weight.append(latent_weight)
             self_weights.append(self_weight)
             new_mem.append(new_memories[0])
             new_cmem.append(new_memories[1])
             attn_losses = attn_losses + attn_loss
-            ae_losses = ae_losses + ae_loss
         latents_weight = torch.mean(torch.stack(latents_weight, dim=0), dim=(0, 1, 2))  # mn of layer batch instruments
         self_weights = torch.mean(torch.stack(self_weights, dim=0), dim=(0, 1, 2))  # mn of layer batch instruments
         mems = torch.stack(new_mem)
         cmems = torch.stack(new_cmem)
         attn_losses = attn_losses / self.N  # normalize w.r.t number of layers
-        ae_losses = ae_losses / self.N  # normalize w.r.t number of layers
-        return trg, latents_weight, self_weights, mems, cmems, attn_losses, ae_losses
+        return trg, latents_weight, self_weights, mems, cmems, attn_losses
 
 
 class EncoderLayer(nn.Module):
@@ -226,8 +224,8 @@ class EncoderLayer(nn.Module):
         self.norm1 = nn.LayerNorm(size)
         self.norm2 = nn.LayerNorm(size)
 
-    def forward(self, x, memories, input_mask):
-        x, new_memories, attn_loss, ae_loss, attn = self.mem_attn(x, memories=memories, mask=input_mask)
+    def forward(self, x, memories, input_mask, pos_emb):
+        x, new_memories, attn_loss, attn = self.mem_attn(x, memories=memories, mask=input_mask, pos_emb=pos_emb)
         # h, self_weights = self.mem_attn(x, key=x, value=x, mask=input_mask)
 
         # x = self.norm1(x + h)
@@ -238,7 +236,7 @@ class EncoderLayer(nn.Module):
 
         # x = self.norm2(x + h)
 
-        return x, new_memories, attn_loss, ae_loss, attn
+        return x, new_memories, attn_loss, attn
         # return x, memories, attn_loss, ae_loss, self_weights
 
 
@@ -256,8 +254,8 @@ class DecoderLayer(nn.Module):
         self.norm2 = nn.LayerNorm(size)
         self.norm3 = nn.LayerNorm(size)
 
-    def forward(self, x, latent, src_mask, trg_mask, memories):
-        x, new_memories, attn_loss, ae_loss, self_weights = self.mem_attn(x, memories=memories, mask=trg_mask)
+    def forward(self, x, latent, src_mask, trg_mask, memories, pos_emb):
+        x, new_memories, attn_loss, self_weights = self.mem_attn(x, memories=memories, mask=trg_mask, pos_emb=pos_emb)
         # h, self_weights = self.mem_attn(x, key=x, value=x, mask=trg_mask)
 
         # x = self.norm1(x + h)
@@ -272,7 +270,7 @@ class DecoderLayer(nn.Module):
         x, = self.feed_forward(x)
 
         # x = self.norm3(x + h)
-        return x, latent_weights, self_weights, new_memories, attn_loss, ae_loss
+        return x, latent_weights, self_weights, new_memories, attn_loss
         # return x, latent_weights, self_weights, memories, attn_loss, ae_loss
 
 
@@ -414,7 +412,7 @@ class MyMemoryAttention(nn.Module):
         self.multi_head_attention = MultiHeadedAttention(h, dim, dropout)
         self.norm1 = nn.LayerNorm(dim)
 
-    def forward(self, h, memories=None, mask=None):
+    def forward(self, h, memories=None, mask=None, pos_emb=None):
         # Prepare mask
         if mask.dim() == 2:  # encoder mask, cover just pad
             mask = mask[:, :, None] * mask[:, None, :]
@@ -425,7 +423,7 @@ class MyMemoryAttention(nn.Module):
         # Algorithm from paper
         m, cm = memories
         mem = torch.cat((cm, m, h), dim=1)  # TODO x too?
-        a, weights = self.multi_head_attention(h, key=mem, value=mem, mask=mask)
+        a, weights = self.multi_head_attention(h, key=mem, value=mem, mask=mask, pos_emb=pos_emb)
         a = self.norm1(a + h)
         old_mem = m[:, :self.seq_len, :]
         new_cm = self.compress_mem_fn(old_mem)
@@ -451,7 +449,7 @@ class MyMemoryAttention(nn.Module):
         new_cm = self.compress_mem_fn(old_mem)
         l_attn = F.mse_loss(attn(h_copy, old_mem), attn(h_copy, new_cm))
 
-        return h, Memory(m, cm), l_attn, 0, weights
+        return h, Memory(m, cm), l_attn, weights
 
 
 class MultiHeadedAttention(nn.Module):
@@ -464,7 +462,7 @@ class MultiHeadedAttention(nn.Module):
         self.attn = None
         self.dropout = nn.Dropout(p=dropout)
 
-    def forward(self, query, key=None, value=None, mask=None):
+    def forward(self, query, key=None, value=None, mask=None, pos_emb=None):
         if mask is not None:  # apply same mask to all heads
             mask = mask.unsqueeze(1)
             if len(mask.shape) == 3:
@@ -472,7 +470,7 @@ class MultiHeadedAttention(nn.Module):
         n_batches = query.size(0)
         query, key, value = [l(x).view(n_batches, -1, self.h, self.d_out).transpose(1, 2)
                              for l, x in zip(self.linears, (query, key, value))]
-        x, weights = full_attn(query, key, value, mask=mask, dropout=self.dropout)
+        x, weights = full_attn(query, key, value, mask=mask, dropout=self.dropout, pos_emb=pos_emb)
         x = x.transpose(1, 2).contiguous().view(n_batches, -1, self.h * self.d_out)
         return self.linears[-1](x), weights
 
@@ -482,10 +480,10 @@ class FeedForward(nn.Module):
         super().__init__()
         activation = nn.GELU
 
-        self.w1 = nn.Linear(dim, dim*ff_mul)
+        self.w1 = nn.Linear(dim, dim * ff_mul)
         self.act = activation()
         self.dropout = nn.Dropout(dropout)
-        self.w2 = nn.Linear(dim*ff_mul, dim)
+        self.w2 = nn.Linear(dim * ff_mul, dim)
 
     def forward(self, x, **kwargs):
         x = self.w1(x)
@@ -578,11 +576,18 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x)
 
 
-def full_attn(q, k, v, mask=None, dropout=None):
+def full_attn(q, k, v, mask=None, dropout=None, pos_emb=None):
     *_, dim = q.shape
     dots = torch.einsum('bhid,bhjd->bhij', q, k) * (dim ** -0.5)  # Q K^T
-    if mask is not None:  # TODO fix this in decoder
-        dots = dots.masked_fill(mask == 0, -1e9)  # 2, 4, 199, 199 and 2, 1, 1, 199 same mask for all heads
+
+    if pos_emb is not None:
+        pos_emb = pos_emb[:, -(k.shape[-2]+v.shape[-2]):].type(q.dtype)
+        pos_dots = torch.einsum('bhid,hjd->bhij', q, pos_emb) * (q.shape[-1] ** 0.5)
+        pos_dots = shift(pos_dots)
+        dots = dots + pos_dots
+
+    if mask is not None:
+        dots = dots.masked_fill(mask == 0, -1e9)  # same mask for all heads
     attn = dots.softmax(dim=-1)
     if dropout is not None:
         attn = dropout(attn)

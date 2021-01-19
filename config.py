@@ -2,13 +2,13 @@ import os
 import numpy as np
 
 remote = os.getcwd() != 'C:\\Users\\berti\\PycharmProjects\\MusAE'
-seq_len = 100 if remote else 50  # to initialize seq_len, mem_len and cmem_len
+seq_len = 50 if remote else 50  # to initialize seq_len, mem_len and cmem_len
 
 config = {
     "train": {
         "do_eval": False,
         "aae": False,
-        "create_dataset": False,
+        "create_dataset": True,
         "device": "cuda" if remote else "cpu",
         "batch_size": 3 if remote else 3,
         "test_size": 0.0001 if remote else 0.3,  # 100 on remote
@@ -26,7 +26,7 @@ config = {
         "generated_iterations": 10,
     },
     "model": {
-        "total_seq_len": 1000 if remote else 600,
+        "total_seq_len": 300 if remote else 600,
         "seq_len": seq_len,
         "d_model": 32,
         "heads": 4,
@@ -41,6 +41,8 @@ config = {
         "z_tot_dim": 2048 if remote else 256,
     },
     "data": {  # Parameters to create and listen the note representation
+        "max_bar_length": 100,
+        "max_bars": 100,
         "max_track_length": 10000,
         "use_velocity": True,
         "reconstruction_programs": [0, 0, 32, 40],
