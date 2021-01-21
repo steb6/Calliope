@@ -7,7 +7,7 @@ from iterate_dataset import SongIterator
 from optimizer import CTOpt
 from label_smoother import LabelSmoothing
 from loss_computer import SimpleLossCompute
-from create_dataset import NoteRepresentationManager
+from create_bar_dataset import NoteRepresentationManager
 import glob
 import wandb
 from midi_converter import midi_to_wav
@@ -68,7 +68,7 @@ class Trainer:
 
         lat_img = lat_weights.detach().cpu().numpy()
         lat_formatted = (lat_img * 255 / np.max(lat_img)).astype('uint8')
-        lat_formatted = np.repeat(lat_formatted, lat_formatted.shape[0]//lat_formatted.shape[1], axis=1)
+        lat_formatted = np.repeat(lat_formatted, lat_formatted.shape[0] // lat_formatted.shape[1], axis=1)
         lat_img = Image.fromarray(lat_formatted)
 
         pad = np.array([255 * (i % 2) for i in range(config["model"]["seq_len"] * 9)]).reshape(-1, 9).astype(np.uint8)
@@ -87,8 +87,8 @@ class Trainer:
 
     @staticmethod
     def log_examples(e_in, d_in, pred, exp, lat, z=None, r_lat=None):  # TODO log latents
-        enc_input = e_in.permute(1, 2, 0, 3)[0].reshape(4, -1).detach().cpu().numpy()
-        dec_input = d_in.permute(1, 2, 0, 3)[0].reshape(4, -1).detach().cpu().numpy()
+        enc_input = e_in.transpose(0, 2)[0].reshape(4, -1).detach().cpu().numpy()
+        dec_input = d_in.transpose(0, 2)[0].reshape(4, -1).detach().cpu().numpy()
         predicted = torch.max(pred, dim=-2).indices.permute(0, 2, 1)[0].reshape(4, -1).detach().cpu().numpy()
         expected = exp[0].transpose(0, 1).detach().cpu().numpy()
         latent = lat.detach().cpu().numpy()
@@ -162,11 +162,11 @@ class Trainer:
     def run_mb(self, batch):
         # SETUP VARIABLES
         srcs, trgs, src_masks, trg_masks, trg_ys = batch
-        srcs = torch.LongTensor(srcs.long()).to(config["train"]["device"]).transpose(0, 1)
-        trgs = torch.LongTensor(trgs.long()).to(config["train"]["device"]).transpose(0, 1)  # invert batch and seq
-        src_masks = torch.BoolTensor(src_masks).to(config["train"]["device"]).transpose(0, 1)
-        trg_masks = torch.BoolTensor(trg_masks).to(config["train"]["device"]).transpose(0, 1)
-        trg_ys = torch.LongTensor(trg_ys.long()).to(config["train"]["device"]).transpose(0, 1)
+        srcs = torch.LongTensor(srcs.long()).to(config["train"]["device"]).transpose(0, 2)
+        trgs = torch.LongTensor(trgs.long()).to(config["train"]["device"]).transpose(0, 2)  # invert batch and seq
+        src_masks = torch.BoolTensor(src_masks).to(config["train"]["device"]).transpose(0, 2)
+        trg_masks = torch.BoolTensor(trg_masks).to(config["train"]["device"]).transpose(0, 2)
+        trg_ys = torch.LongTensor(trg_ys.long()).to(config["train"]["device"]).transpose(0, 2)
         e_mems, e_cmems, d_mems, d_cmems = self.get_memories()
         e_attn_losses = []
         d_attn_losses = []
@@ -185,18 +185,19 @@ class Trainer:
         # Compress latents
         z = None
         original_latents = None
-        latents = torch.stack(latents, dim=2)  # 1 x 4 x 10 x 300 x 32
+        latents = torch.stack(latents, dim=1)
         # import copy
-        original_latents = latents.data.clone()
+        # original_latents = latents.data.clone()
         z = self.compressor(latents)
         latents = self.decompressor(z)
-        latents = latents.transpose(0, 2)
-
+        latents = latents.transpose(0, 1)
+        d_mems = e_mems
+        d_cmems = e_cmems
         # Decode
         for latent, src_mask, trg, trg_mask in zip(latents, src_masks, trgs, trg_masks):
-            out, latent_weight, self_weight, d_mems, d_cmems, d_attn_loss = self.decoder(trg, latent,
-                                                                                                    src_mask, trg_mask,
-                                                                                                    d_mems, d_cmems)
+            out, latent_weight, self_weight, d_mems, d_cmems, d_attn_loss = self.decoder(trg, latent,  # TODO careful
+                                                                                         src_mask, trg_mask,
+                                                                                         d_mems, d_cmems)
             d_attn_losses.append(d_attn_loss)
             outs.append(out)
             latents_weight.append(latent_weight)
@@ -207,15 +208,15 @@ class Trainer:
         e_attn_losses = torch.stack(e_attn_losses).mean()
         d_attn_losses = torch.stack(d_attn_losses).mean()
 
-        trg_ys = trg_ys.permute(1, 0, 3, 2)
+        trg_ys = trg_ys.permute(2, 0, 3, 1)
         trg_ys = trg_ys.reshape(config["train"]["batch_size"], -1, 4)
         loss, loss_items = self.loss_computer(outs, trg_ys)
 
-        if self.step == 0:  # and False:  # TODO remove
-            print("Original latents shape: "+str(original_latents.shape))
-            print("Z shape: "+str(z.shape))
-            print("Latents shape: "+str(latents.shape))
-            # self.test_losses(loss, e_attn_losses, d_attn_losses)
+        if self.step == 0 and config["train"]["test_loss"]:  # and False:  # TODO remove
+            #     print("Original latents shape: "+str(original_latents.shape))
+            #     print("Z shape: "+str(z.shape))
+            #     print("Latents shape: "+str(latents.shape))
+            self.test_losses(loss, e_attn_losses, d_attn_losses)
 
         if self.encoder.training:
             self.model_optimizer.zero_grad()
@@ -235,7 +236,7 @@ class Trainer:
         if self.step % config["train"]["after_mb_log_attn_img"] == 0:
             self.log_attn_images(aws, self_weights, latents_weight)
         if self.step % config["train"]["after_mb_log_examples"] == 0:
-            self.log_examples(srcs, trgs, outs, trg_ys, latents.transpose(0, 2), z=z, r_lat=original_latents)
+            self.log_examples(srcs, trgs, outs, trg_ys, latents, z=z, r_lat=original_latents)
         if self.step == 0 and False:  # TODO remove
             self.test_losses(loss, e_attn_losses, d_attn_losses)
 
@@ -361,7 +362,7 @@ class Trainer:
         # Dataset
         dataset = SongIterator(dataset_path=config["paths"]["dataset"],
                                test_size=config["train"]["test_size"],
-                               max_len=config["model"]["total_seq_len"],
+                               # max_len=config["model"]["total_seq_len"],
                                batch_size=config["train"]["batch_size"],
                                n_workers=config["train"]["n_workers"])
         tr_loader, ts_loader = dataset.get_loaders()
@@ -385,7 +386,8 @@ class Trainer:
         best_ts_loss = float("inf")
         for self.epoch in range(config["train"]["n_epochs"]):  # repeat for each epoch
             for it, batch in enumerate(tr_loader):  # repeat for each mini-batch
-                if it % config["train"]["mb_before_eval"] == 0 and trained and config["train"]["do_eval"] and False:  # TODO RMVE
+                if it % config["train"]["mb_before_eval"] == 0 and trained and config["train"][
+                    "do_eval"] and False:  # TODO RMVE
                     train_progress.close()
                     ts_losses = []
                     self.encoder.eval()

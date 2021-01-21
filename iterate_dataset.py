@@ -27,11 +27,15 @@ class SongIterator(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         with open(os.path.join(self.dataset_path, idx+str('.pickle')), 'rb') as file:
             src = pickle.load(file)
-        src = src[:, :config["model"]["total_seq_len"]]
-        src = src.reshape((4, -1, config["model"]["seq_len"]))
-        src = np.swapaxes(src, 0, 1)
+        src = src[:, :config["train"]["truncated_bars"], :]
+        # src = src.reshape((4, -1, config["model"]["seq_len"]))
+        # src = np.swapaxes(src, 0, 1)
         sos = np.full(src.shape[:-1]+(1,), config["tokens"]["sos"], dtype=src.dtype)
         src = np.append(sos, src, axis=2)
+        for instrument in src:
+            for bar in instrument:
+                idx = np.where(bar == config["tokens"]["pad"])
+                bar[idx[0][0]] = config["tokens"]["eos"]
         src_mask = src != config["tokens"]["pad"]
         trg = src[..., :-1]
         trg_y = src[..., 1:]

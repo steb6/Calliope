@@ -1,5 +1,5 @@
 from config import set_freer_gpu
-from create_dataset import NoteRepresentationManager
+from create_bar_dataset import NoteRepresentationManager
 from config import config
 from train import Trainer
 # from train_aae import AAETrainer
@@ -32,6 +32,6 @@ def train_ct():
 
 
 if __name__ == "__main__":  # TODO put here assert I guess
-    assert config["model"]["total_seq_len"] % config["model"]["seq_len"] == 0, 'adjust total_seq_len seq_len'
+    # assert config["model"]["total_seq_len"] % config["model"]["seq_len"] == 0, 'adjust total_seq_len seq_len'
     train_ct()
     # train_aae()

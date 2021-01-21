@@ -34,8 +34,10 @@ class CompressiveEncoder(nn.Module):
         assert mem_len >= seq_len, 'length of memory should be at least the sequence length'
         assert cmem_len >= (mem_len // cmem_ratio), f'len of cmem should be at least ' f'{int(mem_len // cmem_ratio)}' \
                                                     f' but it is ' f'{int(cmem_len)}'
-        self.pos_emb = torch.zeros(4, heads, seq_len+mem_len+cmem_len, d_model // heads, requires_grad=True,
-                                   device=device)
+        # self.pos_emb = torch.zeros(4, heads, seq_len+mem_len+cmem_len, d_model // heads, requires_grad=True,
+        #                            device=device)
+        self.pos_emb = nn.Parameter(torch.zeros(4, heads, seq_len+mem_len+cmem_len, d_model // heads, device=device,
+                                                requires_grad=True))
         c = copy.deepcopy
         # It works even by reversing Residual and PreNorm, but in this way it is faster and more stable
         self_mem_attn = Residual(PreNorm(d_model, MyMemoryAttention(heads, d_model, seq_len,
@@ -57,13 +59,13 @@ class CompressiveEncoder(nn.Module):
                 nn.init.xavier_uniform_(p)
 
     def forward(self, seq, mask, mems, cmems):
-        d_z, d_mem, d_cmem, d_l, daw = self.drums_encoder(seq[:, 0, :], mask[:, 0, :], mems[0, ...],
+        d_z, d_mem, d_cmem, d_l, daw = self.drums_encoder(seq[0, ...], mask[0, ...], mems[0, ...],
                                                           cmems[0, ...], self.pos_emb[0, ...])
-        b_z, b_mem, b_cmem, b_l, baw = self.bass_encoder(seq[:, 1, :], mask[:, 1, :], mems[1, ...],
+        b_z, b_mem, b_cmem, b_l, baw = self.bass_encoder(seq[1, ...], mask[1, ...], mems[1, ...],
                                                          cmems[1, ...], self.pos_emb[1, ...])
-        g_z, g_mem, g_cmem, g_l, gaw = self.guitar_encoder(seq[:, 2, :], mask[:, 2, :], mems[2, ...],
+        g_z, g_mem, g_cmem, g_l, gaw = self.guitar_encoder(seq[2, ...], mask[2, ...], mems[2, ...],
                                                            cmems[2, ...], self.pos_emb[2, ...])
-        s_z, s_mem, s_cmem, s_l, saw = self.strings_encoder(seq[:, 3, :], mask[:, 3, :], mems[3, ...],
+        s_z, s_mem, s_cmem, s_l, saw = self.strings_encoder(seq[3, ...], mask[3, ...], mems[3, ...],
                                                             cmems[3, ...], self.pos_emb[3, ...])
         mems = torch.stack([d_mem, b_mem, g_mem, s_mem])
         cmems = torch.stack([d_cmem, b_cmem, g_cmem, s_cmem])
@@ -94,8 +96,8 @@ class CompressiveDecoder(nn.Module):
         assert mem_len >= seq_len, 'length of memory should be at least the sequence length'
         assert cmem_len >= (mem_len // cmem_ratio), f'len of cmem should be at least ' f'{int(mem_len // cmem_ratio)}' \
                                                     f' but it is ' f'{int(cmem_len)}'
-        self.pos_emb = torch.zeros(4, heads, seq_len+mem_len+cmem_len, d_model // heads, requires_grad=True,
-                                   device=device)
+        self.pos_emb = nn.Parameter(torch.zeros(4, heads, seq_len+mem_len+cmem_len, d_model // heads, device=device,
+                                                requires_grad=True))
         c = copy.deepcopy
         self_mem_attn = Residual(PreNorm(d_model, MyMemoryAttention(heads, d_model, seq_len,
                                                                     mem_len, cmem_len, cmem_ratio,
@@ -119,18 +121,25 @@ class CompressiveDecoder(nn.Module):
 
     def forward(self, trg, latent, src_mask, trg_mask, d_mems, d_cmems):
         # d_out, d_mem, d_cmem, d_l, d_ae
-        d_out, dlw, dsw, d_mem, d_cmem, d_l = self.drums_decoder(trg[:, 0, :], latent[0, ...], src_mask[:, 0, :],
-                                                                 trg_mask[:, 0, ...], d_mems[0, ...],
+        d_out, dlw, dsw, d_mem, d_cmem, d_l = self.drums_decoder(trg[0, ...],
+                                                                 latent if config["model"]["compress"] else latent[:, 0, ...],
+                                                                 src_mask[0, ...],
+                                                                 trg_mask[0, ...], d_mems[0, ...],
                                                                  d_cmems[0, ...], self.pos_emb[0, ...])
-        b_out, blw, bsw, b_mem, b_cmem, b_l = self.bass_decoder(trg[:, 1, :], latent[1, ...], src_mask[:, 1, :],
-                                                                trg_mask[:, 1, ...], d_mems[1, ...],
+        b_out, blw, bsw, b_mem, b_cmem, b_l = self.bass_decoder(trg[1, ...],
+                                                                latent if config["model"]["compress"] else latent[:, 1, ...],
+                                                                src_mask[1, ...],
+                                                                trg_mask[1, ...], d_mems[1, ...],
                                                                 d_cmems[1, ...], self.pos_emb[1, ...])
-        g_out, glw, gsw, g_mem, g_cmem, g_l = self.guitar_decoder(trg[:, 2, :], latent[2, ...], src_mask[:, 2, :],
-                                                                  trg_mask[:, 2, ...], d_mems[2, ...],
+        g_out, glw, gsw, g_mem, g_cmem, g_l = self.guitar_decoder(trg[2, ...],
+                                                                  latent if config["model"]["compress"] else latent[:, 2, ...],
+                                                                  src_mask[2, ...],
+                                                                  trg_mask[2, ...], d_mems[2, ...],
                                                                   d_cmems[2, ...], self.pos_emb[2, ...])
-        s_out, slw, ssw, s_mem, s_cmem, s_l = self.strings_decoder(trg[:, 3, :], latent[3, ...],
-                                                                   src_mask[:, 3, :],
-                                                                   trg_mask[:, 3, ...], d_mems[3, ...],
+        s_out, slw, ssw, s_mem, s_cmem, s_l = self.strings_decoder(trg[3, ...],
+                                                                   latent if config["model"]["compress"] else latent[:, 3, ...],
+                                                                   src_mask[3, ...],
+                                                                   trg_mask[3, ...], d_mems[3, ...],
                                                                    d_cmems[3, ...], self.pos_emb[3, ...])
         mems = torch.stack([d_mem, b_mem, g_mem, s_mem])
         cmems = torch.stack([d_cmem, b_cmem, g_cmem, s_cmem])
@@ -158,7 +167,9 @@ class Encoder(nn.Module):
     def forward(self, seq, mask, mems, cmems, pos_emb):
         attn_losses = torch.tensor(0., requires_grad=True, device=seq.device, dtype=torch.float32)
         seq = self.embed(seq)
-        # seq = self.position(seq)
+        if config["model"]["fixed_positional_encoding"]:
+            seq = self.position(seq)
+            pos_emb = None
         new_mem = []
         new_cmem = []
         attns = []
@@ -192,7 +203,9 @@ class Decoder(nn.Module):
     def forward(self, trg, latent, src_mask, trg_mask, mems, cmems, pos_emb):
         attn_losses = torch.tensor(0., requires_grad=True, device=trg.device, dtype=torch.float32)
         trg = self.embed(trg)
-        # trg = self.position(trg)
+        if config["model"]["fixed_positional_encoding"]:
+            trg = self.position(trg)
+            pos_emb = None
         new_mem = []
         new_cmem = []
         latents_weight = []
@@ -465,8 +478,8 @@ class MultiHeadedAttention(nn.Module):
     def forward(self, query, key=None, value=None, mask=None, pos_emb=None):
         if mask is not None:  # apply same mask to all heads
             mask = mask.unsqueeze(1)
-            if len(mask.shape) == 3:
-                mask = mask.unsqueeze(-2)  # src_mask has 1 dimension, trg_mask has 2 dimension
+            # if len(mask.shape) == 3:
+            #     mask = mask.unsqueeze(-2)  # src_mask has 1 dimension, trg_mask has 2 dimension
         n_batches = query.size(0)
         query, key, value = [l(x).view(n_batches, -1, self.h, self.d_out).transpose(1, 2)
                              for l, x in zip(self.linears, (query, key, value))]
@@ -583,7 +596,7 @@ def full_attn(q, k, v, mask=None, dropout=None, pos_emb=None):
     if pos_emb is not None:
         pos_emb = pos_emb[:, -(k.shape[-2]+v.shape[-2]):].type(q.dtype)
         pos_dots = torch.einsum('bhid,hjd->bhij', q, pos_emb) * (q.shape[-1] ** 0.5)
-        pos_dots = shift(pos_dots)
+        pos_dots = shift(pos_dots)  # TODO what does this do?
         dots = dots + pos_dots
 
     if mask is not None:
@@ -616,16 +629,24 @@ def reshape_dim(t, dim, split_dims):
 
 
 def shift(x):
-    *_, i, j = x.shape
-    zero_pad = torch.zeros((*_, i, i), **to(x))
-    # Add a (1, 8, 1024, 1024) matrix of zero along last axis, so we have (1, 8, 1024, 2048)
-    x = torch.cat([x, zero_pad], -1)
-    # l is 2047
-    l = i + j - 1
-    # From (1, 8, 1024, 2048) to (1, 8, 2097152)
-    x = x.view(*_, -1)
+    """
+    Get an x matrix and return a matrix y with the same shape were
+    y[..., -1, :] = x[..., 0, :]
+    y[..., -2, :] = x[..., 1, 1:] + [0]
+    y[..., -3, :] = x[..., 2, 2:] + [0, 0]
+    ...
+    y[..., 0, :] = x[..., -1, n:] + [0]*n
+    """
+    *_, i, j = x.shape  # 3 x 4 x 150 x 450
+    zero_pad = torch.zeros((*_, i, i), **to(x))  # 3 x 4 x 150 x 150
+    # add to all heads attention weights 150 pad token
+    x = torch.cat([x, zero_pad], -1)  # 3 x 4 x 150 x 600
+    # sum the dimensions along attention axis
+    l = i + j - 1  # 599
+    # Flat last 2 dimensions of x
+    x = x.view(*_, -1)  # 3 x 4 x 90000
     # Create zero matrix with dimension (1, 8, 1023)
-    zero_pad = torch.zeros(*_, -x.size(-1) % l, **to(x))
+    zero_pad = torch.zeros(*_, -x.size(-1) % l, **to(x))  # 3 x 4 x 449
     # Concatenate x (1, 8, 2097152), which is formed by 1024 elem and 1024 zeros, and a zero matrix (1, 8, 1023)
     # and change dimension as (1, 8, , 12047)
     shifted = torch.cat([x, zero_pad], -1).view(*_, -1, l)

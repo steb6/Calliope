@@ -2,16 +2,19 @@ import os
 import numpy as np
 
 remote = os.getcwd() != 'C:\\Users\\berti\\PycharmProjects\\MusAE'
-seq_len = 50 if remote else 50  # to initialize seq_len, mem_len and cmem_len
+
+max_bar_length = 150  # for preprocessing, seq_len, mem_len e cmem_len
+max_bars = 100  # for cmem_len and data creation
 
 config = {
     "train": {
         "do_eval": False,
         "aae": False,
-        "create_dataset": True,
+        "create_dataset": False if remote else False,
         "device": "cuda" if remote else "cpu",
         "batch_size": 3 if remote else 3,
-        "test_size": 0.0001 if remote else 0.3,  # 100 on remote
+        "test_size": 0.3 if remote else 0.3,  # 100 on remote  it was 0.0001 in remote
+        "truncated_bars": 16,  # To truncate the song along bars
         "n_workers": 0,
         "n_epochs": 25000,
         "label_smoothing": 0.1,
@@ -24,29 +27,32 @@ config = {
         "decay_steps": 50000 if remote else 1000000,
         "minimum_lr": 1e-4 if remote else 1e-2,
         "generated_iterations": 10,
+        "test_loss": False,
     },
     "model": {
-        "total_seq_len": 300 if remote else 600,
-        "seq_len": seq_len,
+        # "total_seq_len": 300 if remote else 600,
+        "seq_len": max_bar_length,
         "d_model": 32,
         "heads": 4,
         "ff_mul": 2,
-        "layers": 6 if remote else 1,  # if remote else 1,  # 3 GB each
+        "layers": 2 if remote else 1,  # if remote else 1,  # 3 GB each
         "dropout": 0.1,
-        "mem_len": seq_len,  # keep last 2 seq
-        "cmem_len": seq_len,  # keep 4 compression
+        "mem_len": max_bar_length,  # keep last 2 seq
+        "cmem_len": max_bar_length,  # keep 4 compression
         "cmem_ratio": 4,
         "z_i_dim": 512 if remote else 64,
         # max_track_length / seq_len = n_latents, n_latents * z_i_dim are compressed into z_tot_dim
         "z_tot_dim": 2048 if remote else 256,
+        "fixed_positional_encoding": False,
+        "compress": True
     },
     "data": {  # Parameters to create and listen the note representation
-        "max_bar_length": 100,
+        "max_bar_length": 150,
         "max_bars": 100,
-        "max_track_length": 10000,
+        # "max_track_length": 10000,
         "use_velocity": True,
         "reconstruction_programs": [0, 0, 32, 40],
-        "early_stop": 0 if remote else 10,  # set this to 0 to disable early stop
+        "early_stop": 10000 if remote else 10,  # set this to 0 to disable early stop
         "resolution": 24,
         "tempo": 120,
         "velocities_total": (0, 127),  # using min max scaling, limits are inclusive
