@@ -27,28 +27,28 @@ class SongIterator(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         with open(os.path.join(self.dataset_path, idx+str('.pickle')), 'rb') as file:
             src = pickle.load(file)
-        src = src[:, :config["train"]["truncated_bars"], :]
-        # src = src.reshape((4, -1, config["model"]["seq_len"]))
-        # src = np.swapaxes(src, 0, 1)
+        # src = src[:, :config["train"]["truncated_bars"], :]
+        src = src[:, :(src.shape[1]-src.shape[1] % config["train"]["truncated_bars"]), :]
+        src = src.reshape(-1, 4, config["train"]["truncated_bars"], config["model"]["seq_len"])
         sos = np.full(src.shape[:-1]+(1,), config["tokens"]["sos"], dtype=src.dtype)
-        src = np.append(sos, src, axis=2)
-        for instrument in src:
-            for bar in instrument:
-                idx = np.where(bar == config["tokens"]["pad"])
-                bar[idx[0][0]] = config["tokens"]["eos"]
+        src = np.append(sos, src, axis=-1)
+        for bars in src:
+            for instrument in bars:
+                for bar in instrument:
+                    idx = np.where(bar == config["tokens"]["pad"])
+                    bar[idx[0][0]] = config["tokens"]["eos"]
         src_mask = src != config["tokens"]["pad"]
         trg = src[..., :-1]
         trg_y = src[..., 1:]
-        # trg_y = src[..., :-1]  # TODO experiment following https://lionbridge.ai/articles/what-are-transformer-models-in-machine-learning/
         trg_mask = np.full(trg.shape+(trg.shape[-1],), True)
-        for s, seq in enumerate(trg):
-            for i, instrument in enumerate(seq):
-                line_mask = instrument != config["tokens"]["pad"]
-                pad_mask = np.matmul(line_mask[:, np.newaxis], line_mask[np.newaxis, :])
-                subsequent_mask = np.expand_dims(np.tril(np.ones((trg.shape[-1], trg.shape[-1]))), (0, 1))
-                subsequent_mask = subsequent_mask.astype(np.bool)
-                trg_mask[s][i] = pad_mask & subsequent_mask
-        # TODO experimental, understand if this is right or not
+        for b, bars in enumerate(trg):
+            for i, instrument in enumerate(bars):
+                for s, seq in enumerate(instrument):
+                    line_mask = seq != config["tokens"]["pad"]
+                    pad_mask = np.matmul(line_mask[:, np.newaxis], line_mask[np.newaxis, :])
+                    subsequent_mask = np.expand_dims(np.tril(np.ones((trg.shape[-1], trg.shape[-1]))), (0, 1))
+                    subsequent_mask = subsequent_mask.astype(np.bool)
+                    trg_mask[b][i][s] = pad_mask & subsequent_mask
         src = src[..., 1:]
         src_mask = src_mask[..., 1:]
         return src, trg, src_mask, trg_mask, trg_y

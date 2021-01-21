@@ -49,6 +49,7 @@ class LatentsCompressor(nn.Module):
         n_batch, n_latents, n_track, seq_len, d_model = latents.shape
         latents = latents.reshape(n_batch, n_latents, seq_len, d_model*4)
         latents = self.compress_track(latents)
+        latents = torch.mean(latents, dim=1, keepdim=True)  # compress along time
         return latents
 
 

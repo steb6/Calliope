@@ -159,7 +159,7 @@ class Trainer:
             attentions[count] = f.pad(attention, (length - attention.shape[-1], 0))
         return torch.mean(torch.stack(attentions, dim=0), dim=0)
 
-    def run_mb(self, batch):
+    def run_mb(self, batch, e_mems, e_cmems):
         # SETUP VARIABLES
         srcs, trgs, src_masks, trg_masks, trg_ys = batch
         srcs = torch.LongTensor(srcs.long()).to(config["train"]["device"]).transpose(0, 2)
@@ -167,7 +167,6 @@ class Trainer:
         src_masks = torch.BoolTensor(src_masks).to(config["train"]["device"]).transpose(0, 2)
         trg_masks = torch.BoolTensor(trg_masks).to(config["train"]["device"]).transpose(0, 2)
         trg_ys = torch.LongTensor(trg_ys.long()).to(config["train"]["device"]).transpose(0, 2)
-        e_mems, e_cmems, d_mems, d_cmems = self.get_memories()
         e_attn_losses = []
         d_attn_losses = []
         latents = []
@@ -194,8 +193,8 @@ class Trainer:
         d_mems = e_mems
         d_cmems = e_cmems
         # Decode
-        for latent, src_mask, trg, trg_mask in zip(latents, src_masks, trgs, trg_masks):
-            out, latent_weight, self_weight, d_mems, d_cmems, d_attn_loss = self.decoder(trg, latent,  # TODO careful
+        for src_mask, trg, trg_mask in zip(src_masks, trgs, trg_masks):
+            out, latent_weight, self_weight, d_mems, d_cmems, d_attn_loss = self.decoder(trg, latents,  # TODO careful
                                                                                          src_mask, trg_mask,
                                                                                          d_mems, d_cmems)
             d_attn_losses.append(d_attn_loss)
@@ -242,7 +241,7 @@ class Trainer:
 
         losses = (loss.item(), e_attn_losses.item(), d_attn_losses.item(), *loss_items)
 
-        return losses
+        return losses, e_mems, e_cmems
 
     def log_to_wandb(self, losses):
         # mode = "train/" if self.encoder.training else "eval/"
@@ -385,94 +384,89 @@ class Trainer:
         self.step = 0
         best_ts_loss = float("inf")
         for self.epoch in range(config["train"]["n_epochs"]):  # repeat for each epoch
-            for it, batch in enumerate(tr_loader):  # repeat for each mini-batch
-                if it % config["train"]["mb_before_eval"] == 0 and trained and config["train"][
-                    "do_eval"] and False:  # TODO RMVE
-                    train_progress.close()
-                    ts_losses = []
-                    self.encoder.eval()
-                    self.compressor.eval()
-                    self.decompressor.eval()
-                    self.decoder.eval()
-                    desc = "Eval epoch " + str(self.epoch) + ", mb " + str(it)
-                    test = None
-                    generated = None  # to suppress warning
-                    for test in tqdm(ts_loader, position=0, leave=True, desc=desc):  # remember test losses
-                        ts_loss = self.run_mb(test)
-                        ts_losses.append(ts_loss)
-                    final = ()  # average losses
-                    for i in range(len(ts_losses[0])):  # for each loss value
-                        aux = []
-                        for loss in ts_losses:  # for each computed loss
-                            aux.append(loss[i])
-                        avg = sum(aux) / len(aux)
-                        final = final + (avg,)
-                    if final[0] < best_ts_loss:
-                        new_model = os.path.join(self.save_path, self.model_name + '_' + str(self.epoch) + '.pt')
-                        print("Saving best model in " + new_model + ", DO NOT INTERRUPT")
-                        for filename in glob.glob(os.path.join(self.save_path, self.model_name + '*')):
-                            os.remove(filename)
-                        best_ts_loss = final[0]
-                        # torch.save(self.encoder, os.path.join(self.save_path, "encoder_" + str(self.epoch) + '.pt'))
-                        # torch.save(self.compressor,
-                        #            os.path.join(self.save_path, "compressor_" + str(self.epoch) + '.pt'))
-                        # torch.save(self.decompressor,
-                        #            os.path.join(self.save_path, "decompressor_" + str(self.epoch) + '.pt'))
-                        # torch.save(self.decoder, os.path.join(self.save_path, "decoder_" + str(self.epoch) + '.pt'))
-                        if config["train"]["aae"]:
-                            torch.save(self.discriminator,
-                                       os.path.join(self.save_path, "discriminator_" + str(self.epoch) + '.pt'))
-                        print("Model saved")
-                    self.log_to_wandb(final)
-                    # TODO reconstruction and generation
-                    note_manager = NoteRepresentationManager()
-                    if config["train"]["aae"]:
-                        generated = self.generate(note_manager)  # generation
-                    original, reconstructed = self.reconstruct(batch, note_manager)  # TODO watch
-                    prefix = "epoch_" + str(self.epoch) + "_mb_" + str(it)
-                    original.write_midi(os.path.join(wandb.run.dir, prefix + "_original.mid"))
-                    reconstructed.write_midi(os.path.join(wandb.run.dir, prefix + "_reconstructed.mid"))
-                    if config["train"]["aae"]:
-                        generated.write_midi(os.path.join(wandb.run.dir, prefix + "_generated.mid"))
-                    midi_to_wav(os.path.join(wandb.run.dir, prefix + "_original.mid"),
-                                os.path.join(wandb.run.dir, prefix + "_original.wav"))
-                    midi_to_wav(os.path.join(wandb.run.dir, prefix + "_reconstructed.mid"),
-                                os.path.join(wandb.run.dir, prefix + "_reconstructed.wav"))
-                    if config["train"]["aae"]:
-                        midi_to_wav(os.path.join(wandb.run.dir, prefix + "_generated.mid"),
-                                    os.path.join(wandb.run.dir, prefix + "_generated.wav"))
-                    songs = [
-                        wandb.Audio(os.path.join(wandb.run.dir, prefix + "_original.wav"),
-                                    caption="original", sample_rate=32),
-                        wandb.Audio(os.path.join(wandb.run.dir, prefix + "_reconstructed.wav"),
-                                    caption="reconstructed", sample_rate=32)]
-                    if config["train"]["aae"]:
-                        songs.append(wandb.Audio(os.path.join(wandb.run.dir, prefix + "_generated.wav"),
-                                                 caption="generated", sample_rate=32))
-                    wandb.log({str(it_counter): songs})
-                    it_counter += 1
-                    self.encoder.train()
-                    self.compressor.train()
-                    self.decompressor.train()
-                    self.decoder.train()
-                    desc = "Train epoch " + str(self.epoch) + ", mb " + str(it)
-                    train_progress = tqdm(total=config["train"]["mb_before_eval"], position=0, leave=True, desc=desc)
-                tr_losses = self.run_mb(batch)
-                # if tr_losses[0] < 0.3:  # TODO check
-                #     if not self.compress:
-                #         print("Starting to compress")
-                #         self.encoder.eval()
-                #         self.decoder.eval()
-                #         self.compress = True
-                #     if tr_losses[-1] < 0:  # this seems to be a bad idea
-                #         print("Final stage")
-                #         self.encoder.train()
-                #         self.decoder.train()
-                #         self.final_stage = True
-                self.log_to_wandb(tr_losses)
-                train_progress.update()
-                trained = True
-                self.step += 1
+            for it, batch in enumerate(tr_loader):  # repeat for each song
+                # TODO eval
+                # if it % config["train"]["mb_before_eval"] == 0 and trained and config["train"][
+                #     "do_eval"] and False:  # TODO RMVE
+                #     train_progress.close()
+                #     ts_losses = []
+                #     self.encoder.eval()
+                #     self.compressor.eval()
+                #     self.decompressor.eval()
+                #     self.decoder.eval()
+                #     desc = "Eval epoch " + str(self.epoch) + ", mb " + str(it)
+                #     test = None
+                #     generated = None  # to suppress warning
+                #     for test in tqdm(ts_loader, position=0, leave=True, desc=desc):  # remember test losses
+                #         ts_loss = self.run_mb(test)
+                #         ts_losses.append(ts_loss)
+                #     final = ()  # average losses
+                #     for i in range(len(ts_losses[0])):  # for each loss value
+                #         aux = []
+                #         for loss in ts_losses:  # for each computed loss
+                #             aux.append(loss[i])
+                #         avg = sum(aux) / len(aux)
+                #         final = final + (avg,)
+                #     if final[0] < best_ts_loss:
+                #         new_model = os.path.join(self.save_path, self.model_name + '_' + str(self.epoch) + '.pt')
+                #         print("Saving best model in " + new_model + ", DO NOT INTERRUPT")
+                #         for filename in glob.glob(os.path.join(self.save_path, self.model_name + '*')):
+                #             os.remove(filename)
+                #         best_ts_loss = final[0]
+                #         # torch.save(self.encoder, os.path.join(self.save_path, "encoder_" + str(self.epoch) + '.pt'))
+                #         # torch.save(self.compressor,
+                #         #            os.path.join(self.save_path, "compressor_" + str(self.epoch) + '.pt'))
+                #         # torch.save(self.decompressor,
+                #         #            os.path.join(self.save_path, "decompressor_" + str(self.epoch) + '.pt'))
+                #         # torch.save(self.decoder, os.path.join(self.save_path, "decoder_" + str(self.epoch) + '.pt'))
+                #         if config["train"]["aae"]:
+                #             torch.save(self.discriminator,
+                #                        os.path.join(self.save_path, "discriminator_" + str(self.epoch) + '.pt'))
+                #         print("Model saved")
+                #     self.log_to_wandb(final)
+                #     # TODO reconstruction and generation
+                #     note_manager = NoteRepresentationManager()
+                #     if config["train"]["aae"]:
+                #         generated = self.generate(note_manager)  # generation
+                #     original, reconstructed = self.reconstruct(batch, note_manager)  # TODO watch
+                #     prefix = "epoch_" + str(self.epoch) + "_mb_" + str(it)
+                #     original.write_midi(os.path.join(wandb.run.dir, prefix + "_original.mid"))
+                #     reconstructed.write_midi(os.path.join(wandb.run.dir, prefix + "_reconstructed.mid"))
+                #     if config["train"]["aae"]:
+                #         generated.write_midi(os.path.join(wandb.run.dir, prefix + "_generated.mid"))
+                #     midi_to_wav(os.path.join(wandb.run.dir, prefix + "_original.mid"),
+                #                 os.path.join(wandb.run.dir, prefix + "_original.wav"))
+                #     midi_to_wav(os.path.join(wandb.run.dir, prefix + "_reconstructed.mid"),
+                #                 os.path.join(wandb.run.dir, prefix + "_reconstructed.wav"))
+                #     if config["train"]["aae"]:
+                #         midi_to_wav(os.path.join(wandb.run.dir, prefix + "_generated.mid"),
+                #                     os.path.join(wandb.run.dir, prefix + "_generated.wav"))
+                #     songs = [
+                #         wandb.Audio(os.path.join(wandb.run.dir, prefix + "_original.wav"),
+                #                     caption="original", sample_rate=32),
+                #         wandb.Audio(os.path.join(wandb.run.dir, prefix + "_reconstructed.wav"),
+                #                     caption="reconstructed", sample_rate=32)]
+                #     if config["train"]["aae"]:
+                #         songs.append(wandb.Audio(os.path.join(wandb.run.dir, prefix + "_generated.wav"),
+                #                                  caption="generated", sample_rate=32))
+                #     wandb.log({str(it_counter): songs})
+                #     it_counter += 1
+                #     self.encoder.train()
+                #     self.compressor.train()
+                #     self.decompressor.train()
+                #     self.decoder.train()
+                #     desc = "Train epoch " + str(self.epoch) + ", mb " + str(it)
+                #     train_progress = tqdm(total=config["train"]["mb_before_eval"], position=0, leave=True, desc=desc)  # eval
+                e_mems, e_cmems, d_mems, d_cmems = self.get_memories()
+                for i in range(batch[0].shape[1]):  # repeat for each bar groups
+                    mb = ()
+                    for elem in batch:  # create mb
+                        mb = mb + (elem[:, i, ...],)
+                    tr_losses, e_mems, e_cmems = self.run_mb(mb, e_mems, e_cmems)
+                    self.log_to_wandb(tr_losses)
+                    train_progress.update()
+                    trained = True
+                    self.step += 1
 
         # if not config["train"]["aae"]:
         #     return losses
