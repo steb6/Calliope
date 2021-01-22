@@ -91,13 +91,15 @@ class Trainer:
         dec_input = d_in.transpose(0, 2)[0].reshape(4, -1).detach().cpu().numpy()
         predicted = torch.max(pred, dim=-2).indices.permute(0, 2, 1)[0].reshape(4, -1).detach().cpu().numpy()
         expected = exp[0].transpose(0, 1).detach().cpu().numpy()
-        latent = lat.detach().cpu().numpy()
         columns = ["Encoder Input: " + str(enc_input.shape),
                    "Decoder Input: " + str(dec_input.shape),
                    "Predicted: " + str(predicted.shape),
-                   "Expected: " + str(expected.shape),
-                   "Latents: " + str(latent.shape)]
-        inputs = (enc_input, dec_input, predicted, expected, latent)
+                   "Expected: " + str(expected.shape)]
+        inputs = (enc_input, dec_input, predicted, expected)
+        if type(lat) is not list:
+            latent = lat.detach().cpu().numpy()
+            inputs = inputs + (latent,)
+            columns.append("Latents: " + str(latent.shape))
         if z is not None:
             zeta = z.detach().cpu().numpy()
             inputs = inputs + (zeta,)
@@ -184,17 +186,16 @@ class Trainer:
         # Compress latents
         z = None
         original_latents = None
-        latents = torch.stack(latents, dim=1)
-        # import copy
+        # latents = torch.stack(latents, dim=1)
         # original_latents = latents.data.clone()
-        z = self.compressor(latents)
-        latents = self.decompressor(z)
-        latents = latents.transpose(0, 1)
+        # z = self.compressor(latents)
+        # latents = self.decompressor(z)
+        # latents = latents.transpose(0, 1)
         d_mems = e_mems
         d_cmems = e_cmems
         # Decode
         for src_mask, trg, trg_mask in zip(src_masks, trgs, trg_masks):
-            out, latent_weight, self_weight, d_mems, d_cmems, d_attn_loss = self.decoder(trg, latents,  # TODO careful
+            out, latent_weight, self_weight, d_mems, d_cmems, d_attn_loss = self.decoder(trg, None,  # TODO careful
                                                                                          src_mask, trg_mask,
                                                                                          d_mems, d_cmems)
             d_attn_losses.append(d_attn_loss)
@@ -460,6 +461,14 @@ class Trainer:
                 e_mems, e_cmems, d_mems, d_cmems = self.get_memories()
                 for i in range(batch[0].shape[1]):  # repeat for each bar groups
                     mb = ()
+                    n_tokens = 0
+                    n_tokens += torch.numel(batch[0][:, i, ...]) - \
+                                (batch[0][:, i, ...] == config["tokens"]["pad"]).sum().item() - \
+                                (batch[0][:, i, ...] == config["tokens"]["sos"]).sum().item() - \
+                                (batch[0][:, i, ...] == config["tokens"]["eos"]).sum().item()
+                    if n_tokens == 0:
+                        print("Empty bars skipped")
+                        continue
                     for elem in batch:  # create mb
                         mb = mb + (elem[:, i, ...],)
                     tr_losses, e_mems, e_cmems = self.run_mb(mb, e_mems, e_cmems)

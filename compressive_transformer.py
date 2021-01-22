@@ -275,15 +275,17 @@ class DecoderLayer(nn.Module):
 
         # attn_loss = torch.zeros(1, requires_grad=True, **to(x))
         # ae_loss = torch.zeros(1, requires_grad=True, **to(x))
-        src_mask = None  # we only have one latent for the full sequence TODO remove when avg
-        x, latent_weights = self.src_attn(x, key=latent, value=latent, mask=src_mask)
+        # TODO trying to remove source
+        # src_mask = None  # we only have one latent for the full sequence TODO remove when avg
+        # x, latent_weights = self.src_attn(x, key=latent, value=latent, mask=src_mask)
 
         # x = self.norm2(x + h)
 
         x, = self.feed_forward(x)
 
         # x = self.norm3(x + h)
-        return x, latent_weights, self_weights, new_memories, attn_loss
+        # TODO return latent_weights instead of self_weights in the first and new_memories instead of memories
+        return x, self_weights, self_weights, memories, attn_loss
         # return x, latent_weights, self_weights, memories, attn_loss, ae_loss
 
 

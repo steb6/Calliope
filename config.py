@@ -14,7 +14,7 @@ config = {
         "device": "cuda" if remote else "cpu",
         "batch_size": 3 if remote else 3,
         "test_size": 0.3 if remote else 0.3,  # 100 on remote  it was 0.0001 in remote
-        "truncated_bars": 16,  # To truncate the song along bars
+        "truncated_bars": 4,  # To truncate the song along bars
         "n_workers": 0,
         "n_epochs": 25000,
         "label_smoothing": 0.1,
@@ -27,7 +27,7 @@ config = {
         "decay_steps": 50000 if remote else 1000000,
         "minimum_lr": 1e-4 if remote else 1e-2,
         "generated_iterations": 10,
-        "test_loss": False,
+        "test_loss": True,
     },
     "model": {
         # "total_seq_len": 300 if remote else 600,

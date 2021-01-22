@@ -31,6 +31,10 @@ class LatentsCompressor(nn.Module):
 
         self.compress_track = nn.Linear(d_model*4, d_model)
 
+        self.compress1 = nn.Linear(seq_len*d_model, seq_len*d_model//4)
+        self.compress2 = nn.Linear(n_latents*seq_len*d_model//4, seq_len*d_model)
+        self.act = nn.ReLU()
+
     def forward(self, latents):
         # TODO RESHAPING
         # latents = latents.reshape(*latents.shape[:-2], self.seq_len*self.d_model)
@@ -46,10 +50,19 @@ class LatentsCompressor(nn.Module):
         # latents = torch.mean(latents, dim=-2)
         # latents = torch.mean(latents, dim=-2, keepdim=True)
         # MIX INSTRUMENTS
+        # TODO WORKING SIMPLE COMPRESSION
         n_batch, n_latents, n_track, seq_len, d_model = latents.shape
         latents = latents.reshape(n_batch, n_latents, seq_len, d_model*4)
         latents = self.compress_track(latents)
-        latents = torch.mean(latents, dim=1, keepdim=True)  # compress along time
+        # latents = torch.mean(latents, dim=1, keepdim=True)  # compress along time
+        # TODO NOW COMPRESS FOR REAL
+        latents = self.act(latents)
+        latents = latents.reshape(n_batch, n_latents, seq_len*d_model)
+        latents = self.compress1(latents)
+        # TODO FINAL COMPRESSION
+        latents = self.act(latents)
+        latents = latents.reshape(n_batch, n_latents*seq_len*d_model//4)
+        latents = self.compress2(latents)
         return latents
 
 
@@ -75,7 +88,19 @@ class LatentsDecompressor(nn.Module):
 
         self.norm1 = nn.LayerNorm(seq_len*d_model)
 
+        self.decompress1 = nn.Linear(seq_len*d_model//4, seq_len*d_model)
+        self.decompress2 = nn.Linear(seq_len*d_model, n_latents*seq_len*d_model//4)
+        self.act = nn.ReLU()
+
     def forward(self, latents):
+        n_batch, z_dim = latents.shape
+        # TODO DECOMPRESS BARS
+        latents = self.decompress2(latents)
+        latents = latents.reshape(n_batch, self.n_latents, self.seq_len*self.d_model//4)
+        latents = self.act(latents)
+        # TODO DECOMPRESS BAR
+        latents = self.decompress1(latents)
+        latents = latents.reshape(n_batch, self.n_latents, self.seq_len, self.d_model)
         # n_batch = latents.shape[0]
         # latents = self.decomp1(latents)
         # latents = latents.reshape(n_batch, self.seq_len, self.d_model)
