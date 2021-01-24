@@ -57,7 +57,7 @@ class Trainer:
                         print(module_name)
 
     @staticmethod
-    def log_attn_images(mem_weights, self_weights, lat_weights):
+    def log_attn_images(mem_weights, self_weights):
         mem_img = mem_weights.detach().cpu().numpy()
         mem_formatted = (mem_img * 255 / np.max(mem_img)).astype('uint8')
         mem_img = Image.fromarray(mem_formatted)
@@ -66,15 +66,10 @@ class Trainer:
         self_formatted = (self_img * 255 / np.max(self_img)).astype('uint8')
         self_img = Image.fromarray(self_formatted)
 
-        lat_img = lat_weights.detach().cpu().numpy()
-        lat_formatted = (lat_img * 255 / np.max(lat_img)).astype('uint8')
-        lat_formatted = np.repeat(lat_formatted, lat_formatted.shape[0] // lat_formatted.shape[1], axis=1)
-        lat_img = Image.fromarray(lat_formatted)
-
         pad = np.array([255 * (i % 2) for i in range(config["model"]["seq_len"] * 9)]).reshape(-1, 9).astype(np.uint8)
         pad_img = Image.fromarray(pad)
         # CONCATENATE IMAGES
-        images = [mem_img, pad_img, self_img, pad_img, lat_img]
+        images = [mem_img, pad_img, self_img, pad_img]
         widths, heights = zip(*(i.size for i in images))
         total_width = sum(widths)
         max_height = max(heights)
@@ -86,7 +81,7 @@ class Trainer:
         wandb.log({"examples": [wandb.Image(new_im, caption="Attention")]})
 
     @staticmethod
-    def log_examples(e_in, d_in, pred, exp, lat, z=None, r_lat=None):  # TODO log latents
+    def log_examples(e_in, d_in, pred, exp, lat=None, z=None, r_lat=None):
         enc_input = e_in.transpose(0, 2)[0].reshape(4, -1).detach().cpu().numpy()
         dec_input = d_in.transpose(0, 2)[0].reshape(4, -1).detach().cpu().numpy()
         predicted = torch.max(pred, dim=-2).indices.permute(0, 2, 1)[0].reshape(4, -1).detach().cpu().numpy()
@@ -96,7 +91,7 @@ class Trainer:
                    "Predicted: " + str(predicted.shape),
                    "Expected: " + str(expected.shape)]
         inputs = (enc_input, dec_input, predicted, expected)
-        if type(lat) is not list:
+        if lat is not None and type(lat) is not list:
             latent = lat.detach().cpu().numpy()
             inputs = inputs + (latent,)
             columns.append("Latents: " + str(latent.shape))
@@ -113,19 +108,28 @@ class Trainer:
         wandb.log({"out": table})
 
     @staticmethod
+    def log_memories(mem, cmem):
+        mem = mem.detach().cpu().numpy()
+        cmem = cmem.detach().cpu().numpy()
+        columns = ["Memory: " + str(mem.shape),
+                   "Compressed memory: " + str(cmem.shape)]
+        inputs = (mem, cmem)
+        table = wandb.Table(columns=columns)
+        table.add_data(*inputs)
+        wandb.log({"memories": table})
+
+    @staticmethod
     def get_memories():
         a = 4
         b = config["model"]["layers"]
         c = config["train"]["batch_size"]
         e = config["model"]["d_model"]
         device = config["train"]["device"]
-        mem_len = config["model"]["mem_len"]
-        cmem_len = config["model"]["cmem_len"]
-        e_mems = torch.zeros(a, b, c, mem_len, e, dtype=torch.float32, device=device)
-        e_cmems = torch.zeros(a, b, c, cmem_len, e, dtype=torch.float32, device=device)
-        d_mems = torch.zeros(a, b, c, mem_len, e, dtype=torch.float32, device=device)
-        d_cmems = torch.zeros(a, b, c, cmem_len, e, dtype=torch.float32, device=device)
-        return e_mems, e_cmems, d_mems, d_cmems
+        mem_len = 0  # config["model"]["mem_len"]
+        cmem_len = 0  # config["model"]["cmem_len"]
+        mem = torch.zeros(a, b, c, mem_len, e, dtype=torch.float32, device=device)
+        cmem = torch.zeros(a, b, c, cmem_len, e, dtype=torch.float32, device=device)
+        return mem, cmem
 
     @staticmethod
     def create_trg_mask(trg):
@@ -161,7 +165,7 @@ class Trainer:
             attentions[count] = f.pad(attention, (length - attention.shape[-1], 0))
         return torch.mean(torch.stack(attentions, dim=0), dim=0)
 
-    def run_mb(self, batch, e_mems, e_cmems):
+    def run_mb(self, batch, mem, cmem):
         # SETUP VARIABLES
         srcs, trgs, src_masks, trg_masks, trg_ys = batch
         srcs = torch.LongTensor(srcs.long()).to(config["train"]["device"]).transpose(0, 2)
@@ -171,37 +175,30 @@ class Trainer:
         trg_ys = torch.LongTensor(trg_ys.long()).to(config["train"]["device"]).transpose(0, 2)
         e_attn_losses = []
         d_attn_losses = []
-        latents = []
         outs = []
-        aws = []
-        latents_weight = []
-        self_weights = []
+        enc_self_weights = []
+        dec_self_weights = []
+
         # Encode
         for src, src_mask in zip(srcs, src_masks):
-            latent, e_mems, e_cmems, e_attn_loss, aw = self.encoder(src, src_mask, e_mems, e_cmems)
-            aws.append(aw)
+            latent, mem, cmem, e_attn_loss, sw = self.encoder(src, src_mask, mem, cmem)
+            enc_self_weights.append(sw)
             e_attn_losses.append(e_attn_loss)
-            latents.append(latent)
 
-        # Compress latents
-        z = None
-        original_latents = None
-        # latents = torch.stack(latents, dim=1)
-        # original_latents = latents.data.clone()
-        # z = self.compressor(latents)
-        # latents = self.decompressor(z)
-        # latents = latents.transpose(0, 1)
-        d_mems = e_mems
-        d_cmems = e_cmems
+        # Compress memory
+        # mem = torch.mean(mem, dim=0)
+        # cmem = torch.mean(cmem, dim=0)
+
         # Decode
+        count = 0
         for src_mask, trg, trg_mask in zip(src_masks, trgs, trg_masks):
-            out, latent_weight, self_weight, d_mems, d_cmems, d_attn_loss = self.decoder(trg, None,  # TODO careful
-                                                                                         src_mask, trg_mask,
-                                                                                         d_mems, d_cmems)
+            out, sw, mem, cmem, d_attn_loss = self.decoder(trg, trg_mask, mem, cmem, count)
+            count+=1
+            # mem = torch.mean(mem, dim=0)
+            # cmem = torch.mean(cmem, dim=0)
             d_attn_losses.append(d_attn_loss)
             outs.append(out)
-            latents_weight.append(latent_weight)
-            self_weights.append(self_weight)
+            dec_self_weights.append(sw)
 
         outs = torch.stack(outs, dim=1)
         outs = outs.reshape(config["train"]["batch_size"], -1, config["tokens"]["vocab_size"], 4)
@@ -212,10 +209,7 @@ class Trainer:
         trg_ys = trg_ys.reshape(config["train"]["batch_size"], -1, 4)
         loss, loss_items = self.loss_computer(outs, trg_ys)
 
-        if self.step == 0 and config["train"]["test_loss"]:  # and False:  # TODO remove
-            #     print("Original latents shape: "+str(original_latents.shape))
-            #     print("Z shape: "+str(z.shape))
-            #     print("Latents shape: "+str(latents.shape))
+        if self.step == 0 and config["train"]["test_loss"]:
             self.test_losses(loss, e_attn_losses, d_attn_losses)
 
         if self.encoder.training:
@@ -224,25 +218,22 @@ class Trainer:
             optimizing_losses.backward()
             torch.nn.utils.clip_grad_norm_(self.encoder.parameters(), 0.1)
             torch.nn.utils.clip_grad_norm_(self.decoder.parameters(), 0.1)
-            torch.nn.utils.clip_grad_norm_(self.compressor.parameters(), 0.1)
-            torch.nn.utils.clip_grad_norm_(self.decompressor.parameters(), 0.1)
             self.model_optimizer.optimize()  # TODO add decreasing optimization updating
 
         # SOME TESTS
-        aws = self.pad_attention(aws)
-        self_weights = self.pad_attention(self_weights)
-        latents_weight = torch.mean(torch.stack(latents_weight, dim=0), dim=0)
+        enc_self_weights = self.pad_attention(enc_self_weights)
+        dec_self_weights = self.pad_attention(dec_self_weights)
 
         if self.step % config["train"]["after_mb_log_attn_img"] == 0:
-            self.log_attn_images(aws, self_weights, latents_weight)
+            self.log_attn_images(enc_self_weights, dec_self_weights)
+        if self.step % config["train"]["after_mb_log_memories"] == 0:
+            self.log_memories(mem, cmem)
         if self.step % config["train"]["after_mb_log_examples"] == 0:
-            self.log_examples(srcs, trgs, outs, trg_ys, latents, z=z, r_lat=original_latents)
-        if self.step == 0 and False:  # TODO remove
-            self.test_losses(loss, e_attn_losses, d_attn_losses)
+            self.log_examples(srcs, trgs, outs, trg_ys)
 
         losses = (loss.item(), e_attn_losses.item(), d_attn_losses.item(), *loss_items)
 
-        return losses, e_mems, e_cmems
+        return losses, mem, cmem
 
     def log_to_wandb(self, losses):
         # mode = "train/" if self.encoder.training else "eval/"
@@ -458,7 +449,7 @@ class Trainer:
                 #     self.decoder.train()
                 #     desc = "Train epoch " + str(self.epoch) + ", mb " + str(it)
                 #     train_progress = tqdm(total=config["train"]["mb_before_eval"], position=0, leave=True, desc=desc)  # eval
-                e_mems, e_cmems, d_mems, d_cmems = self.get_memories()
+                # mem, cmem = self.get_memories()
                 for i in range(batch[0].shape[1]):  # repeat for each bar groups
                     mb = ()
                     n_tokens = 0
@@ -471,7 +462,10 @@ class Trainer:
                         continue
                     for elem in batch:  # create mb
                         mb = mb + (elem[:, i, ...],)
-                    tr_losses, e_mems, e_cmems = self.run_mb(mb, e_mems, e_cmems)
+                    mem, cmem = self.get_memories()
+                    tr_losses, mem, cmem = self.run_mb(mb, mem, cmem)
+                    mem = mem.detach()
+                    cmem = cmem.detach()
                     self.log_to_wandb(tr_losses)
                     train_progress.update()
                     trained = True

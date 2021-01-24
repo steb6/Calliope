@@ -7,14 +7,7 @@ class LatentsCompressor(nn.Module):
     def __init__(self,
                  d_model=config["model"]["d_model"],
                  seq_len=config["model"]["seq_len"],
-                 # n_latents=config["model"]["total_seq_len"] // config["model"]["seq_len"],
                  n_latents=config["train"]["truncated_bars"],
-                 z_i_dim=config["model"]["z_i_dim"],
-                 z_tot_dim=config["model"]["z_tot_dim"],
-                 token_reduction=4,
-                 sequence_reduction=4,
-                 latent_reduction=4,
-                 instrument_reduction=4
                  ):
         super(LatentsCompressor, self).__init__()
 
@@ -70,14 +63,7 @@ class LatentsDecompressor(nn.Module):
     def __init__(self,
                  d_model=config["model"]["d_model"],
                  seq_len=config["model"]["seq_len"],
-                 # n_latents=config["model"]["total_seq_len"] // config["model"]["seq_len"],
-                 z_i_dim=config["model"]["z_i_dim"],
                  n_latents=config["train"]["truncated_bars"],
-                 z_tot_dim=config["model"]["z_tot_dim"],
-                 token_reduction=4,
-                 sequence_reduction=4,
-                 latent_reduction=4,
-                 instrument_reduction=4
                  ):
         super(LatentsDecompressor, self).__init__()
         self.d_model = d_model
