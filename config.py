@@ -15,7 +15,7 @@ config = {
         "device": "cuda" if remote else "cpu",
         "batch_size": 3 if remote else 3,
         "test_size": 0.3 if remote else 0.3,  # 100 on remote  it was 0.0001 in remote
-        "truncated_bars": truncated_bars,  # To truncate the song along bars
+        "truncated_bars": truncated_bars if remote else 4,  # To truncate the song along bars
         "n_workers": 0,
         "n_epochs": 25000,
         "label_smoothing": 0.1,
@@ -37,8 +37,8 @@ config = {
         "heads": 4,
         "ff_mul": 2,
         "layers": 3 if remote else 1,  # if remote else 1,  # 3 GB each
-        "mem_len": max_bar_length,  # keep last 2 seq
-        "cmem_len": (max_bar_length//4)*truncated_bars,  # keep 4 compression
+        "mem_len": max_bar_length*2,  # keep last 2 seq
+        "cmem_len": max_bar_length,  # keep 4 compression
         "cmem_ratio": 4,
         "reconstruction_attn_dropout": 0.1,
         "attn_layer_dropout": 0.1,

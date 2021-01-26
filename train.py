@@ -13,7 +13,7 @@ import wandb
 from midi_converter import midi_to_wav
 from discriminator import Discriminator
 from compressive_transformer import CompressiveEncoder, CompressiveDecoder
-from compress_latents import LatentsCompressor, LatentsDecompressor
+from compress_latents import LatentCompressor
 import numpy as np
 from PIL import Image
 from torch.nn import functional as f
@@ -43,6 +43,7 @@ class Trainer:
             self.generator_optimizer = None
         self.compress = False
         self.final_stage = False
+        self.latent_compressor = None
 
     def test_losses(self, loss, e_attn_losses, d_attn_losses):
         losses = [loss, e_attn_losses, d_attn_losses]
@@ -51,13 +52,13 @@ class Trainer:
             print("********************** Optimized by " + name)
             self.model_optimizer.optimizer.zero_grad(set_to_none=True)
             ls.backward(retain_graph=True)
-            for model in [self.encoder, self.compressor, self.decompressor, self.decoder]:
+            for model in [self.encoder, self.latent_compressor, self.decoder]:
                 for module_name, parameter in model.named_parameters():
                     if parameter.grad is not None:
                         print(module_name)
 
     @staticmethod
-    def log_attn_images(mem_weights, self_weights):
+    def log_attn_images(mem_weights, self_weights, dec_src_weights):
         mem_img = mem_weights.detach().cpu().numpy()
         mem_formatted = (mem_img * 255 / np.max(mem_img)).astype('uint8')
         mem_img = Image.fromarray(mem_formatted)
@@ -66,10 +67,14 @@ class Trainer:
         self_formatted = (self_img * 255 / np.max(self_img)).astype('uint8')
         self_img = Image.fromarray(self_formatted)
 
+        src_img = dec_src_weights.detach().cpu().numpy()
+        src_formatted = (src_img * 255 / np.max(src_img)).astype('uint8')
+        src_img = Image.fromarray(src_formatted)
+
         pad = np.array([255 * (i % 2) for i in range(config["model"]["seq_len"] * 9)]).reshape(-1, 9).astype(np.uint8)
         pad_img = Image.fromarray(pad)
         # CONCATENATE IMAGES
-        images = [mem_img, pad_img, self_img, pad_img]
+        images = [mem_img, pad_img, self_img, pad_img, src_img]
         widths, heights = zip(*(i.size for i in images))
         total_width = sum(widths)
         max_height = max(heights)
@@ -108,12 +113,17 @@ class Trainer:
         wandb.log({"out": table})
 
     @staticmethod
-    def log_memories(mem, cmem):
-        mem = mem.detach().cpu().numpy()
-        cmem = cmem.detach().cpu().numpy()
-        columns = ["Memory: " + str(mem.shape),
-                   "Compressed memory: " + str(cmem.shape)]
-        inputs = (mem, cmem)
+    def log_memories(e_mems, e_cmems, d_mems, d_cmems):
+        e_mems = e_mems.detach().cpu().numpy()
+        e_cmems = e_cmems.detach().cpu().numpy()
+        d_mems = d_mems.detach().cpu().numpy()
+        d_cmems = d_cmems.detach().cpu().numpy()
+        columns = ["Encoder Memory: " + str(e_mems.shape),
+                   "Encoder Compressed memory: " + str(e_cmems.shape),
+                   "Decoder Memory: " + str(d_mems.shape),
+                   "Decoder Compressed memory: " + str(d_cmems.shape)]
+
+        inputs = (e_mems, e_cmems, d_mems, d_cmems)
         table = wandb.Table(columns=columns)
         table.add_data(*inputs)
         wandb.log({"memories": table})
@@ -125,11 +135,13 @@ class Trainer:
         c = config["train"]["batch_size"]
         e = config["model"]["d_model"]
         device = config["train"]["device"]
-        mem_len = 0  # config["model"]["mem_len"]
-        cmem_len = 0  # config["model"]["cmem_len"]
-        mem = torch.zeros(a, b, c, mem_len, e, dtype=torch.float32, device=device)
-        cmem = torch.zeros(a, b, c, cmem_len, e, dtype=torch.float32, device=device)
-        return mem, cmem
+        mem_len = config["model"]["mem_len"]
+        cmem_len = config["model"]["cmem_len"]
+        e_mems = torch.zeros(a, b, c, mem_len, e, dtype=torch.float32, device=device)
+        e_cmems = torch.zeros(a, b, c, cmem_len, e, dtype=torch.float32, device=device)
+        d_mems = torch.zeros(a, b, c, mem_len, e, dtype=torch.float32, device=device)
+        d_cmems = torch.zeros(a, b, c, cmem_len, e, dtype=torch.float32, device=device)
+        return e_mems, e_cmems, d_mems, d_cmems
 
     @staticmethod
     def create_trg_mask(trg):
@@ -165,7 +177,7 @@ class Trainer:
             attentions[count] = f.pad(attention, (length - attention.shape[-1], 0))
         return torch.mean(torch.stack(attentions, dim=0), dim=0)
 
-    def run_mb(self, batch, mem, cmem):
+    def run_mb(self, batch):
         # SETUP VARIABLES
         srcs, trgs, src_masks, trg_masks, trg_ys = batch
         srcs = torch.LongTensor(srcs.long()).to(config["train"]["device"]).transpose(0, 2)
@@ -178,27 +190,27 @@ class Trainer:
         outs = []
         enc_self_weights = []
         dec_self_weights = []
+        dec_src_weights = []
+        latent = None
+        e_mems, e_cmems, d_mems, d_cmems = self.get_memories()
 
         # Encode
         for src, src_mask in zip(srcs, src_masks):
-            latent, mem, cmem, e_attn_loss, sw = self.encoder(src, src_mask, mem, cmem)
+            latent, e_mems, e_cmems, e_attn_loss, sw = self.encoder(src, src_mask, e_mems, e_cmems)
             enc_self_weights.append(sw)
             e_attn_losses.append(e_attn_loss)
 
-        # Compress memory
-        # mem = torch.mean(mem, dim=0)
-        # cmem = torch.mean(cmem, dim=0)
+        # Compress latent along track
+        latent = self.latent_compressor(latent)
 
         # Decode
-        count = 0
-        for src_mask, trg, trg_mask in zip(src_masks, trgs, trg_masks):
-            out, sw, mem, cmem, d_attn_loss = self.decoder(trg, trg_mask, mem, cmem, count)
-            count+=1
-            # mem = torch.mean(mem, dim=0)
-            # cmem = torch.mean(cmem, dim=0)
+        for trg, src_mask, trg_mask in zip(trgs, src_masks, trg_masks):
+            out, self_weight, src_weight, d_mems, d_cmems, d_attn_loss = self.decoder(trg, trg_mask, src_mask, latent,
+                                                                                      d_mems, d_cmems)
             d_attn_losses.append(d_attn_loss)
             outs.append(out)
-            dec_self_weights.append(sw)
+            dec_self_weights.append(self_weight)
+            dec_src_weights.append(src_weight)
 
         outs = torch.stack(outs, dim=1)
         outs = outs.reshape(config["train"]["batch_size"], -1, config["tokens"]["vocab_size"], 4)
@@ -209,9 +221,20 @@ class Trainer:
         trg_ys = trg_ys.reshape(config["train"]["batch_size"], -1, 4)
         loss, loss_items = self.loss_computer(outs, trg_ys)
 
+        # SOME TESTS
+        if self.step % config["train"]["after_mb_log_attn_img"] == 0:
+            enc_self_weights = self.pad_attention(enc_self_weights)
+            dec_self_weights = self.pad_attention(dec_self_weights)
+            dec_src_weights = self.pad_attention(dec_src_weights)
+            self.log_attn_images(enc_self_weights, dec_self_weights, dec_src_weights)
+        if self.step % config["train"]["after_mb_log_memories"] == 0:
+            self.log_memories(e_mems, e_cmems, d_mems, d_cmems)
+        if self.step % config["train"]["after_mb_log_examples"] == 0:
+            self.log_examples(srcs, trgs, outs, trg_ys)
         if self.step == 0 and config["train"]["test_loss"]:
             self.test_losses(loss, e_attn_losses, d_attn_losses)
 
+        # OPTIMIZE
         if self.encoder.training:
             self.model_optimizer.zero_grad()
             optimizing_losses = loss + e_attn_losses + d_attn_losses
@@ -220,20 +243,9 @@ class Trainer:
             torch.nn.utils.clip_grad_norm_(self.decoder.parameters(), 0.1)
             self.model_optimizer.optimize()  # TODO add decreasing optimization updating
 
-        # SOME TESTS
-        enc_self_weights = self.pad_attention(enc_self_weights)
-        dec_self_weights = self.pad_attention(dec_self_weights)
-
-        if self.step % config["train"]["after_mb_log_attn_img"] == 0:
-            self.log_attn_images(enc_self_weights, dec_self_weights)
-        if self.step % config["train"]["after_mb_log_memories"] == 0:
-            self.log_memories(mem, cmem)
-        if self.step % config["train"]["after_mb_log_examples"] == 0:
-            self.log_examples(srcs, trgs, outs, trg_ys)
-
         losses = (loss.item(), e_attn_losses.item(), d_attn_losses.item(), *loss_items)
 
-        return losses, mem, cmem
+        return losses
 
     def log_to_wandb(self, losses):
         # mode = "train/" if self.encoder.training else "eval/"
@@ -315,6 +327,11 @@ class Trainer:
         return generated
 
     def train(self):
+        # What are we doing?
+        cmem_range = config["model"]["cmem_len"]*config["model"]["cmem_ratio"]
+        max_range = config["model"]["layers"]*(cmem_range+config["model"]["mem_len"])
+        given = config["train"]["truncated_bars"]*config["model"]["seq_len"]
+        print("Giving ", given, " as input to model with a maximum range of ", max_range)
         # Create checkpoint folder
         timestamp = str(datetime.now())
         timestamp = timestamp[:timestamp.index('.')]
@@ -323,26 +340,24 @@ class Trainer:
         os.mkdir(self.save_path)
         # Models
         self.encoder = CompressiveEncoder().to(config["train"]["device"])
-        self.compressor = LatentsCompressor().to(config["train"]["device"])
-        self.decompressor = LatentsDecompressor().to(config["train"]["device"])
+        self.latent_compressor = LatentCompressor(config["model"]["d_model"]).to(config["train"]["device"])
         self.decoder = CompressiveDecoder().to(config["train"]["device"])
-        if config["train"]["aae"]:
-            self.discriminator = Discriminator(config["model"]["z_i_dim"],
-                                               config["model"]["z_tot_dim"]).to(config["train"]["device"])
+        # if config["train"]["aae"]:
+        #     self.discriminator = Discriminator(config["model"]["z_i_dim"],
+        #                                        config["model"]["z_tot_dim"]).to(config["train"]["device"])
         # Optimizers
         self.model_optimizer = CTOpt(torch.optim.Adam([{"params": self.encoder.parameters()},
-                                                       {"params": self.compressor.parameters()},
-                                                       {"params": self.decompressor.parameters()},
+                                                       {"params": self.latent_compressor.parameters()},
                                                        {"params": self.decoder.parameters()}], lr=0),
                                      config["train"]["warmup_steps"],
                                      (config["train"]["lr_min"], config["train"]["lr_max"]),
                                      config["train"]["decay_steps"], config["train"]["minimum_lr"])  # TODO add other
-        if config["train"]["aae"]:
-            self.discriminator_optimizer = torch.optim.Adam(self.discriminator.parameters(), lr=1e-6)
-            self.generator_optimizer = torch.optim.Adam([{"params": self.encoder.parameters()},
-                                                         {"params": self.compressor.parameters()}], lr=1e-7)
-        self.compressor_optimizer = torch.optim.Adam([{"params": self.compressor.parameters()},
-                                                      {"params": self.decompressor.parameters()}])
+        # if config["train"]["aae"]:
+        #     self.discriminator_optimizer = torch.optim.Adam(self.discriminator.parameters(), lr=1e-6)
+        #     self.generator_optimizer = torch.optim.Adam([{"params": self.encoder.parameters()},
+        #                                                  {"params": self.compressor.parameters()}], lr=1e-7)
+        # self.compressor_optimizer = torch.optim.Adam([{"params": self.compressor.parameters()},
+        #                                               {"params": self.decompressor.parameters()}])
         # Loss
         criterion = LabelSmoothing(size=config["tokens"]["vocab_size"],
                                    padding_idx=config["tokens"]["pad"],
@@ -353,7 +368,6 @@ class Trainer:
         # Dataset
         dataset = SongIterator(dataset_path=config["paths"]["dataset"],
                                test_size=config["train"]["test_size"],
-                               # max_len=config["model"]["total_seq_len"],
                                batch_size=config["train"]["batch_size"],
                                n_workers=config["train"]["n_workers"])
         tr_loader, ts_loader = dataset.get_loaders()
@@ -361,13 +375,11 @@ class Trainer:
         wandb.login()
         wandb.init(project="MusAE", config=self.settings, name="remote" if remote else "local" + ' ' + self.save_path)
         wandb.watch(self.encoder)
-        wandb.watch(self.compressor)
-        wandb.watch(self.decompressor)
+        wandb.watch(self.latent_compressor)
         wandb.watch(self.decoder)
         # Train
         self.encoder.train()
-        self.compressor.train()
-        self.decompressor.train()
+        self.latent_compressor.train()
         self.decoder.train()
         desc = "Train epoch " + str(self.epoch) + ", mb " + str(0)
         train_progress = tqdm(total=config["train"]["mb_before_eval"], position=0, leave=True, desc=desc)
@@ -462,10 +474,7 @@ class Trainer:
                         continue
                     for elem in batch:  # create mb
                         mb = mb + (elem[:, i, ...],)
-                    mem, cmem = self.get_memories()
-                    tr_losses, mem, cmem = self.run_mb(mb, mem, cmem)
-                    mem = mem.detach()
-                    cmem = cmem.detach()
+                    tr_losses = self.run_mb(mb)
                     self.log_to_wandb(tr_losses)
                     train_progress.update()
                     trained = True
