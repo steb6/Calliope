@@ -10,8 +10,9 @@ class LatentCompressor(nn.Module):
 
     def forward(self, latent):
         n_track, n_batch, seq_len, d_model = latent.shape
-        latent = latent.reshape(n_batch, seq_len, d_model*4)
-        return self.compressor(latent)
+        # latent = latent.reshape(n_batch, seq_len, d_model*4)
+        # latent = self.compressor(latent)
+        return latent
 
 
 class LatentsCompressor(nn.Module):

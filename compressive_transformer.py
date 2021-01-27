@@ -268,14 +268,14 @@ class MyMemoryAttention(nn.Module):
 
         def attn(hh, mm):
             n_batches = hh.shape[0]
-            d_model = hh.shape[-1]
             hQ = torch.matmul(hh, Q).view(n_batches, -1, self.h, self.dim_head).transpose(1, 2)
             mK = torch.matmul(mm, K).view(n_batches, -1, self.h, self.dim_head).transpose(1, 2)
             mV = torch.matmul(mm, V).view(n_batches, -1, self.h, self.dim_head).transpose(1, 2)
-            return full_attn(hQ, mK, mV, dropout=self.reconstruction_attn_dropout)
+            attention, _ = full_attn(hQ, mK, mV, dropout=self.reconstruction_attn_dropout)
+            return attention
 
         new_cm = self.compress_mem_fn(old_mem)
-        l_attn = F.mse_loss(attn(h_copy, old_mem)[0], attn(h_copy, new_cm)[0])
+        l_attn = F.mse_loss(attn(h_copy, old_mem), attn(h_copy, new_cm))
 
         return h, m, cm, l_attn, weights
 

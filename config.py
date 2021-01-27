@@ -9,7 +9,7 @@ truncated_bars = 16
 
 config = {
     "train": {
-        "do_eval": False,
+        "do_eval": True,
         "aae": False,
         "create_dataset": False if remote else False,
         "device": "cuda" if remote else "cpu",
