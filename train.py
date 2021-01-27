@@ -52,10 +52,19 @@ class Trainer:
             print("********************** Optimized by " + name)
             self.model_optimizer.optimizer.zero_grad(set_to_none=True)
             ls.backward(retain_graph=True)
-            for model in [self.encoder, self.latent_compressor, self.decoder]:
+            for model in [self.encoder, self.decoder]:  # removed latent compressor
                 for module_name, parameter in model.named_parameters():
                     if parameter.grad is not None:
                         print(module_name)
+        self.model_optimizer.optimizer.zero_grad(set_to_none=True)
+        (losses[0] + losses[1] + losses[2]).backward(retain_graph=True)
+        print("********************** NOT OPTIMIZED BY NOTHING")
+        for model in [self.encoder, self.decoder]:  # removed latent compressor
+            for module_name, parameter in model.named_parameters():
+                if parameter.grad is None:
+                    print(module_name)
+
+
 
     @staticmethod
     def log_attn_images(mem_weights, self_weights, dec_src_weights):
@@ -95,7 +104,7 @@ class Trainer:
                    "Decoder Input: " + str(dec_input.shape),
                    "Predicted: " + str(predicted.shape),
                    "Expected: " + str(expected.shape)]
-        inputs = (enc_input, dec_input, predicted, expected)
+        inputs = (enc_input[:, :10], dec_input[:, :10], predicted[:, :10], expected[:, :10])
         if lat is not None and type(lat) is not list:
             latent = lat.detach().cpu().numpy()
             inputs = inputs + (latent,)
@@ -123,7 +132,7 @@ class Trainer:
                    "Decoder Memory: " + str(d_mems.shape),
                    "Decoder Compressed memory: " + str(d_cmems.shape)]
 
-        inputs = (e_mems, e_cmems, d_mems, d_cmems)
+        inputs = (e_mems[:, :, 0, :10, :], e_cmems[:, :, 0, :10, :], d_mems[:, :, 0, :10, :], d_cmems[:, :, 0, :10, :])
         table = wandb.Table(columns=columns)
         table.add_data(*inputs)
         wandb.log({"memories": table})
@@ -200,8 +209,14 @@ class Trainer:
             enc_self_weights.append(sw)
             e_attn_losses.append(e_attn_loss)
 
-        # Compress latent along track
-        latent = self.latent_compressor(latent)
+        # Give only last memories to decoder
+        # lat_mem = e_mems[:, -1, :, :, :]
+        # # lat_mem = lat_mem.unsqueeze(1).repeat(1, config["model"]["layers"], 1, 1, 1)
+        # lat_cmem = e_cmems[:, -1, :, :, :]
+        # # lat_cmem = lat_cmem.unsqueeze(1).repeat(1, config["model"]["layers"], 1, 1, 1)
+        # latent = torch.cat((lat_cmem, lat_mem), dim=-2)
+        # latent = self.latent_compressor(latent)
+        latent = latent.transpose(0, 1)
 
         # Decode
         for trg, src_mask, trg_mask in zip(trgs, src_masks, trg_masks):
@@ -462,18 +477,18 @@ class Trainer:
                 #     desc = "Train epoch " + str(self.epoch) + ", mb " + str(it)
                 #     train_progress = tqdm(total=config["train"]["mb_before_eval"], position=0, leave=True, desc=desc)  # eval
                 # mem, cmem = self.get_memories()
-                for i in range(batch[0].shape[1]):  # repeat for each bar groups
+                for i in range(batch[0].shape[2]):  # repeat for each bar groups
                     mb = ()
                     n_tokens = 0
-                    n_tokens += torch.numel(batch[0][:, i, ...]) - \
-                                (batch[0][:, i, ...] == config["tokens"]["pad"]).sum().item() - \
-                                (batch[0][:, i, ...] == config["tokens"]["sos"]).sum().item() - \
-                                (batch[0][:, i, ...] == config["tokens"]["eos"]).sum().item()
+                    n_tokens += torch.numel(batch[0][:, :, i, ...]) - \
+                                (batch[0][:, :, i, ...] == config["tokens"]["pad"]).sum().item() - \
+                                (batch[0][:, :, i, ...] == config["tokens"]["sos"]).sum().item() - \
+                                (batch[0][:, :, i, ...] == config["tokens"]["eos"]).sum().item()
                     if n_tokens == 0:
                         print("Empty bars skipped")
                         continue
                     for elem in batch:  # create mb
-                        mb = mb + (elem[:, i, ...],)
+                        mb = mb + (elem[:, :, i, ...],)
                     tr_losses = self.run_mb(mb)
                     self.log_to_wandb(tr_losses)
                     train_progress.update()

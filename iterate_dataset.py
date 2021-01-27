@@ -27,28 +27,27 @@ class SongIterator(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         with open(os.path.join(self.dataset_path, idx+str('.pickle')), 'rb') as file:
             src = pickle.load(file)
-        # src = src[:, :config["train"]["truncated_bars"], :]
         src = src[:, :(src.shape[1]-src.shape[1] % config["train"]["truncated_bars"]), :]
-        src = src.reshape(-1, 4, config["train"]["truncated_bars"], config["model"]["seq_len"])
+        src = src.reshape(4, -1, config["train"]["truncated_bars"], config["model"]["seq_len"])
         sos = np.full(src.shape[:-1]+(1,), config["tokens"]["sos"], dtype=src.dtype)
         src = np.append(sos, src, axis=-1)
-        for bars in src:
-            for instrument in bars:
-                for bar in instrument:
+        for instrument in src:
+            for bars in instrument:
+                for bar in bars:
                     idx = np.where(bar == config["tokens"]["pad"])
                     bar[idx[0][0]] = config["tokens"]["eos"]
         src_mask = src != config["tokens"]["pad"]
         trg = src[..., :-1]
         trg_y = src[..., 1:]
         trg_mask = np.full(trg.shape+(trg.shape[-1],), True)
-        for b, bars in enumerate(trg):
-            for i, instrument in enumerate(bars):
-                for s, seq in enumerate(instrument):
-                    line_mask = seq != config["tokens"]["pad"]
+        for i, instrument in enumerate(trg):
+            for g, group in enumerate(instrument):
+                for b, bar in enumerate(group):
+                    line_mask = bar != config["tokens"]["pad"]
                     pad_mask = np.matmul(line_mask[:, np.newaxis], line_mask[np.newaxis, :])
                     subsequent_mask = np.expand_dims(np.tril(np.ones((trg.shape[-1], trg.shape[-1]))), (0, 1))
                     subsequent_mask = subsequent_mask.astype(np.bool)
-                    trg_mask[b][i][s] = pad_mask & subsequent_mask
+                    trg_mask[i][g][b] = pad_mask & subsequent_mask
         src = src[..., 1:]
         src_mask = src_mask[..., 1:]
         return src, trg, src_mask, trg_mask, trg_y
