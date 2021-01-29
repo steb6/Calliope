@@ -67,115 +67,6 @@ class Trainer:
                     print(module_name)
 
     @staticmethod
-    def log_attn_images(mem_weights, self_weights, dec_src_weights):
-        mem_img = mem_weights.detach().cpu().numpy()
-        mem_formatted = (mem_img * 255 / np.max(mem_img)).astype('uint8')
-        mem_img = Image.fromarray(mem_formatted)
-
-        self_img = self_weights.detach().cpu().numpy()
-        self_formatted = (self_img * 255 / np.max(self_img)).astype('uint8')
-        self_img = Image.fromarray(self_formatted)
-
-        src_img = dec_src_weights.detach().cpu().numpy()
-        src_formatted = (src_img * 255 / np.max(src_img)).astype('uint8')
-        src_img = Image.fromarray(src_formatted)
-
-        pad = np.array([255 * (i % 2) for i in range(config["model"]["seq_len"] * 9)]).reshape(-1, 9).astype(np.uint8)
-        pad_img = Image.fromarray(pad)
-        # CONCATENATE IMAGES
-        images = [mem_img, pad_img, self_img, pad_img, src_img]
-        widths, heights = zip(*(i.size for i in images))
-        total_width = sum(widths)
-        max_height = max(heights)
-        new_im = Image.new('RGB', (total_width, max_height))
-        x_offset = 0
-        for im in images:
-            new_im.paste(im, (x_offset, 0))
-            x_offset += im.size[0]
-        wandb.log({"examples": [wandb.Image(new_im, caption="Attention")]})
-
-    @staticmethod
-    def log_attn_heatmap(enc_self_weights, dec_self_weights, dec_src_weights):
-        enc_self_img = enc_self_weights.detach().cpu().numpy()
-        ax1 = sns.heatmap(enc_self_img)
-        wandb.log({"Encoder self attention": [wandb.Image(plt, caption="Encoder self attention")]})
-        # plt.show()
-        plt.clf()
-        dec_self_img = dec_self_weights.detach().cpu().numpy()
-        ax2 = sns.heatmap(dec_self_img)
-        wandb.log({"Decoder self attention": [wandb.Image(plt, caption="Decoder self attention")]})
-        # plt.show()
-        plt.clf()
-        dec_src_img = dec_src_weights.detach().cpu().numpy()
-        ax3 = sns.heatmap(dec_src_img)
-        wandb.log({"Decoder source attention": [wandb.Image(plt, caption="Decoder source attention")]})
-        # plt.show()
-        plt.clf()
-
-    @staticmethod
-    def log_examples(e_in, d_in, pred, exp, lat=None, z=None, r_lat=None):
-        enc_input = e_in.transpose(0, 2)[0].reshape(4, -1).detach().cpu().numpy()
-        dec_input = d_in.transpose(0, 2)[0].reshape(4, -1).detach().cpu().numpy()
-        predicted = torch.max(pred, dim=-2).indices.permute(0, 2, 1)[0].reshape(4, -1).detach().cpu().numpy()
-        expected = exp[0].transpose(0, 1).detach().cpu().numpy()
-        columns = ["Encoder Input: " + str(enc_input.shape),
-                   "Decoder Input: " + str(dec_input.shape),
-                   "Predicted: " + str(predicted.shape),
-                   "Expected: " + str(expected.shape)]
-        inputs = (enc_input[:, :10], dec_input[:, :10], predicted[:, :10], expected[:, :10])
-        if lat is not None and type(lat) is not list:
-            latent = lat.detach().cpu().numpy()
-            inputs = inputs + (latent,)
-            columns.append("Latents: " + str(latent.shape))
-        if z is not None:
-            zeta = z.detach().cpu().numpy()
-            inputs = inputs + (zeta,)
-            columns.append("Z: " + str(z.shape))
-        if r_lat is not None:
-            recon_l = r_lat.detach().cpu().numpy()
-            inputs = inputs + (recon_l,)
-            columns.append("Real latents: " + str(recon_l.shape))
-        table = wandb.Table(columns=columns)
-        table.add_data(*inputs)
-        wandb.log({"out": table})
-
-    @staticmethod
-    def log_memories(e_mems, e_cmems, d_mems, d_cmems):
-        e_mems = e_mems.detach().cpu().numpy()
-        e_cmems = e_cmems.detach().cpu().numpy()
-        d_mems = d_mems.detach().cpu().numpy()
-        d_cmems = d_cmems.detach().cpu().numpy()
-        columns = ["Encoder Memory: " + str(e_mems.shape),
-                   "Encoder Compressed memory: " + str(e_cmems.shape),
-                   "Decoder Memory: " + str(d_mems.shape),
-                   "Decoder Compressed memory: " + str(d_cmems.shape)]
-
-        inputs = (e_mems[:, :, 0, :10, :], e_cmems[:, :, 0, :10, :], d_mems[:, :, 0, :10, :], d_cmems[:, :, 0, :10, :])
-        table = wandb.Table(columns=columns)
-        table.add_data(*inputs)
-        wandb.log({"memories": table})
-
-    @staticmethod
-    def log_latent(latent):
-
-        latent = latent.transpose(0, 1).detach().cpu().numpy()  # transpose sequence length and batch
-
-        indices = pd.MultiIndex.from_product((range(latent.shape[0]), range(latent.shape[1]), range(latent.shape[2])),
-                                             names=('batch', 'seq_len', 'dim'))
-        data = pd.DataFrame(latent.reshape(-1), index=indices, columns=('value',)).reset_index()
-
-        def draw_heatmap(*args, **kwargs):
-            data = kwargs.pop('data')
-            d = data.pivot(index=args[1], columns=args[0], values=args[2])
-            sns.heatmap(d, **kwargs)
-
-        fg = sns.FacetGrid(data, col='batch')
-        fg.map_dataframe(draw_heatmap, 'seq_len', 'dim', 'value', cbar=False)
-        # plt.show()
-        wandb.log({"Latent": [wandb.Image(plt, caption="Latent")]})
-        plt.clf()
-
-    @staticmethod
     def get_memories():
         a = 4
         b = config["model"]["layers"]
@@ -278,12 +169,12 @@ class Trainer:
                 enc_self_weights = self.pad_attention(enc_self_weights)
                 dec_self_weights = self.pad_attention(dec_self_weights)
                 dec_src_weights = self.pad_attention(dec_src_weights)
-                self.log_attn_heatmap(enc_self_weights, dec_self_weights, dec_src_weights)
+                self.logger.log_attn_heatmap(enc_self_weights, dec_self_weights, dec_src_weights)
             if self.step % config["train"]["after_mb_log_memories"] == 0:
-                self.log_memories(e_mems, e_cmems, d_mems, d_cmems)
+                self.logger.log_memories(e_mems, e_cmems, d_mems, d_cmems)
             if self.step % config["train"]["after_mb_log_examples"] == 0:
-                self.log_examples(srcs, trgs, outs, trg_ys)
-                self.log_latent(latent)
+                self.logger.log_examples(srcs, trgs, outs, trg_ys)
+                self.logger.log_latent(latent)
             if self.step == 0 and config["train"]["test_loss"]:
                 self.test_losses(loss, e_attn_losses, d_attn_losses)
 
@@ -299,21 +190,6 @@ class Trainer:
         losses = (loss.item(), e_attn_losses.item(), d_attn_losses.item(), *loss_items)
 
         return losses
-
-    def log_losses(self, losses):
-        mode = "train/" if self.encoder.training else "eval/"
-        log = {"stuff/lr": self.model_optimizer.lr,
-               mode + "loss": losses[0],
-               mode + "encoder attention loss": losses[1],
-               mode + "decoder attention loss": losses[2],
-               mode + "drums loss": losses[3],
-               mode + "guitar loss": losses[4],
-               mode + "bass loss": losses[5],
-               mode + "strings loss": losses[6]}
-        if config["train"]["aae"]:
-            log[mode + "discriminator_loss"] = losses[7]
-            log[mode + "generator_loss"] = losses[8]
-        wandb.log(log)
 
     def reconstruct(self, batch, note_manager):
         srcs, trgs, src_masks, trg_masks, _ = batch
@@ -456,7 +332,7 @@ class Trainer:
                     for elem in batch:  # create mb
                         mb = mb + (elem[:, :, bar_it, ...],)
                     tr_losses = self.run_mb(mb)
-                    self.log_losses(tr_losses)
+                    self.logger.log_losses(tr_losses, self.model_optimizer.lr, self.encoder.training)
                     train_progress.update()
                     self.step += 1
 
@@ -509,7 +385,7 @@ class Trainer:
                             #     torch.save(self.discriminator,
                             #                os.path.join(self.save_path, "discriminator_" + str(self.epoch) + '.pt'))
                             print("Model saved")
-                        self.log_losses(final)
+                        self.logger.log_losses(final, self.model_optimizer.lr, self.encoder.training)
 
                         # Reconstruction and generation
                         note_manager = NoteRepresentationManager()

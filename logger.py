@@ -11,7 +11,8 @@ class Logger:
         pass
 
     @staticmethod
-    def log_losses(self, losses, lr, mode):
+    def log_losses(losses, lr, train):
+        mode = "train/" if train else "eval/"
         log = {"stuff/lr": lr,
                mode + "loss": losses[0],
                mode + "encoder attention loss": losses[1],
