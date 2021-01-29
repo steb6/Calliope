@@ -9,20 +9,20 @@ truncated_bars = 16
 
 config = {
     "train": {
-        "do_eval": True,
+        "do_eval": True if remote else True,
         "aae": False,
         "create_dataset": False if remote else False,
         "device": "cuda" if remote else "cpu",
         "batch_size": 3 if remote else 3,
-        "test_size": 0.3 if remote else 0.3,  # 100 on remote  it was 0.0001 in remote
-        "truncated_bars": 8 if remote else 4,  # To truncate the song along bars
+        "test_size": 0.001 if remote else 0.3,  # 100 on remote  it was 0.0001 in remote
+        "truncated_bars": 16 if remote else 6,  # To truncate the song along bars
         "n_workers": 0,
         "n_epochs": 25000,
         "label_smoothing": 0.1,
         "mb_before_eval": 1000 if remote else 10,  # if >= early_stopping, happens at each epoch
-        "after_mb_log_attn_img": 100 if remote else 10,
-        "after_mb_log_examples": 100 if remote else 10,
-        "after_mb_log_memories": 100 if remote else 10,
+        "after_mb_log_attn_img": 1000 if remote else 10,
+        "after_mb_log_examples": 1000 if remote else 10,
+        "after_mb_log_memories": 1000 if remote else 10,
         "warmup_steps": 4000 if remote else 10,
         "lr_min": 1e-4 if remote else 1e-2,
         "lr_max": 1e-3 if remote else 1e-2,
@@ -36,8 +36,8 @@ config = {
         "d_model": 32,
         "heads": 4,
         "ff_mul": 2,
-        "layers": 3 if remote else 1,  # if remote else 1,  # 3 GB each
-        "mem_len": max_bar_length*2,  # keep last 2 seq
+        "layers": 4 if remote else 2,  # if remote else 1,  # 3 GB each
+        "mem_len": max_bar_length,  # keep last 2 seq
         "cmem_len": max_bar_length,  # keep 4 compression
         "cmem_ratio": 4,
         "reconstruction_attn_dropout": 0.1,

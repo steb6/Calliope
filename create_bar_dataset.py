@@ -180,7 +180,7 @@ class NoteRepresentationManager:
             time = 0
             track = muspy.Track(is_drum=i == 0, program=config["data"]["reconstruction_programs"][i])
             for bar in instrument:
-                track.notes.append(muspy.Note(time=time, pitch=60, duration=12, velocity=127))  # TODO remove
+                # track.notes.append(muspy.Note(time=time, pitch=60, duration=12, velocity=127))  # TODO remove
                 while len(bar) > 4 and bar[0] != config["tokens"]["pad"]:  # TODO check
                     if self.it_is_a_note(bar[0], bar[1], bar[2], bar[3]):
                         note = muspy.Note(bar[0] + time - config["tokens"]["time_first"],

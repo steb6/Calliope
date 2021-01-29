@@ -17,14 +17,16 @@ from compress_latents import LatentCompressor
 import numpy as np
 from PIL import Image
 from torch.nn import functional as f
+import seaborn as sns; sns.set_theme()
+import matplotlib.pyplot as plt
+import pandas as pd
+from logger import Logger
 
 
 class Trainer:
-    def __init__(self, save_path=None, model_name="checkpoint", plot_name="plot", settings=config):
-        self.save_path = save_path
-        self.model_name = model_name
-        self.plot_name = plot_name
-        self.settings = settings
+    def __init__(self):
+        self.logger = None
+        self.save_path = None
         self.epoch = 0
         self.step = 0
         self.loss_computer = None
@@ -64,8 +66,6 @@ class Trainer:
                 if parameter.grad is None:
                     print(module_name)
 
-
-
     @staticmethod
     def log_attn_images(mem_weights, self_weights, dec_src_weights):
         mem_img = mem_weights.detach().cpu().numpy()
@@ -93,6 +93,24 @@ class Trainer:
             new_im.paste(im, (x_offset, 0))
             x_offset += im.size[0]
         wandb.log({"examples": [wandb.Image(new_im, caption="Attention")]})
+
+    @staticmethod
+    def log_attn_heatmap(enc_self_weights, dec_self_weights, dec_src_weights):
+        enc_self_img = enc_self_weights.detach().cpu().numpy()
+        ax1 = sns.heatmap(enc_self_img)
+        wandb.log({"Encoder self attention": [wandb.Image(plt, caption="Encoder self attention")]})
+        # plt.show()
+        plt.clf()
+        dec_self_img = dec_self_weights.detach().cpu().numpy()
+        ax2 = sns.heatmap(dec_self_img)
+        wandb.log({"Decoder self attention": [wandb.Image(plt, caption="Decoder self attention")]})
+        # plt.show()
+        plt.clf()
+        dec_src_img = dec_src_weights.detach().cpu().numpy()
+        ax3 = sns.heatmap(dec_src_img)
+        wandb.log({"Decoder source attention": [wandb.Image(plt, caption="Decoder source attention")]})
+        # plt.show()
+        plt.clf()
 
     @staticmethod
     def log_examples(e_in, d_in, pred, exp, lat=None, z=None, r_lat=None):
@@ -138,6 +156,26 @@ class Trainer:
         wandb.log({"memories": table})
 
     @staticmethod
+    def log_latent(latent):
+
+        latent = latent.transpose(0, 1).detach().cpu().numpy()  # transpose sequence length and batch
+
+        indices = pd.MultiIndex.from_product((range(latent.shape[0]), range(latent.shape[1]), range(latent.shape[2])),
+                                             names=('batch', 'seq_len', 'dim'))
+        data = pd.DataFrame(latent.reshape(-1), index=indices, columns=('value',)).reset_index()
+
+        def draw_heatmap(*args, **kwargs):
+            data = kwargs.pop('data')
+            d = data.pivot(index=args[1], columns=args[0], values=args[2])
+            sns.heatmap(d, **kwargs)
+
+        fg = sns.FacetGrid(data, col='batch')
+        fg.map_dataframe(draw_heatmap, 'seq_len', 'dim', 'value', cbar=False)
+        # plt.show()
+        wandb.log({"Latent": [wandb.Image(plt, caption="Latent")]})
+        plt.clf()
+
+    @staticmethod
     def get_memories():
         a = 4
         b = config["model"]["layers"]
@@ -180,7 +218,7 @@ class Trainer:
         return trg, trg_mask
 
     @staticmethod
-    def pad_attention(attentions):
+    def pad_attention(attentions):  # pad list of array to be the same size
         length = max([s.shape[-1] for s in attentions])
         for count, attention in enumerate(attentions):
             attentions[count] = f.pad(attention, (length - attention.shape[-1], 0))
@@ -206,15 +244,11 @@ class Trainer:
         # Encode
         for src, src_mask in zip(srcs, src_masks):
             latent, e_mems, e_cmems, e_attn_loss, sw = self.encoder(src, src_mask, e_mems, e_cmems)
+            e_mems = e_mems.detach()
+            e_cmems = e_cmems.detach()
             enc_self_weights.append(sw)
             e_attn_losses.append(e_attn_loss)
 
-        # Give only last memories to decoder
-        # lat_mem = e_mems[:, -1, :, :, :]
-        # # lat_mem = lat_mem.unsqueeze(1).repeat(1, config["model"]["layers"], 1, 1, 1)
-        # lat_cmem = e_cmems[:, -1, :, :, :]
-        # # lat_cmem = lat_cmem.unsqueeze(1).repeat(1, config["model"]["layers"], 1, 1, 1)
-        # latent = torch.cat((lat_cmem, lat_mem), dim=-2)
         latent = self.latent_compressor(latent)
         latent = latent.transpose(0, 1)
 
@@ -222,6 +256,8 @@ class Trainer:
         for trg, src_mask, trg_mask in zip(trgs, src_masks, trg_masks):
             out, self_weight, src_weight, d_mems, d_cmems, d_attn_loss = self.decoder(trg, trg_mask, src_mask, latent,
                                                                                       d_mems, d_cmems)
+            d_mems = d_mems.detach()
+            d_cmems = d_cmems.detach()
             d_attn_losses.append(d_attn_loss)
             outs.append(out)
             dec_self_weights.append(self_weight)
@@ -237,17 +273,19 @@ class Trainer:
         loss, loss_items = self.loss_computer(outs, trg_ys)
 
         # SOME TESTS
-        if self.step % config["train"]["after_mb_log_attn_img"] == 0:
-            enc_self_weights = self.pad_attention(enc_self_weights)
-            dec_self_weights = self.pad_attention(dec_self_weights)
-            dec_src_weights = self.pad_attention(dec_src_weights)
-            self.log_attn_images(enc_self_weights, dec_self_weights, dec_src_weights)
-        if self.step % config["train"]["after_mb_log_memories"] == 0:
-            self.log_memories(e_mems, e_cmems, d_mems, d_cmems)
-        if self.step % config["train"]["after_mb_log_examples"] == 0:
-            self.log_examples(srcs, trgs, outs, trg_ys)
-        if self.step == 0 and config["train"]["test_loss"]:
-            self.test_losses(loss, e_attn_losses, d_attn_losses)
+        if self.encoder.training:
+            if self.step % config["train"]["after_mb_log_attn_img"] == 0:
+                enc_self_weights = self.pad_attention(enc_self_weights)
+                dec_self_weights = self.pad_attention(dec_self_weights)
+                dec_src_weights = self.pad_attention(dec_src_weights)
+                self.log_attn_heatmap(enc_self_weights, dec_self_weights, dec_src_weights)
+            if self.step % config["train"]["after_mb_log_memories"] == 0:
+                self.log_memories(e_mems, e_cmems, d_mems, d_cmems)
+            if self.step % config["train"]["after_mb_log_examples"] == 0:
+                self.log_examples(srcs, trgs, outs, trg_ys)
+                self.log_latent(latent)
+            if self.step == 0 and config["train"]["test_loss"]:
+                self.test_losses(loss, e_attn_losses, d_attn_losses)
 
         # OPTIMIZE
         if self.encoder.training:
@@ -256,13 +294,13 @@ class Trainer:
             optimizing_losses.backward()
             torch.nn.utils.clip_grad_norm_(self.encoder.parameters(), 0.1)
             torch.nn.utils.clip_grad_norm_(self.decoder.parameters(), 0.1)
-            self.model_optimizer.optimize()  # TODO add decreasing optimization updating
+            self.model_optimizer.optimize()
 
         losses = (loss.item(), e_attn_losses.item(), d_attn_losses.item(), *loss_items)
 
         return losses
 
-    def log_to_wandb(self, losses):
+    def log_losses(self, losses):
         mode = "train/" if self.encoder.training else "eval/"
         log = {"stuff/lr": self.model_optimizer.lr,
                mode + "loss": losses[0],
@@ -331,25 +369,23 @@ class Trainer:
         return generated
 
     def train(self):
-        # What are we doing?
-        cmem_range = config["model"]["cmem_len"]*config["model"]["cmem_ratio"]
-        max_range = config["model"]["layers"]*(cmem_range+config["model"]["mem_len"])
-        given = config["train"]["truncated_bars"]*config["model"]["seq_len"]
-        print("Giving ", given, " as input to model with a maximum range of ", max_range)
+
         # Create checkpoint folder
         timestamp = str(datetime.now())
         timestamp = timestamp[:timestamp.index('.')]
         timestamp = timestamp.replace(' ', '_').replace(':', '-')
         self.save_path = timestamp
         os.mkdir(self.save_path)
-        # Models
+
+        # Create models
         self.encoder = CompressiveEncoder().to(config["train"]["device"])
         self.latent_compressor = LatentCompressor(config["model"]["d_model"]).to(config["train"]["device"])
         self.decoder = CompressiveDecoder().to(config["train"]["device"])
         # if config["train"]["aae"]:
         #     self.discriminator = Discriminator(config["model"]["z_i_dim"],
         #                                        config["model"]["z_tot_dim"]).to(config["train"]["device"])
-        # Optimizers
+
+        # Create optimizers
         self.model_optimizer = CTOpt(torch.optim.Adam([{"params": self.encoder.parameters()},
                                                        {"params": self.latent_compressor.parameters()},
                                                        {"params": self.decoder.parameters()}], lr=0),
@@ -362,6 +398,7 @@ class Trainer:
         #                                                  {"params": self.compressor.parameters()}], lr=1e-7)
         # self.compressor_optimizer = torch.optim.Adam([{"params": self.compressor.parameters()},
         #                                               {"params": self.decompressor.parameters()}])
+
         # Loss
         criterion = LabelSmoothing(size=config["tokens"]["vocab_size"],
                                    padding_idx=config["tokens"]["pad"],
@@ -369,19 +406,30 @@ class Trainer:
                                    device=config["train"]["device"])
         criterion.to(config["train"]["device"])
         self.loss_computer = SimpleLossCompute(criterion)
+
         # Dataset
         dataset = SongIterator(dataset_path=config["paths"]["dataset"],
                                test_size=config["train"]["test_size"],
                                batch_size=config["train"]["batch_size"],
                                n_workers=config["train"]["n_workers"])
         tr_loader, ts_loader = dataset.get_loaders()
-        print("Giving ", len(tr_loader), " training samples and ", len(ts_loader), " test samples")
+
         # Wandb
+        self.logger = Logger()
         wandb.login()
-        wandb.init(project="MusAE", config=self.settings, name="remote" if remote else "local" + ' ' + self.save_path)
+        wandb.init(project="MusAE", config=config, name="r_"+self.save_path if remote else "l_"+self.save_path)
         wandb.watch(self.encoder)
         wandb.watch(self.latent_compressor)
         wandb.watch(self.decoder)
+
+        # Print info about training
+        cmem_range = config["model"]["cmem_len"]*config["model"]["cmem_ratio"]
+        max_range = config["model"]["layers"]*(cmem_range+config["model"]["mem_len"])
+        given = config["train"]["truncated_bars"]*config["model"]["seq_len"]
+        assert given <= max_range, "Given {} as input to model with max range {}".format(given, max_range)
+        print("Giving ", given, " as input to model with a maximum range of ", max_range)
+        print("Giving ", len(tr_loader), " training samples and ", len(ts_loader), " test samples")
+
         # Train
         self.encoder.train()
         self.latent_compressor.train()
@@ -389,17 +437,26 @@ class Trainer:
         desc = "Train epoch " + str(self.epoch) + ", mb " + str(0)
         train_progress = tqdm(total=config["train"]["mb_before_eval"], position=0, leave=True, desc=desc)
         it_counter = 0
-        self.step = 0
+        self.step = 0  # TODO -1 to make eval as first thing
         best_ts_loss = float("inf")
         for self.epoch in range(config["train"]["n_epochs"]):  # for each epoch
             for song_it, batch in enumerate(tr_loader):  # for each song
                 for bar_it in range(batch[0].shape[2]):  # for each bar groups
+
                     # Train
+                    n_tokens = 0  # useful only with few bars
+                    n_tokens += torch.numel(batch[0][:, :, bar_it, ...]) - \
+                                (batch[0][:, :, bar_it, ...] == config["tokens"]["pad"]).sum().item() - \
+                                (batch[0][:, :, bar_it, ...] == config["tokens"]["sos"]).sum().item() - \
+                                (batch[0][:, :, bar_it, ...] == config["tokens"]["eos"]).sum().item()
+                    if n_tokens == 0:
+                        print("Empty bars skipped")
+                        continue
                     mb = ()
                     for elem in batch:  # create mb
                         mb = mb + (elem[:, :, bar_it, ...],)
                     tr_losses = self.run_mb(mb)
-                    self.log_to_wandb(tr_losses)
+                    self.log_losses(tr_losses)
                     train_progress.update()
                     self.step += 1
 
@@ -413,13 +470,23 @@ class Trainer:
                         desc = "Eval epoch " + str(self.epoch) + ", mb " + str(song_it)
                         # test = None
                         # generated = None  # to suppress warning
+
+                        # Compute validation score
                         for test in tqdm(ts_loader, position=0, leave=True, desc=desc):  # remember test losses
                             for i in range(test[0].shape[2]):
-                                mb = ()
+                                n_tokens = 0  # useful only with few bars
+                                n_tokens += torch.numel(test[0][:, :, i, ...]) - \
+                                            (test[0][:, :, i, ...] == config["tokens"]["pad"]).sum().item() - \
+                                            (test[0][:, :, i, ...] == config["tokens"]["sos"]).sum().item() - \
+                                            (test[0][:, :, i, ...] == config["tokens"]["eos"]).sum().item()
+                                if n_tokens == 0:
+                                    print("Empty bars skipped")
+                                    continue
+                                ts_mb = ()
                                 for elem in test:  # create mb
-                                    mb = mb + (elem[:, :, i, ...],)
-                            ts_loss = self.run_mb(mb)
-                            ts_losses.append(ts_loss)
+                                    ts_mb = ts_mb + (elem[:, :, i, ...],)
+                                ts_loss = self.run_mb(ts_mb)
+                                ts_losses.append(ts_loss)
                         final = ()  # average losses
                         for i in range(len(ts_losses[0])):  # for each loss value
                             aux = []
@@ -427,26 +494,29 @@ class Trainer:
                                 aux.append(loss[i])
                             avg = sum(aux) / len(aux)
                             final = final + (avg,)
+
+                        # Save best models
                         if final[0] < best_ts_loss:
-                            new_model = os.path.join(self.save_path, self.model_name + '_' + str(self.epoch) + '.pt')
-                            print("Saving best model in " + new_model + ", DO NOT INTERRUPT")
-                            for filename in glob.glob(os.path.join(self.save_path, self.model_name + '*')):
+                            print("Saving best model in " + self.save_path + ", DO NOT INTERRUPT")
+                            for filename in glob.glob(os.path.join(self.save_path, '*')):
                                 os.remove(filename)
                             best_ts_loss = final[0]
-                            torch.save(self.encoder, os.path.join(self.save_path, "encoder_" + str(self.epoch) + '.pt'))
-                            # torch.save(self.latent_compressor, os.path.join(self.save_path, TODO save compressor
-                            #                                                 "latent_compressor"+str(self.epoch)+'.pt'))
-                            torch.save(self.decoder, os.path.join(self.save_path, "decoder_" + str(self.epoch) + '.pt'))
+                            torch.save(self.encoder, os.path.join(self.save_path, "encoder_" + str(self.step) + '.pt'))
+                            torch.save(self.latent_compressor, os.path.join(self.save_path,
+                                                                            "latent_compressor_"+str(self.step)+'.pt'))
+                            torch.save(self.decoder, os.path.join(self.save_path, "decoder_" + str(self.step) + '.pt'))
                             # if config["train"]["aae"]:
                             #     torch.save(self.discriminator,
                             #                os.path.join(self.save_path, "discriminator_" + str(self.epoch) + '.pt'))
                             print("Model saved")
-                        self.log_to_wandb(final)
-                        # TODO reconstruction and generation
+                        self.log_losses(final)
+
+                        # Reconstruction and generation
                         note_manager = NoteRepresentationManager()
                         # if config["train"]["aae"]:
                         #     generated = self.generate(note_manager)  # generation
-                        original, reconstructed = self.reconstruct(mb, note_manager)  # TODO just one bar?
+                        to_reconstruct = ts_mb if remote else mb
+                        original, reconstructed = self.reconstruct(to_reconstruct, note_manager)  # TODO reconstruct
                         prefix = "epoch_" + str(self.epoch) + "_mb_" + str(song_it)
                         original.write_midi(os.path.join(wandb.run.dir, prefix + "_original.mid"))
                         reconstructed.write_midi(os.path.join(wandb.run.dir, prefix + "_reconstructed.mid"))
@@ -474,89 +544,3 @@ class Trainer:
                         self.decoder.train()
                         desc = "Train epoch " + str(self.epoch) + ", mb " + str(song_it)
                         train_progress = tqdm(total=config["train"]["mb_before_eval"], position=0, leave=True, desc=desc)
-
-                # for i in range(batch[0].shape[2]):  # repeat for each bar groups
-                #
-                #     # n_tokens = 0 TODO useful only with few bars
-                #     # n_tokens += torch.numel(batch[0][:, :, i, ...]) - \
-                #     #             (batch[0][:, :, i, ...] == config["tokens"]["pad"]).sum().item() - \
-                #     #             (batch[0][:, :, i, ...] == config["tokens"]["sos"]).sum().item() - \
-                #     #             (batch[0][:, :, i, ...] == config["tokens"]["eos"]).sum().item()
-                #     # if n_tokens == 0:
-                #     #     print("Empty bars skipped")
-                #     #     continue
-                #     mb = ()
-                #     for elem in batch:  # create mb
-                #         mb = mb + (elem[:, :, i, ...],)
-                #     tr_losses = self.run_mb(mb)
-                #     self.log_to_wandb(tr_losses)
-                #     train_progress.update()
-                #     trained = True
-                #     self.step += 1
-
-        # if not config["train"]["aae"]:
-        #     return losses
-        # was_training = self.encoder.training
-        # # TODO adversarial autoencoder
-        # self.model_optimizer.zero_grad()
-        # self.discriminator.zero_grad()
-        # eps = 1e-15
-        # # TODO Train discriminator
-        # self.encoder.eval()
-        # self.compressor.eval()
-        # self.decompressor.eval()
-        # self.decoder.eval()
-        # latents = []
-        # for seq in src:
-        #     latent, e_mems, e_cmems, e_attn_loss, e_ae_loss = self.encoder(seq, e_mems, e_cmems)
-        #     latents.append(latent)
-        # latents = torch.stack(latents, dim=2)  # 1 x 4 x 10 x 301 x 32
-        # latents = self.compressor(latents)  # 1 x z_dim
-        # z_real_gauss = Variable(torch.randn_like(latents)).to(config["train"]["device"])  # TODO scale
-        # d_real_gauss = self.discriminator(z_real_gauss)
-        # d_fake_gauss = self.discriminator(latents)
-        # d_loss = -torch.mean(torch.log(d_real_gauss + eps) + torch.log(1 - d_fake_gauss + eps))
-        # if was_training:
-        #     d_loss.backward()
-        #     self.discriminator_optimizer.step()
-        # # TODO Train generator
-        # if was_training:
-        #     self.encoder.train()
-        #     self.compressor.train()
-        # latents = []
-        # for seq in src:
-        #     latent, e_mems, e_cmems, e_attn_loss, e_ae_loss = self.encoder(seq, e_mems, e_cmems)
-        #     latents.append(latent)
-        # latents = torch.stack(latents, dim=2)  # 1 x 4 x 10 x 301 x 32
-        # latents = self.compressor(latents)  # 1 x z_dim
-        # d_fake_gauss = self.discriminator(latents)
-        # g_loss = -torch.mean(torch.log(d_fake_gauss + eps))
-        # if was_training:
-        #     g_loss.backward()
-        #     self.generator_optimizer.step()
-        # if was_training:
-        #     self.decompressor.train()
-        #     self.decoder.train()
-        # losses = losses + (d_loss.item(), g_loss.item())
-        # return losses
-
-    # TODO latents compression with loss
-    # latents = torch.stack(latents, dim=2)  # 1 x 4 x 10 x 301 x 32
-    # original_latents = None
-    # z = None
-    # reconstruction_loss = 0
-    # # if self.compress:
-    # #     import copy
-    # #     loss_function = torch.nn.MSELoss()
-    # # original_latents = copy.deepcopy(latents.data)
-    # z = self.compressor(latents)  # 1 x z_dim
-    # latents = self.decompressor(z)
-    # # reconstruction_loss = loss_function(original_latents, latents)
-    # # original_latents = original_latents.transpose(0, 2)
-    # # if not self.final_stage:
-    # #     self.compressor_optimizer.zero_grad()
-    # #     reconstruction_loss.backward()
-    # #     torch.nn.utils.clip_grad_norm_(self.compressor.parameters(), 0.1)
-    # #     torch.nn.utils.clip_grad_norm_(self.decompressor.parameters(), 0.1)
-    # #     self.compressor_optimizer.step()
-    # # reconstruction_loss = reconstruction_loss.item()
