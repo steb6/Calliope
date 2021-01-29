@@ -4,6 +4,7 @@ import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
 import torch
+sns.set_theme()
 
 
 class Logger:
@@ -33,8 +34,8 @@ class Logger:
         data = pd.DataFrame(latent.reshape(-1), index=indices, columns=('value',)).reset_index()
 
         def draw_heatmap(*args, **kwargs):
-            data = kwargs.pop('data')
-            d = data.pivot(index=args[1], columns=args[0], values=args[2])
+            dt = kwargs.pop('data')
+            d = dt.pivot(index=args[1], columns=args[0], values=args[2])
             sns.heatmap(d, **kwargs)
 
         fg = sns.FacetGrid(data, col='batch')
@@ -87,3 +88,19 @@ class Logger:
         wandb.log({"Decoder source attention": [wandb.Image(plt, caption="Decoder source attention")]})
         # plt.show()
         plt.clf()
+
+    @staticmethod
+    def log_memories(e_mems, e_cmems, d_mems, d_cmems):
+        e_mems = e_mems.detach().cpu().numpy()
+        e_cmems = e_cmems.detach().cpu().numpy()
+        d_mems = d_mems.detach().cpu().numpy()
+        d_cmems = d_cmems.detach().cpu().numpy()
+        columns = ["Encoder Memory: " + str(e_mems.shape),
+                   "Encoder Compressed memory: " + str(e_cmems.shape),
+                   "Decoder Memory: " + str(d_mems.shape),
+                   "Decoder Compressed memory: " + str(d_cmems.shape)]
+
+        inputs = (e_mems[:, :, 0, :10, :], e_cmems[:, :, 0, :10, :], d_mems[:, :, 0, :10, :], d_cmems[:, :, 0, :10, :])
+        table = wandb.Table(columns=columns)
+        table.add_data(*inputs)
+        wandb.log({"memories": table})

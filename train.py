@@ -16,11 +16,11 @@ from compressive_transformer import CompressiveEncoder, CompressiveDecoder
 from compress_latents import LatentCompressor
 import numpy as np
 from PIL import Image
-from torch.nn import functional as f
-import seaborn as sns; sns.set_theme()
+import seaborn as sns
 import matplotlib.pyplot as plt
 import pandas as pd
 from logger import Logger
+from utilities import get_memories, create_trg_mask, pad_attention
 
 
 class Trainer:
@@ -66,54 +66,72 @@ class Trainer:
                 if parameter.grad is None:
                     print(module_name)
 
-    @staticmethod
-    def get_memories():
-        a = 4
-        b = config["model"]["layers"]
-        c = config["train"]["batch_size"]
-        e = config["model"]["d_model"]
-        device = config["train"]["device"]
-        mem_len = config["model"]["mem_len"]
-        cmem_len = config["model"]["cmem_len"]
-        e_mems = torch.zeros(a, b, c, mem_len, e, dtype=torch.float32, device=device)
-        e_cmems = torch.zeros(a, b, c, cmem_len, e, dtype=torch.float32, device=device)
-        d_mems = torch.zeros(a, b, c, mem_len, e, dtype=torch.float32, device=device)
-        d_cmems = torch.zeros(a, b, c, cmem_len, e, dtype=torch.float32, device=device)
-        return e_mems, e_cmems, d_mems, d_cmems
-
-    @staticmethod
-    def create_trg_mask(trg):
-        trg_mask = np.full(trg.shape + (trg.shape[-1],), True)
-        for b in range(config["train"]["batch_size"]):
-            for i in range(4):
-                line_mask = trg[b][i] != config["tokens"]["pad"]
-                pad_mask = np.matmul(line_mask[:, np.newaxis], line_mask[np.newaxis, :])
-                subsequent_mask = np.expand_dims(np.tril(np.ones((trg.shape[-1], trg.shape[-1]))), (0, 1))
-                subsequent_mask = subsequent_mask.astype(np.bool)
-                trg_mask[b][i] = pad_mask & subsequent_mask
-        trg_mask = torch.BoolTensor(trg_mask).to(config["train"]["device"])
-        return trg_mask
+    def generate(self, note_manager):
+        latents = torch.randn((1, config["model"]["z_tot_dim"])).to(config["train"]["device"])
+        latents = self.decompressor(latents)
+        latents = latents.transpose(0, 2)
+        _, _, d_mems, d_cmems = self.get_memories()
+        outs = []
+        for latent in latents:
+            seed = torch.empty(4, config["train"]["batch_size"], 0, dtype=torch.long).to(config["train"]["device"])
+            for _ in range(config["model"]["seq_len"]):
+                out, _, _, _, _ = self.decoder(latent, seed, d_mems, d_cmems)
+                out = torch.max(out, dim=-2).indices
+                out = out.transpose(1, 2).transpose(0, 1)
+                seed = torch.cat((seed, out[..., -1:]), dim=-1)
+            out, d_mems, d_cmems, _, _ = self.decoder(latent, seed, d_mems, d_cmems)
+            out = torch.max(out, dim=-2).indices
+            out = out.transpose(1, 2)
+            outs.append(out[..., 1:])
+        outs = torch.stack(outs, dim=2)
+        outs = outs.reshape(config["train"]["batch_size"], 4, -1)
+        outs = outs[0]
+        generated = note_manager.reconstruct_music(outs.cpu().numpy())
+        return generated
 
     def greedy_decoding(self, latent, src_mask, d_mems, d_cmems):
         trg = np.full((config["train"]["batch_size"], 4, 1), config["tokens"]["sos"])
         for _ in range(config["model"]["seq_len"] - 1):
-            trg_mask = self.create_trg_mask(trg)
+            trg_mask = create_trg_mask(trg)
             trg = torch.LongTensor(trg).to(config["train"]["device"])
             out, _, _, _, _ = self.decoder(trg, latent, src_mask, trg_mask, d_mems, d_cmems)
             out = torch.max(out, dim=-2).indices
             out = out.transpose(1, 2)
             trg = torch.cat((trg, out[..., -1:]), dim=-1)
             trg = trg.detach().cpu().numpy()
-        trg_mask = self.create_trg_mask(trg)
+        trg_mask = create_trg_mask(trg)
         trg = torch.LongTensor(trg).to(config["train"]["device"])
         return trg, trg_mask
 
-    @staticmethod
-    def pad_attention(attentions):  # pad list of array to be the same size
-        length = max([s.shape[-1] for s in attentions])
-        for count, attention in enumerate(attentions):
-            attentions[count] = f.pad(attention, (length - attention.shape[-1], 0))
-        return torch.mean(torch.stack(attentions, dim=0), dim=0)
+    def reconstruct(self, batch, note_manager):
+        srcs, trgs, src_masks, trg_masks, _ = batch
+        srcs = torch.LongTensor(srcs.long()).to(config["train"]["device"]).transpose(0, 2)
+        trgs = torch.LongTensor(trgs.long()).to(config["train"]["device"]).transpose(0, 2)
+        src_masks = torch.BoolTensor(src_masks).to(config["train"]["device"]).transpose(0, 2)
+        trg_masks = torch.BoolTensor(trg_masks).to(config["train"]["device"]).transpose(0, 2)
+        e_mems, e_cmems, d_mems, d_cmems = get_memories()
+        outs = []
+        latent = None
+        for src, src_mask in zip(srcs, src_masks):
+            latent, e_mems, e_cmems, _, _ = self.encoder(src, src_mask, e_mems, e_cmems)
+        latent = self.latent_compressor(latent)  # 1 x z_dim
+        latent = latent.transpose(0, 1)
+        for trg, src_mask, trg_mask in zip(trgs, src_masks, trg_masks):
+            # trg, trg_mask = self.greedy_decoding(latent, src_mask, d_mems, d_cmems)
+            out, _, _, d_mems, d_cmems, _ = self.decoder(trg, trg_mask, src_mask, latent, d_mems, d_cmems)
+            outs.append(out)
+        outs = torch.stack(outs, dim=1)
+        # outs = outs.reshape(config["train"]["batch_size"], -1, config["tokens"]["vocab_size"], 4)
+        outs = outs.permute(0, 4, 1, 2, 3)
+        outs = torch.max(outs, dim=-1).indices
+        outs = outs[0]
+        srcs = srcs.permute(2, 1, 0, 3)
+        # srcs = srcs.reshape(config["train"]["batch_size"], 4, -1)
+        srcs = srcs[0]
+        original = note_manager.reconstruct_music(srcs.cpu().numpy())
+        reconstructed = note_manager.reconstruct_music(outs.cpu().numpy())
+        # reconstructed = note_manager.cut_song(reconstructed, original.get_end_time())
+        return original, reconstructed
 
     def run_mb(self, batch):
         # SETUP VARIABLES
@@ -130,7 +148,7 @@ class Trainer:
         dec_self_weights = []
         dec_src_weights = []
         latent = None
-        e_mems, e_cmems, d_mems, d_cmems = self.get_memories()
+        e_mems, e_cmems, d_mems, d_cmems = get_memories()
 
         # Encode
         for src, src_mask in zip(srcs, src_masks):
@@ -166,9 +184,9 @@ class Trainer:
         # SOME TESTS
         if self.encoder.training:
             if self.step % config["train"]["after_mb_log_attn_img"] == 0:
-                enc_self_weights = self.pad_attention(enc_self_weights)
-                dec_self_weights = self.pad_attention(dec_self_weights)
-                dec_src_weights = self.pad_attention(dec_src_weights)
+                enc_self_weights = pad_attention(enc_self_weights)
+                dec_self_weights = pad_attention(dec_self_weights)
+                dec_src_weights = pad_attention(dec_src_weights)
                 self.logger.log_attn_heatmap(enc_self_weights, dec_self_weights, dec_src_weights)
             if self.step % config["train"]["after_mb_log_memories"] == 0:
                 self.logger.log_memories(e_mems, e_cmems, d_mems, d_cmems)
@@ -190,59 +208,6 @@ class Trainer:
         losses = (loss.item(), e_attn_losses.item(), d_attn_losses.item(), *loss_items)
 
         return losses
-
-    def reconstruct(self, batch, note_manager):
-        srcs, trgs, src_masks, trg_masks, _ = batch
-        srcs = torch.LongTensor(srcs.long()).to(config["train"]["device"]).transpose(0, 2)
-        trgs = torch.LongTensor(trgs.long()).to(config["train"]["device"]).transpose(0, 2)
-        src_masks = torch.BoolTensor(src_masks).to(config["train"]["device"]).transpose(0, 2)
-        trg_masks = torch.BoolTensor(trg_masks).to(config["train"]["device"]).transpose(0, 2)
-        e_mems, e_cmems, d_mems, d_cmems = self.get_memories()
-        outs = []
-        latent = None
-        for src, src_mask in zip(srcs, src_masks):
-            latent, e_mems, e_cmems, _, _ = self.encoder(src, src_mask, e_mems, e_cmems)
-        latent = self.latent_compressor(latent)  # 1 x z_dim
-        latent = latent.transpose(0, 1)
-        for trg, src_mask, trg_mask in zip(trgs, src_masks, trg_masks):
-            # trg, trg_mask = self.greedy_decoding(latent, src_mask, d_mems, d_cmems)
-            out, _, _, d_mems, d_cmems, _ = self.decoder(trg, trg_mask, src_mask, latent, d_mems, d_cmems)
-            outs.append(out)
-        outs = torch.stack(outs, dim=1)
-        # outs = outs.reshape(config["train"]["batch_size"], -1, config["tokens"]["vocab_size"], 4)
-        outs = outs.permute(0, 4, 1, 2, 3)
-        outs = torch.max(outs, dim=-1).indices
-        outs = outs[0]
-        srcs = srcs.permute(2, 1, 0, 3)
-        # srcs = srcs.reshape(config["train"]["batch_size"], 4, -1)
-        srcs = srcs[0]
-        original = note_manager.reconstruct_music(srcs.cpu().numpy())
-        reconstructed = note_manager.reconstruct_music(outs.cpu().numpy())
-        # reconstructed = note_manager.cut_song(reconstructed, original.get_end_time())
-        return original, reconstructed
-
-    def generate(self, note_manager):
-        latents = torch.randn((1, config["model"]["z_tot_dim"])).to(config["train"]["device"])
-        latents = self.decompressor(latents)
-        latents = latents.transpose(0, 2)
-        _, _, d_mems, d_cmems = self.get_memories()
-        outs = []
-        for latent in latents:
-            seed = torch.empty(4, config["train"]["batch_size"], 0, dtype=torch.long).to(config["train"]["device"])
-            for _ in range(config["model"]["seq_len"]):
-                out, _, _, _, _ = self.decoder(latent, seed, d_mems, d_cmems)
-                out = torch.max(out, dim=-2).indices
-                out = out.transpose(1, 2).transpose(0, 1)
-                seed = torch.cat((seed, out[..., -1:]), dim=-1)
-            out, d_mems, d_cmems, _, _ = self.decoder(latent, seed, d_mems, d_cmems)
-            out = torch.max(out, dim=-2).indices
-            out = out.transpose(1, 2)
-            outs.append(out[..., 1:])
-        outs = torch.stack(outs, dim=2)
-        outs = outs.reshape(config["train"]["batch_size"], 4, -1)
-        outs = outs[0]
-        generated = note_manager.reconstruct_music(outs.cpu().numpy())
-        return generated
 
     def train(self):
 
