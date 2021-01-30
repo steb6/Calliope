@@ -6,7 +6,7 @@ import numpy as np
 from tqdm.auto import tqdm
 from manage_time_signature import TimeSignatureManager
 import copy
-from operator import add
+import matplotlib.pyplot as plt
 from config import config
 # 100'000 songs take 400 GB
 
@@ -27,6 +27,8 @@ class NoteRepresentationManager:
                             config["tokens"]["duration_first"]]
         self.time_signature_manager = TimeSignatureManager()  # it uses only signature
         self.count = 0
+        self.bar_lengths = []
+        self.song_lengths = []
 
     def filter_song(self, s):
         """
@@ -63,21 +65,11 @@ class NoteRepresentationManager:
         if drum is None or guitar is None or bass is None or strings is None:
             return None
         new = muspy.Music(tempos=[muspy.Tempo(time=0, qpm=120)],  # default tempo
-                          time_signatures=s.time_signatures if len(s.time_signatures) > 0 else
-                          [muspy.TimeSignature(time=0, numerator=4, denominator=4)],  # default time signature
+                          time_signatures=[muspy.TimeSignature(time=0, numerator=4, denominator=4)],
                           resolution=config["data"]["resolution"],  # default resolution
                           )
         new.tracks = [drum, guitar, bass, strings]
         return new
-
-    def add_tokens(self, t, i, tokens):
-        if i + len(tokens) < config["data"]["max_track_length"]:
-            for tk in tokens:
-                t[i] = tk
-                i += 1
-            return t, i, True
-        self.log.write(str(self.count) + ": Reached max length of track\n")
-        return t, i, False
 
     @staticmethod
     def min_max_scaling(value, old_interval, new_interval):
@@ -92,9 +84,6 @@ class NoteRepresentationManager:
         track = np.full((config["data"]["max_bars"], config["data"]["max_bar_length"]), config["tokens"]["pad"],
                         dtype=np.int16)
         time_signature = 4  # default time signature, if none starts from 0
-        signatures = list(s.time_signatures)
-        if len(signatures) == 0:
-            signatures.append(muspy.TimeSignature(time=0, numerator=4, denominator=4))
         try:
             notes = s.to_note_representation()
         except Exception as e:
@@ -103,28 +92,17 @@ class NoteRepresentationManager:
         i = 0  # bar index
         j = 0  # token index
         for n, note in enumerate(notes):  # for all note in the track
-            for signature in signatures:  # If there is an activated signature
-                if signature.time == 0:
-                    num = signature.numerator
-                    den = signature.denominator
-                    res = self.time_signature_manager.from_fraction_to_time_and_token(num, den)
-                    if res is None:
-                        self.log.write(
-                            str(self.count) +
-                            ": Time signature not known: {} / {}".format(signature.numerator, signature.denominator))
-                        return None
-                    time_signature, tok = res
-                    signatures.remove(signature)
             while note[0] >= config["data"]["resolution"] * time_signature:
-                if i < config["data"]["max_bars"]-1:  # TODO check
+                if i < config["data"]["max_bars"]-1:
                     i += 1
+                    self.bar_lengths.append(j)  # empty bar
                     j = 0
                 else:
-                    self.log.write(str(self.count)+": Maximum number of lines reached\n")
+                    self.log.write(str(self.count)+": Maximum number of bars reached\n")
+                    # TODO count total number of bar, add it to j and log to song_lengths
+                    self.song_lengths.append(i)
                     return track  # truncate song: no more space for bars
                 notes[n:, 0] -= round(config["data"]["resolution"] * time_signature)  # decrease all time measures
-                for signature in signatures:
-                    signature.time -= config["data"]["resolution"] * time_signature
             if not note[0] < config["tokens"]["time_n_values"]:  # check value of time
                 self.log.write(str(self.count) + ": Invalid time: " + str(note) + '\n')
                 continue  # skip note: invalid time
@@ -144,7 +122,10 @@ class NoteRepresentationManager:
                 j += 4
             else:
                 self.log.write(str(self.count) + ": Reached max bar length\n")
+                self.bar_lengths.append(j)  # TODO fix
+                # TODO count total number of token notes, add it to i and log to bar_lengths
                 continue
+        self.song_lengths.append(i)
         return track
 
     def transform_song(self, s):
@@ -181,7 +162,7 @@ class NoteRepresentationManager:
             track = muspy.Track(is_drum=i == 0, program=config["data"]["reconstruction_programs"][i])
             for bar in instrument:
                 # track.notes.append(muspy.Note(time=time, pitch=60, duration=12, velocity=127))  # TODO remove
-                while len(bar) > 4 and bar[0] != config["tokens"]["pad"]:  # TODO check
+                while len(bar) > 4 and bar[0] != config["tokens"]["pad"]:
                     if self.it_is_a_note(bar[0], bar[1], bar[2], bar[3]):
                         note = muspy.Note(bar[0] + time - config["tokens"]["time_first"],
                                           bar[1] - config["tokens"]["pitch_first"],
@@ -193,29 +174,11 @@ class NoteRepresentationManager:
                         bar = bar[4:]
                     else:
                         bar = bar[1:]
-                # estimate time signature
                 time += round(config["data"]["resolution"]*4)
             music.append(track)
         music.tempos.append(muspy.Tempo(time=0, qpm=120))
-        music.time_signatures.append(muspy.TimeSignature(time=0, numerator=4, denominator=4))  # TODO check
+        music.time_signatures.append(muspy.TimeSignature(time=0, numerator=4, denominator=4))
         return music
-
-    @staticmethod
-    def cut_song(song, end_time):
-        cut_song = muspy.Music()
-        for track in song.tracks:
-            cut_track = muspy.Track(program=track.program, is_drum=track.is_drum)
-            for note in track.notes:
-                if note.time < end_time:
-                    cut_track.notes.append(note)
-            cut_song.tracks.append(cut_track)
-        for tempo in song.tempos:
-            if tempo.time < end_time:
-                cut_song.tempos.append(tempo)
-        for signature in song.time_signatures:
-            if signature.time < end_time:
-                cut_song.time_signatures.append(signature)
-        return cut_song
 
     def convert_dataset(self):
         """
@@ -236,7 +199,6 @@ class NoteRepresentationManager:
         os.makedirs(config["paths"]["dataset"])
         self.log = open(self.log_file, "w")
         self.log.write("Log of dataset_converter, to check if it is working right\n")
-        # lengths = []
         for subdir, dirs, files in os.walk(raw_midi):  # iterate over all subdirectories
             for filename in files:  # iterate over all files
                 if config["data"]["early_stop"] == 0 and self.count > 0:  # if not early stop, update bar anyway
@@ -257,22 +219,22 @@ class NoteRepresentationManager:
                 # for elem in tensor_song:
                 # lengths.append(len(elem))
                 # TODO test
-                # try:
-                #     song.write_midi("before.mid")
-                # except Exception as e:
-                #     self.log.write(e.__str__()+'\n')
-                #     print(e.__str__()+'\n')
-                # try:
-                #     filtered_song.write_midi("middle.mid")
-                # except Exception as e:
-                #     self.log.write(e.__str__()+'\n')
-                #     print(e.__str__()+'\n')
-                # try:
-                #     reconstructed_music = self.reconstruct_music(tensor_song)
-                #     reconstructed_music.write_midi("after.mid")
-                # except Exception as e:
-                #     self.log.write(e.__str__()+'\n')
-                #     print(e.__str__()+'\n')
+                try:
+                    song.write_midi("before.mid")
+                except Exception as e:
+                    self.log.write(e.__str__()+'\n')
+                    print(e.__str__()+'\n')
+                try:
+                    filtered_song.write_midi("middle.mid")
+                except Exception as e:
+                    self.log.write(e.__str__()+'\n')
+                    print(e.__str__()+'\n')
+                try:
+                    reconstructed_music = self.reconstruct_music(tensor_song)
+                    reconstructed_music.write_midi("after.mid")
+                except Exception as e:
+                    self.log.write(e.__str__()+'\n')
+                    print(e.__str__()+'\n')
                 # TODO end test
                 with open(os.path.join(config["paths"]["dataset"], str(self.count) + '.pickle'), 'wb') as f:
                     pickle.dump(tensor_song, f)
@@ -281,10 +243,19 @@ class NoteRepresentationManager:
                     progbar.update()
                     if self.count >= config["data"]["early_stop"]:
                         self.log.close()
-                        # import matplotlib.pyplot as plt
-                        # plt.hist(lengths, density=True, bins=30)  # `density=False` would make counts
-                        # plt.ylabel('Probability')
-                        # plt.xlabel('Data')
-                        # plt.show()
+                        self.plot_lengths()
                         return
+        self.plot_lengths()
         self.log.close()
+
+    def plot_lengths(self):
+        plt.hist(self.bar_lengths, density=True, bins=30)  # `density=False` would make counts
+        plt.ylabel('Number of bar with that length')
+        plt.xlabel('Bar length')
+        plt.savefig("bar_length_distribution.png")
+        plt.close()
+        plt.hist(self.song_lengths, density=True, bins=30)  # `density=False` would make counts
+        plt.ylabel('Number of song with that bars')
+        plt.xlabel('Number of bars')
+        plt.savefig("song_length_distribution.png")
+        plt.close()

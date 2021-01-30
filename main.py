@@ -2,11 +2,7 @@ from config import set_freer_gpu
 from create_bar_dataset import NoteRepresentationManager
 from config import config
 from train import Trainer
-# from train_aae import AAETrainer
 import shutil
-import torch
-import os
-
 
 # TO COPY: scp -r C:\Users\berti\PycharmProjects\MusAE\*.py berti@131.114.137.168:MusAE
 # TO CONNECT: ssh berti@131.114.137.168
@@ -19,7 +15,7 @@ import os
 # TO GET RESULTS: scp -r berti@131.114.137.168:MusAE/2020* C:\Users\berti\PycharmProjects\MusAE\remote_results
 
 
-def train_ct():
+if __name__ == "__main__":  # TODO put here assert I guess
     set_freer_gpu()
 
     if config["train"]["create_dataset"]:
@@ -29,9 +25,3 @@ def train_ct():
 
     trainer = Trainer()
     trainer.train()
-
-
-if __name__ == "__main__":  # TODO put here assert I guess
-    # assert config["model"]["total_seq_len"] % config["model"]["seq_len"] == 0, 'adjust total_seq_len seq_len'
-    train_ct()
-    # train_aae()

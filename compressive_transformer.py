@@ -63,7 +63,8 @@ class CompressiveEncoder(nn.Module):
         cmems = torch.stack([d_cmem, b_cmem, g_cmem, s_cmem])
         latents = torch.stack([d_z, b_z, g_z, s_z], dim=1)
         aux_loss = torch.stack((d_l, b_l, g_l, s_l)).mean()
-        aws = torch.mean(torch.stack([daw, baw, gaw, saw], dim=0), dim=0)
+        # aws = torch.mean(torch.stack([daw, baw, gaw, saw], dim=0), dim=0)
+        aws = torch.stack([daw, baw, gaw, saw], dim=0)
         return latents, mems, cmems, aux_loss, aws
 
 
@@ -108,7 +109,7 @@ class CompressiveDecoder(nn.Module):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
-    def forward(self, trg, trg_mask, src_mask, latent, d_mems, d_cmems):  # TODO pass compress memories
+    def forward(self, trg, trg_mask, src_mask, latent, d_mems, d_cmems):
         d_out, d_self_w, d_src_w, d_mem, d_cmem, d_loss = self.drums_decoder(trg[0, ...], trg_mask[0, ...],
                                                                              src_mask[0, ...], latent,
                                                                              d_mems[0, ...], d_cmems[0, ...],
@@ -131,8 +132,10 @@ class CompressiveDecoder(nn.Module):
         output = self.generator(output)
         aux_loss = torch.stack((d_loss, b_loss, g_loss, s_loss))
         aux_loss = torch.mean(aux_loss)
-        self_weights = torch.mean(torch.stack([d_self_w, b_self_w, g_self_w, s_self_w], dim=0), dim=0)
-        src_weights = torch.mean(torch.stack([d_src_w, b_src_w, g_src_w, s_src_w]), dim=0)
+        # self_weights = torch.mean(torch.stack([d_self_w, b_self_w, g_self_w, s_self_w], dim=0), dim=0)
+        # src_weights = torch.mean(torch.stack([d_src_w, b_src_w, g_src_w, s_src_w]), dim=0)
+        self_weights = torch.stack([d_self_w, b_self_w, g_self_w, s_self_w], dim=0)
+        src_weights = torch.stack([d_src_w, b_src_w, g_src_w, s_src_w])
         return output, self_weights, src_weights, mems, cmems, aux_loss
 
 
@@ -157,7 +160,8 @@ class Encoder(nn.Module):
             new_mems.append(new_mem)
             new_cmems.append(new_cmem)
             attn_losses = attn_losses + attn_loss
-        self_weights = torch.mean(torch.stack(self_weights, dim=0), dim=(0, 1, 2))
+        # self_weights = torch.mean(torch.stack(self_weights, dim=0), dim=
+        self_weights = torch.stack(self_weights, dim=0)
         new_mems = torch.stack(new_mems)
         new_cmems = torch.stack(new_cmems)
         attn_loss = attn_losses / self.N  # normalize w.r.t number of layers
@@ -190,8 +194,10 @@ class Decoder(nn.Module):
             new_mems.append(new_mem)
             new_cmems.append(new_cmem)
             attn_losses = attn_losses + attn_loss
-        src_weights = torch.mean(torch.stack(src_weights, dim=0), dim=(0, 1, 2))
-        self_weights = torch.mean(torch.stack(self_weights, dim=0), dim=(0, 1, 2))  # mn of layer batch instruments
+        # src_weights = torch.mean(torch.stack(src_weights, dim=0), dim=(0, 1, 2))
+        # self_weights = torch.mean(torch.stack(self_weights, dim=0), dim=(0, 1, 2))  # mn of layer batch instruments
+        src_weights = torch.stack(src_weights, dim=0)
+        self_weights = torch.stack(self_weights, dim=0)
         new_mems = torch.stack(new_mems)
         new_cmems = torch.stack(new_cmems)
         attn_losses = attn_losses / self.N  # normalize w.r.t number of layers

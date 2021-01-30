@@ -1,9 +1,10 @@
 import wandb
-import config
+from config import config
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
 import torch
+import numpy as np
 sns.set_theme()
 
 
@@ -26,81 +27,116 @@ class Logger:
 
     @staticmethod
     def log_latent(latent):
-
-        latent = latent.transpose(0, 1).detach().cpu().numpy()  # transpose sequence length and batch
-
-        indices = pd.MultiIndex.from_product((range(latent.shape[0]), range(latent.shape[1]), range(latent.shape[2])),
-                                             names=('batch', 'seq_len', 'dim'))
-        data = pd.DataFrame(latent.reshape(-1), index=indices, columns=('value',)).reset_index()
-
-        def draw_heatmap(*args, **kwargs):
-            dt = kwargs.pop('data')
-            d = dt.pivot(index=args[1], columns=args[0], values=args[2])
-            sns.heatmap(d, **kwargs)
-
-        fg = sns.FacetGrid(data, col='batch')
-        fg.map_dataframe(draw_heatmap, 'seq_len', 'dim', 'value', cbar=False)
-        # plt.show()
+        latent = latent.transpose(0, 1)[0].transpose(0, 1).detach().cpu().numpy()  # transpose sequence length and batch
+        T = [{'img': 0, 'picture': latent}]
+        df = pd.DataFrame(T)
+        true_height = latent.shape[-2]
+        true_width = latent.shape[-1]
+        aspect = true_width / true_height
+        grid = sns.FacetGrid(df, row='img', aspect=aspect)
+        grid.map(lambda x, **kwargs: (sns.heatmap(x.values[0]), plt.grid(False)), 'picture')
         wandb.log({"Latent": [wandb.Image(plt, caption="Latent")]})
-        plt.clf()
+        plt.close()
+        # sns.heatmap(latent)
+        # # plt.show()
+        # wandb.log({"Latent": [wandb.Image(plt, caption="Latent")]})
+        # plt.close()
 
     @staticmethod
-    def log_examples(e_in, d_in, pred, exp, lat=None, z=None, r_lat=None):
-        enc_input = e_in.transpose(0, 2)[0].reshape(4, -1).detach().cpu().numpy()
-        dec_input = d_in.transpose(0, 2)[0].reshape(4, -1).detach().cpu().numpy()
-        predicted = torch.max(pred, dim=-2).indices.permute(0, 2, 1)[0].reshape(4, -1).detach().cpu().numpy()
-        expected = exp[0].transpose(0, 1).detach().cpu().numpy()
+    def log_examples(e_in, d_in, pred, exp):
+        enc_input = e_in.transpose(0, 2)[0].detach().cpu().numpy()
+        dec_input = d_in.transpose(0, 2)[0].detach().cpu().numpy()
+        predicted = torch.max(pred[0], dim=-2).indices.permute(0, 1).reshape(4, enc_input.shape[1], -1).transpose(0, 1).detach().cpu().numpy()
+        expected = exp[0].transpose(0, 1).reshape(4, enc_input.shape[1], -1).transpose(0, 1).detach().cpu().numpy()
+
+        T = []
+        step = 0
+        for b in range(predicted.shape[0]):
+            T.append({'bar': step,
+                      'picture': predicted[b, :, :],
+                      })
+            step += 1
+            T.append({'bar': step,
+                      'picture': expected[b, :, :],
+                      })
+            step += 1
+        df = pd.DataFrame(T)
+        true_height = predicted.shape[0]
+        true_width = predicted.shape[-1]
+        aspect = true_width/true_height
+        grid = sns.FacetGrid(df, row='bar', aspect=aspect)
+        grid.map(lambda x, **kwargs: (sns.heatmap(x.values[0], annot=True, fmt="d"), plt.grid(False)), 'picture')
+        wandb.log({"predicted and expected": [wandb.Image(plt, caption="predicted and expected")]})
+        plt.close()
         columns = ["Encoder Input: " + str(enc_input.shape),
-                   "Decoder Input: " + str(dec_input.shape),
-                   "Predicted: " + str(predicted.shape),
-                   "Expected: " + str(expected.shape)]
-        inputs = (enc_input[:, :10], dec_input[:, :10], predicted[:, :10], expected[:, :10])
-        if lat is not None and type(lat) is not list:
-            latent = lat.detach().cpu().numpy()
-            inputs = inputs + (latent,)
-            columns.append("Latents: " + str(latent.shape))
-        if z is not None:
-            zeta = z.detach().cpu().numpy()
-            inputs = inputs + (zeta,)
-            columns.append("Z: " + str(z.shape))
-        if r_lat is not None:
-            recon_l = r_lat.detach().cpu().numpy()
-            inputs = inputs + (recon_l,)
-            columns.append("Real latents: " + str(recon_l.shape))
+                   "Decoder Input: " + str(dec_input.shape)]
+        inputs = (enc_input, dec_input)
         table = wandb.Table(columns=columns)
         table.add_data(*inputs)
-        wandb.log({"out": table})
+        wandb.log({"Inputs": table})
 
     @staticmethod
     def log_attn_heatmap(enc_self_weights, dec_self_weights, dec_src_weights):
-        enc_self_img = enc_self_weights.detach().cpu().numpy()
-        ax1 = sns.heatmap(enc_self_img)
-        wandb.log({"Encoder self attention": [wandb.Image(plt, caption="Encoder self attention")]})
-        # plt.show()
-        plt.clf()
-        dec_self_img = dec_self_weights.detach().cpu().numpy()
-        ax2 = sns.heatmap(dec_self_img)
-        wandb.log({"Decoder self attention": [wandb.Image(plt, caption="Decoder self attention")]})
-        # plt.show()
-        plt.clf()
-        dec_src_img = dec_src_weights.detach().cpu().numpy()
-        ax3 = sns.heatmap(dec_src_img)
-        wandb.log({"Decoder source attention": [wandb.Image(plt, caption="Decoder source attention")]})
-        # plt.show()
-        plt.clf()
+        # seq, tracks, layer, batch, heads, attn1, attn2
+        enc_self_weights = torch.mean(enc_self_weights[:, :, :, 0, ...], dim=0).detach().cpu().numpy()
+        dec_self_weights = torch.mean(dec_self_weights[:, :, :, 0, ...], dim=0).detach().cpu().numpy()
+        dec_src_weights = torch.mean(dec_src_weights[:, :, :, 0, ...], dim=0).detach().cpu().numpy()
+        # tracks, layer, heads, attn1, attn2
+
+        instruments = ["drums", "bass", "guitar", "strings"]
+        weights = [enc_self_weights, dec_self_weights, dec_src_weights]
+        weights_name = ["encoder self attention", "decoder self attention", "decoder source weights"]
+
+        for i, instrument in enumerate(instruments):
+            for w, weight in enumerate(weights):
+                T = []
+                condition1 = range(config["model"]["layers"])
+                condition2 = range(config["model"]["heads"])
+                for c1 in np.unique(condition1):
+                    for c2 in np.unique(condition2):
+                        T.append({'layer': c1,
+                                  'head': c2,
+                                  'picture': weight[i, c1, c2, ...],
+                                  })
+                df = pd.DataFrame(T)
+                true_height = weight.shape[-2]
+                true_width = weight.shape[-1]
+                aspect = true_width/true_height
+                grid = sns.FacetGrid(df, row='layer', col='head', aspect=aspect,
+                                     row_order=list(reversed(range(config["model"]["layers"]))))
+                grid.map(lambda x, **kwargs: (sns.heatmap(x.values[0]), plt.grid(False)), 'picture')
+                title = instrument+' '+weights_name[w]
+                wandb.log({title: [wandb.Image(plt, caption=title)]})
+                plt.close()
 
     @staticmethod
-    def log_memories(e_mems, e_cmems, d_mems, d_cmems):
-        e_mems = e_mems.detach().cpu().numpy()
-        e_cmems = e_cmems.detach().cpu().numpy()
-        d_mems = d_mems.detach().cpu().numpy()
-        d_cmems = d_cmems.detach().cpu().numpy()
-        columns = ["Encoder Memory: " + str(e_mems.shape),
-                   "Encoder Compressed memory: " + str(e_cmems.shape),
-                   "Decoder Memory: " + str(d_mems.shape),
-                   "Decoder Compressed memory: " + str(d_cmems.shape)]
+    def log_memories(e_mems, e_cmems, d_mems, d_cmems):  # track layer batch seq dim
+        e_mems = e_mems[:, :, 0, ...].transpose(-2, -1).detach().cpu().numpy()
+        e_cmems = e_cmems[:, :, 0, ...].transpose(-2, -1).detach().cpu().numpy()
+        d_mems = d_mems[:, :, 0, ...].transpose(-2, -1).detach().cpu().numpy()
+        d_cmems = d_cmems[:, :, 0, ...].transpose(-2, -1).detach().cpu().numpy()
 
-        inputs = (e_mems[:, :, 0, :10, :], e_cmems[:, :, 0, :10, :], d_mems[:, :, 0, :10, :], d_cmems[:, :, 0, :10, :])
-        table = wandb.Table(columns=columns)
-        table.add_data(*inputs)
-        wandb.log({"memories": table})
+        instruments = ["drums", "bass", "guitar", "strings"]
+
+        memories = [e_mems, e_cmems, d_mems, d_cmems]
+        mem_name = ["encoder memory", "encoder compressed memory", "decoder memory", "decoder compressed memory"]
+
+        for i, mem in enumerate(memories):
+            T = []
+            condition1 = range(len(instruments))
+            condition2 = range(config["model"]["layers"])
+            for c1 in np.unique(condition1):
+                for c2 in np.unique(condition2):
+                    T.append({'instrument': c1,
+                              'layer': c2,
+                              'picture': mem[c1, c2, ...],
+                              })
+            df = pd.DataFrame(T)
+            true_height = mem.shape[-2]
+            true_width = mem.shape[-1]
+            aspect = true_width/true_height
+            grid = sns.FacetGrid(df, row='instrument', col='layer', aspect=aspect)
+            grid.map(lambda x, **kwargs: (sns.heatmap(x.values[0]), plt.grid(False)), 'picture')
+            title = mem_name[i]
+            wandb.log({title: [wandb.Image(plt, caption=title)]})
+            plt.close()

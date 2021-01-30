@@ -70,7 +70,7 @@ class Trainer:
         latents = torch.randn((1, config["model"]["z_tot_dim"])).to(config["train"]["device"])
         latents = self.decompressor(latents)
         latents = latents.transpose(0, 2)
-        _, _, d_mems, d_cmems = self.get_memories()
+        _, _, d_mems, d_cmems = get_memories()
         outs = []
         for latent in latents:
             seed = torch.empty(4, config["train"]["batch_size"], 0, dtype=torch.long).to(config["train"]["device"])
@@ -184,9 +184,12 @@ class Trainer:
         # SOME TESTS
         if self.encoder.training:
             if self.step % config["train"]["after_mb_log_attn_img"] == 0:
-                enc_self_weights = pad_attention(enc_self_weights)
-                dec_self_weights = pad_attention(dec_self_weights)
-                dec_src_weights = pad_attention(dec_src_weights)
+                # enc_self_weights = pad_attention(enc_self_weights)
+                # dec_self_weights = pad_attention(dec_self_weights)
+                # dec_src_weights = pad_attention(dec_src_weights)
+                enc_self_weights = torch.stack(enc_self_weights)
+                dec_self_weights = torch.stack(dec_self_weights)
+                dec_src_weights = torch.stack(dec_src_weights)
                 self.logger.log_attn_heatmap(enc_self_weights, dec_self_weights, dec_src_weights)
             if self.step % config["train"]["after_mb_log_memories"] == 0:
                 self.logger.log_memories(e_mems, e_cmems, d_mems, d_cmems)
@@ -270,6 +273,8 @@ class Trainer:
         assert given <= max_range, "Given {} as input to model with max range {}".format(given, max_range)
         print("Giving ", given, " as input to model with a maximum range of ", max_range)
         print("Giving ", len(tr_loader), " training samples and ", len(ts_loader), " test samples")
+        print("Giving ", config["train"]["truncated_bars"], " bars to a model with ",
+              config["model"]["layers"], " layers")
 
         # Train
         self.encoder.train()
