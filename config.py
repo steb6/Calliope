@@ -10,12 +10,12 @@ max_bar_length = 150  # for preprocessing, seq_len, mem_len e cmem_len
 config = {
     "train": {
         "do_eval": True,
-        "aae": False,
-        "create_dataset": True,
+        "aae": True,
+        "create_dataset": False,
         "device": "cuda" if remote else "cpu",
         "batch_size": 3 if remote else 3,
         "test_size": 0.001 if remote else 0.3,  # 100 on remote  it was 0.0001 in remote
-        "truncated_bars": 22 if remote else 6,  # To truncate the song along bars
+        "truncated_bars": 16 if remote else 6,  # To truncate the song along bars
         "n_workers": 0,
         "n_epochs": 25000,
         "label_smoothing": 0.1,
@@ -36,13 +36,14 @@ config = {
         "d_model": 32,
         "heads": 4,
         "ff_mul": 2,
-        "layers": 5 if remote else 2,  # if remote else 1,  # 3 GB each
+        "layers": 4 if remote else 2,  # if remote else 1,  # 3 GB each
         "mem_len": max_bar_length,  # keep last 2 seq
         "cmem_len": max_bar_length,  # keep 4 compression
         "cmem_ratio": 4,
         "reconstruction_attn_dropout": 0.1,
         "attn_layer_dropout": 0.1,
         "ff_dropout": 0.1,
+        "discriminator_dropout": 0.1
     },
     "data": {  # Parameters to create and listen the note representation
         "max_bar_length": max_bar_length,

@@ -4,7 +4,6 @@ import sys
 import pickle
 import numpy as np
 from tqdm.auto import tqdm
-from manage_time_signature import TimeSignatureManager
 import copy
 import matplotlib.pyplot as plt
 from config import config
@@ -25,7 +24,6 @@ class NoteRepresentationManager:
         else:
             self.offsets = [config["tokens"]["time_first"], config["tokens"]["pitch_first"],
                             config["tokens"]["duration_first"]]
-        self.time_signature_manager = TimeSignatureManager()  # it uses only signature
         self.count = 0
         self.bar_lengths = []
         self.song_lengths = []
@@ -215,26 +213,23 @@ class NoteRepresentationManager:
                 tensor_song = self.transform_song(filtered_song)
                 if tensor_song is None:
                     continue
-                # TODO to save length
-                # for elem in tensor_song:
-                # lengths.append(len(elem))
                 # TODO test
-                try:
-                    song.write_midi("before.mid")
-                except Exception as e:
-                    self.log.write(e.__str__()+'\n')
-                    print(e.__str__()+'\n')
-                try:
-                    filtered_song.write_midi("middle.mid")
-                except Exception as e:
-                    self.log.write(e.__str__()+'\n')
-                    print(e.__str__()+'\n')
-                try:
-                    reconstructed_music = self.reconstruct_music(tensor_song)
-                    reconstructed_music.write_midi("after.mid")
-                except Exception as e:
-                    self.log.write(e.__str__()+'\n')
-                    print(e.__str__()+'\n')
+                # try:
+                #     song.write_midi("before.mid")
+                # except Exception as e:
+                #     self.log.write(e.__str__()+'\n')
+                #     print(e.__str__()+'\n')
+                # try:
+                #     filtered_song.write_midi("middle.mid")
+                # except Exception as e:
+                #     self.log.write(e.__str__()+'\n')
+                #     print(e.__str__()+'\n')
+                # try:
+                #     reconstructed_music = self.reconstruct_music(tensor_song)
+                #     reconstructed_music.write_midi("after.mid")
+                # except Exception as e:
+                #     self.log.write(e.__str__()+'\n')
+                #     print(e.__str__()+'\n')
                 # TODO end test
                 with open(os.path.join(config["paths"]["dataset"], str(self.count) + '.pickle'), 'wb') as f:
                     pickle.dump(tensor_song, f)

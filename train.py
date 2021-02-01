@@ -11,16 +11,12 @@ from create_bar_dataset import NoteRepresentationManager
 import glob
 import wandb
 from midi_converter import midi_to_wav
-from discriminator import Discriminator
 from compressive_transformer import CompressiveEncoder, CompressiveDecoder
 from compress_latents import LatentCompressor
 import numpy as np
-from PIL import Image
-import seaborn as sns
-import matplotlib.pyplot as plt
-import pandas as pd
 from logger import Logger
 from utilities import get_memories, create_trg_mask, pad_attention
+from discriminator import Discriminator
 
 
 class Trainer:
@@ -32,20 +28,15 @@ class Trainer:
         self.loss_computer = None
         # Models
         self.encoder = None
-        self.compressor = None
-        self.decompressor = None
+        self.latent_compressor = None
         self.decoder = None
         if config["train"]["aae"]:
             self.discriminator = None
         # Optimizers
         self.model_optimizer = None
-        self.compressor_optimizer = None
         if config["train"]["aae"]:
             self.discriminator_optimizer = None
             self.generator_optimizer = None
-        self.compress = False
-        self.final_stage = False
-        self.latent_compressor = None
 
     def test_losses(self, loss, e_attn_losses, d_attn_losses):
         losses = [loss, e_attn_losses, d_attn_losses]
@@ -225,9 +216,10 @@ class Trainer:
         self.encoder = CompressiveEncoder().to(config["train"]["device"])
         self.latent_compressor = LatentCompressor(config["model"]["d_model"]).to(config["train"]["device"])
         self.decoder = CompressiveDecoder().to(config["train"]["device"])
-        # if config["train"]["aae"]:
-        #     self.discriminator = Discriminator(config["model"]["z_i_dim"],
-        #                                        config["model"]["z_tot_dim"]).to(config["train"]["device"])
+        if config["train"]["aae"]:
+            self.discriminator = Discriminator(config["model"]["z_i_dim"],
+                                               config["model"]["z_tot_dim"],
+                                               config["model"]["discriminator_dropout"]).to(config["train"]["device"])
 
         # Create optimizers
         self.model_optimizer = CTOpt(torch.optim.Adam([{"params": self.encoder.parameters()},
@@ -236,12 +228,10 @@ class Trainer:
                                      config["train"]["warmup_steps"],
                                      (config["train"]["lr_min"], config["train"]["lr_max"]),
                                      config["train"]["decay_steps"], config["train"]["minimum_lr"])  # TODO add other
-        # if config["train"]["aae"]:
-        #     self.discriminator_optimizer = torch.optim.Adam(self.discriminator.parameters(), lr=1e-6)
-        #     self.generator_optimizer = torch.optim.Adam([{"params": self.encoder.parameters()},
-        #                                                  {"params": self.compressor.parameters()}], lr=1e-7)
-        # self.compressor_optimizer = torch.optim.Adam([{"params": self.compressor.parameters()},
-        #                                               {"params": self.decompressor.parameters()}])
+        if config["train"]["aae"]:
+            self.discriminator_optimizer = torch.optim.Adam(self.discriminator.parameters())  # TODO find lr
+            self.generator_optimizer = torch.optim.Adam([{"params": self.encoder.parameters()},
+                                                         {"params": self.latent_compressor.parameters()}])
 
         # Loss
         criterion = LabelSmoothing(size=config["tokens"]["vocab_size"],
@@ -283,7 +273,7 @@ class Trainer:
         desc = "Train epoch " + str(self.epoch) + ", mb " + str(0)
         train_progress = tqdm(total=config["train"]["mb_before_eval"], position=0, leave=True, desc=desc)
         it_counter = 0
-        self.step = 0  # TODO -1 to make eval as first thing
+        self.step = 0  # -1 to do eval in first step
         best_ts_loss = float("inf")
         for self.epoch in range(config["train"]["n_epochs"]):  # for each epoch
             for song_it, batch in enumerate(tr_loader):  # for each song
@@ -304,7 +294,6 @@ class Trainer:
                     tr_losses = self.run_mb(mb)
                     self.logger.log_losses(tr_losses, self.model_optimizer.lr, self.encoder.training)
                     train_progress.update()
-                    self.step += 1
 
                     # Eval
                     if self.step % config["train"]["mb_before_eval"] == 0 and config["train"]["do_eval"]:
@@ -390,3 +379,5 @@ class Trainer:
                         self.decoder.train()
                         desc = "Train epoch " + str(self.epoch) + ", mb " + str(song_it)
                         train_progress = tqdm(total=config["train"]["mb_before_eval"], position=0, leave=True, desc=desc)
+
+                    self.step += 1

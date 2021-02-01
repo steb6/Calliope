@@ -3,10 +3,8 @@ import torch
 import math
 from torch.nn import functional as F
 import copy
-from collections import namedtuple
 from config import config
-
-Memory = namedtuple('Memory', ['mem', 'compressed_mem'])
+from torch.autograd import Variable
 
 
 class CompressiveEncoder(nn.Module):
@@ -600,9 +598,6 @@ class MemorySelfAttention(nn.Module):
         )
 
         return logits, new_mem, new_cmem, aux_loss, weights
-
-
-from torch.autograd import Variable
 
 
 class PositionalEncoding(nn.Module):
