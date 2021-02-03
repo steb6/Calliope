@@ -23,11 +23,14 @@ class Logger:
                mode + "guitar loss": losses[4],
                mode + "bass loss": losses[5],
                mode + "strings loss": losses[6]}
+        if config["train"]["aae"]:
+            log[mode + "discriminator loss"] = losses[7]
+            log[mode + "generator loss"] = losses[8]
         wandb.log(log)
 
     @staticmethod
     def log_latent(latent):
-        latent = latent.transpose(0, 1)[0].transpose(0, 1).detach().cpu().numpy()  # transpose sequence length and batch
+        latent = latent[0].transpose(0, 1).detach().cpu().numpy()  # transpose sequence length and batch
         T = [{'img': 0, 'picture': latent}]
         df = pd.DataFrame(T)
         true_height = latent.shape[-2]
@@ -44,6 +47,7 @@ class Logger:
 
     @staticmethod
     def log_examples(e_in, d_in, pred, exp):
+        return  # TODO make this function useful
         enc_input = e_in.transpose(0, 2)[0].detach().cpu().numpy()
         dec_input = d_in.transpose(0, 2)[0].detach().cpu().numpy()
         predicted = torch.max(pred[0], dim=-2).indices.permute(0, 1).reshape(4, enc_input.shape[1], -1).transpose(0, 1).detach().cpu().numpy()

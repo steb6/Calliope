@@ -147,7 +147,8 @@ class NoteRepresentationManager:
         x2 = config["tokens"]["pitch_first"]
         x3 = config["tokens"]["duration_first"]
         x4 = config["tokens"]["velocity_first"]
-        return x1 <= t < x2 <= p < x3 <= d < x4 <= v
+        x5 = config["tokens"]["vocab_size"]
+        return x1 <= t < x2 <= p < x3 <= d < x4 <= v < x5
 
     def reconstruct_music(self, s):
         """
@@ -159,8 +160,8 @@ class NoteRepresentationManager:
             time = 0
             track = muspy.Track(is_drum=i == 0, program=config["data"]["reconstruction_programs"][i])
             for bar in instrument:
-                # track.notes.append(muspy.Note(time=time, pitch=60, duration=12, velocity=127))  # TODO remove
-                while len(bar) > 4 and bar[0] != config["tokens"]["pad"]:
+                # track.notes.append(muspy.Note(time=time, pitch=60, duration=12, velocity=127))  # bar sound
+                while len(bar) > 4:  # and bar[0] != config["tokens"]["pad"]:
                     if self.it_is_a_note(bar[0], bar[1], bar[2], bar[3]):
                         note = muspy.Note(bar[0] + time - config["tokens"]["time_first"],
                                           bar[1] - config["tokens"]["pitch_first"],

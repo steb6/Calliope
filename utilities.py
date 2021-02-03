@@ -4,10 +4,10 @@ import numpy as np
 from torch.nn import functional as f
 
 
-def get_memories():
+def get_memories(n_batch=None):
     a = 4
     b = config["model"]["layers"]
-    c = config["train"]["batch_size"]
+    c = n_batch if n_batch is not None else config["train"]["batch_size"]
     e = config["model"]["d_model"]
     device = config["train"]["device"]
     mem_len = config["model"]["mem_len"]
@@ -21,13 +21,13 @@ def get_memories():
 
 def create_trg_mask(trg):
     trg_mask = np.full(trg.shape + (trg.shape[-1],), True)
-    for b in range(config["train"]["batch_size"]):
-        for i in range(4):
-            line_mask = trg[b][i] != config["tokens"]["pad"]
+    for i in range(4):
+        for b in range(trg.shape[1]):
+            line_mask = trg[i][b] != config["tokens"]["pad"]
             pad_mask = np.matmul(line_mask[:, np.newaxis], line_mask[np.newaxis, :])
             subsequent_mask = np.expand_dims(np.tril(np.ones((trg.shape[-1], trg.shape[-1]))), (0, 1))
             subsequent_mask = subsequent_mask.astype(np.bool)
-            trg_mask[b][i] = pad_mask & subsequent_mask
+            trg_mask[i][b] = pad_mask & subsequent_mask
     trg_mask = torch.BoolTensor(trg_mask).to(config["train"]["device"])
     return trg_mask
 

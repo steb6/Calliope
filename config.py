@@ -9,7 +9,8 @@ max_bar_length = 150  # for preprocessing, seq_len, mem_len e cmem_len
 
 config = {
     "train": {
-        "do_eval": True,
+        "verbose": False,
+        "do_eval": False,
         "aae": True,
         "create_dataset": False,
         "device": "cuda" if remote else "cpu",
@@ -19,16 +20,16 @@ config = {
         "n_workers": 0,
         "n_epochs": 25000,
         "label_smoothing": 0.1,
-        "mb_before_eval": 1000 if remote else 10,  # if >= early_stopping, happens at each epoch
-        "after_mb_log_attn_img": 1000 if remote else 10,
-        "after_mb_log_examples": 1000 if remote else 10,
-        "after_mb_log_memories": 1000 if remote else 10,
-        "warmup_steps": 4000 if remote else 10,
-        "lr_min": 1e-4 if remote else 1e-2,
-        "lr_max": 1e-3 if remote else 1e-2,
-        "decay_steps": 50000 if remote else 1000000,
-        "minimum_lr": 1e-4 if remote else 1e-2,
-        "generated_iterations": 10,
+        "mb_before_eval": 1000 if remote else 1000,  # if >= early_stopping, happens at each epoch
+        "after_mb_log_attn_img": 1000 if remote else 1000,
+        "after_mb_log_examples": 1000 if remote else 1000,
+        "after_mb_log_memories": 1000 if remote else 1000,
+        "warmup_steps": 4000,
+        "lr_min": 1e-4,
+        "lr_max": 1e-3,
+        "decay_steps": 50000,
+        "minimum_lr": 1e-4,
+        "generated_iterations": 16,
         "test_loss": False,
     },
     "model": {
@@ -70,7 +71,7 @@ config = {
         "pitch_first":    4 + 128,
         "duration_first": 4 + 128*2,
         "velocity_first": 4 + 128*3,
-        "vocab_size":     4 + 128*4 + 32
+        "vocab_size":     4 + 128*3 + 32
     },
     "paths": {
         "raw_midi": "/data" if remote else "D:",

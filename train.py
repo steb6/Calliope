@@ -17,6 +17,7 @@ import numpy as np
 from logger import Logger
 from utilities import get_memories, create_trg_mask, pad_attention
 from discriminator import Discriminator
+from torch.autograd import Variable
 
 
 class Trainer:
@@ -33,23 +34,30 @@ class Trainer:
         if config["train"]["aae"]:
             self.discriminator = None
         # Optimizers
-        self.model_optimizer = None
+        self.encoder_optimizer = None
+        self.decoder_optimizer = None
         if config["train"]["aae"]:
             self.discriminator_optimizer = None
             self.generator_optimizer = None
+
+    @staticmethod
+    def get_prior(shape):
+        return Variable(torch.randn(*shape) * 5.).to(config["train"]["device"])
 
     def test_losses(self, loss, e_attn_losses, d_attn_losses):
         losses = [loss, e_attn_losses, d_attn_losses]
         names = ["loss", "e_att_losses", "d_attn_losses"]
         for ls, name in zip(losses, names):
             print("********************** Optimized by " + name)
-            self.model_optimizer.optimizer.zero_grad(set_to_none=True)
+            self.encoder_optimizer.optimizer.zero_grad(set_to_none=True)
+            self.decoder.optimizer.zero_grad(set_to_none=True)
             ls.backward(retain_graph=True)
             for model in [self.encoder, self.decoder]:  # removed latent compressor
                 for module_name, parameter in model.named_parameters():
                     if parameter.grad is not None:
                         print(module_name)
-        self.model_optimizer.optimizer.zero_grad(set_to_none=True)
+        self.encoder_optimizer.optimizer.zero_grad(set_to_none=True)
+        self.decoder.optimizer.zero_grad(set_to_none=True)
         (losses[0] + losses[1] + losses[2]).backward(retain_graph=True)
         print("********************** NOT OPTIMIZED BY NOTHING")
         for model in [self.encoder, self.decoder]:  # removed latent compressor
@@ -57,42 +65,32 @@ class Trainer:
                 if parameter.grad is None:
                     print(module_name)
 
-    def generate(self, note_manager):
-        latents = torch.randn((1, config["model"]["z_tot_dim"])).to(config["train"]["device"])
-        latents = self.decompressor(latents)
-        latents = latents.transpose(0, 2)
-        _, _, d_mems, d_cmems = get_memories()
+    def greedy_decoding(self, note_manager):  # TODO CHECK THIS
+        _, _, d_mems, d_cmems = get_memories(n_batch=1)
+        shape = (1, config["model"]["seq_len"], config["model"]["d_model"])
+        latent = self.get_prior(shape)
         outs = []
-        for latent in latents:
-            seed = torch.empty(4, config["train"]["batch_size"], 0, dtype=torch.long).to(config["train"]["device"])
-            for _ in range(config["model"]["seq_len"]):
-                out, _, _, _, _ = self.decoder(latent, seed, d_mems, d_cmems)
-                out = torch.max(out, dim=-2).indices
-                out = out.transpose(1, 2).transpose(0, 1)
-                seed = torch.cat((seed, out[..., -1:]), dim=-1)
-            out, d_mems, d_cmems, _, _ = self.decoder(latent, seed, d_mems, d_cmems)
-            out = torch.max(out, dim=-2).indices
-            out = out.transpose(1, 2)
-            outs.append(out[..., 1:])
-        outs = torch.stack(outs, dim=2)
-        outs = outs.reshape(config["train"]["batch_size"], 4, -1)
-        outs = outs[0]
-        generated = note_manager.reconstruct_music(outs.cpu().numpy())
-        return generated
-
-    def greedy_decoding(self, latent, src_mask, d_mems, d_cmems):
-        trg = np.full((config["train"]["batch_size"], 4, 1), config["tokens"]["sos"])
-        for _ in range(config["model"]["seq_len"] - 1):
-            trg_mask = create_trg_mask(trg)
+        src_mask = torch.full((4, 1, 1), True).to(config["train"]["device"])  # TODO create src mask all true
+        for b in tqdm(range(config["train"]["generated_iterations"]),
+                      desc="Generating song"):  # generate generated_iterations bars
+            trg = np.full((4, 1, 1), config["tokens"]["sos"])
             trg = torch.LongTensor(trg).to(config["train"]["device"])
-            out, _, _, _, _ = self.decoder(trg, latent, src_mask, trg_mask, d_mems, d_cmems)
+            for _ in range(config["model"]["seq_len"] - 1):  # for each token of each bar
+                trg_mask = create_trg_mask(trg.cpu().numpy())
+                out, _, _, _, _, _ = self.decoder(trg, trg_mask, src_mask, latent, d_mems, d_cmems)
+                out = torch.max(out, dim=-2).indices
+                out = out.permute(2, 0, 1)
+                trg = torch.cat((trg, out[..., -1:]), dim=-1)
+                trg = trg.detach()
+            trg_mask = create_trg_mask(trg.cpu().numpy())
+            out, _, _, d_mems, d_cmems, _ = self.decoder(trg, trg_mask, src_mask, latent, d_mems, d_cmems)
             out = torch.max(out, dim=-2).indices
-            out = out.transpose(1, 2)
-            trg = torch.cat((trg, out[..., -1:]), dim=-1)
-            trg = trg.detach().cpu().numpy()
-        trg_mask = create_trg_mask(trg)
-        trg = torch.LongTensor(trg).to(config["train"]["device"])
-        return trg, trg_mask
+            out = out.permute(2, 0, 1)
+            outs.append(out)
+        outs = torch.stack(outs)
+        outs = outs[:, :, 0, :]
+        outs = outs.transpose(0, 1).cpu().numpy()
+        return note_manager.reconstruct_music(outs)  # TODO fix format
 
     def reconstruct(self, batch, note_manager):
         srcs, trgs, src_masks, trg_masks, _ = batch
@@ -128,7 +126,7 @@ class Trainer:
         # SETUP VARIABLES
         srcs, trgs, src_masks, trg_masks, trg_ys = batch
         srcs = torch.LongTensor(srcs.long()).to(config["train"]["device"]).transpose(0, 2)
-        trgs = torch.LongTensor(trgs.long()).to(config["train"]["device"]).transpose(0, 2)  # invert batch and seq
+        trgs = torch.LongTensor(trgs.long()).to(config["train"]["device"]).transpose(0, 2)  # invert batch and bars
         src_masks = torch.BoolTensor(src_masks).to(config["train"]["device"]).transpose(0, 2)
         trg_masks = torch.BoolTensor(trg_masks).to(config["train"]["device"]).transpose(0, 2)
         trg_ys = torch.LongTensor(trg_ys.long()).to(config["train"]["device"]).transpose(0, 2)
@@ -150,7 +148,6 @@ class Trainer:
             e_attn_losses.append(e_attn_loss)
 
         latent = self.latent_compressor(latent)
-        latent = latent.transpose(0, 1)
 
         # Decode
         for trg, src_mask, trg_mask in zip(trgs, src_masks, trg_masks):
@@ -172,8 +169,10 @@ class Trainer:
         trg_ys = trg_ys.reshape(config["train"]["batch_size"], -1, 4)
         loss, loss_items = self.loss_computer(outs, trg_ys)
 
+        losses = (loss.item(), e_attn_losses.item(), d_attn_losses.item(), *loss_items)
+
         # SOME TESTS
-        if self.encoder.training:
+        if self.encoder.training and config["train"]["verbose"]:
             if self.step % config["train"]["after_mb_log_attn_img"] == 0:
                 # enc_self_weights = pad_attention(enc_self_weights)
                 # dec_self_weights = pad_attention(dec_self_weights)
@@ -192,14 +191,83 @@ class Trainer:
 
         # OPTIMIZE
         if self.encoder.training:
-            self.model_optimizer.zero_grad()
+            # Reconstruction
+            self.encoder.zero_grad()
+            self.latent_compressor.zero_grad()
+            self.decoder.zero_grad()
+
             optimizing_losses = loss + e_attn_losses + d_attn_losses
             optimizing_losses.backward()
-            torch.nn.utils.clip_grad_norm_(self.encoder.parameters(), 0.1)
-            torch.nn.utils.clip_grad_norm_(self.decoder.parameters(), 0.1)
-            self.model_optimizer.optimize()
 
-        losses = (loss.item(), e_attn_losses.item(), d_attn_losses.item(), *loss_items)
+            torch.nn.utils.clip_grad_norm_(self.encoder.parameters(), 0.1)
+            torch.nn.utils.clip_grad_norm_(self.latent_compressor.parameters(), 0.1)
+            torch.nn.utils.clip_grad_norm_(self.decoder.parameters(), 0.1)
+
+            self.encoder_optimizer.optimize()
+            self.decoder_optimizer.optimize()
+
+        # AAE part
+        if config["train"]["aae"]:
+
+            EPS = 1e-15
+            was_training = self.encoder.training
+            self.discriminator.zero_grad()
+
+            # ***************** Discriminator
+            self.encoder.eval()
+            self.latent_compressor.eval()
+
+            # real (prior)
+            prior = self.get_prior(latent.shape)
+            real = self.discriminator(prior)
+
+            # fake
+            e_mems, e_cmems, _, _ = get_memories()
+            for src, src_mask in zip(srcs, src_masks):
+                latent, e_mems, e_cmems, _, _ = self.encoder(src, src_mask, e_mems, e_cmems)
+                e_mems = e_mems.detach()
+                e_cmems = e_cmems.detach()
+            latent = self.latent_compressor(latent)
+            fake = self.discriminator(latent)
+
+            # optimize
+            D_loss = -torch.mean(torch.log(real + EPS) + torch.log(1 - fake + EPS))
+
+            if was_training:
+                D_loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.encoder.parameters(), 0.1)
+                torch.nn.utils.clip_grad_norm_(self.latent_compressor.parameters(), 0.1)
+                torch.nn.utils.clip_grad_norm_(self.discriminator.parameters(), 0.1)
+                self.generator_optimizer.optimize()
+
+            # ***************** Generator
+            if was_training:
+                self.encoder.train()
+                self.latent_compressor.train()
+            self.discriminator.eval()
+
+            # compute fake output
+            e_mems, e_cmems, _, _ = get_memories()
+            for src, src_mask in zip(srcs, src_masks):
+                latent, e_mems, e_cmems, _, _ = self.encoder(src, src_mask, e_mems, e_cmems)
+                e_mems = e_mems.detach()
+                e_cmems = e_cmems.detach()
+            latent = self.latent_compressor(latent)
+
+            fake = self.discriminator(latent)
+
+            G_loss = -torch.mean(torch.log(fake + EPS))
+
+            if was_training:
+                G_loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.encoder.parameters(), 0.1)
+                torch.nn.utils.clip_grad_norm_(self.latent_compressor.parameters(), 0.1)
+                self.generator_optimizer.optimize()
+
+            if was_training:
+                self.discriminator.train()
+            # add loss
+            losses = losses + (D_loss, G_loss)
 
         return losses
 
@@ -217,21 +285,31 @@ class Trainer:
         self.latent_compressor = LatentCompressor(config["model"]["d_model"]).to(config["train"]["device"])
         self.decoder = CompressiveDecoder().to(config["train"]["device"])
         if config["train"]["aae"]:
-            self.discriminator = Discriminator(config["model"]["z_i_dim"],
-                                               config["model"]["z_tot_dim"],
+            self.discriminator = Discriminator(config["model"]["seq_len"],
+                                               config["model"]["d_model"],  # TODO really?
                                                config["model"]["discriminator_dropout"]).to(config["train"]["device"])
 
         # Create optimizers
-        self.model_optimizer = CTOpt(torch.optim.Adam([{"params": self.encoder.parameters()},
-                                                       {"params": self.latent_compressor.parameters()},
-                                                       {"params": self.decoder.parameters()}], lr=0),
-                                     config["train"]["warmup_steps"],
-                                     (config["train"]["lr_min"], config["train"]["lr_max"]),
-                                     config["train"]["decay_steps"], config["train"]["minimum_lr"])  # TODO add other
+        self.encoder_optimizer = CTOpt(torch.optim.Adam([{"params": self.encoder.parameters()},
+                                                         {"params": self.latent_compressor.parameters()}], lr=0),
+                                       config["train"]["warmup_steps"],
+                                       (config["train"]["lr_min"], config["train"]["lr_max"]),
+                                       config["train"]["decay_steps"], config["train"]["minimum_lr"]
+                                       )
+        self.decoder_optimizer = CTOpt(torch.optim.Adam([{"params": self.decoder.parameters()}], lr=0),
+                                       config["train"]["warmup_steps"],
+                                       (config["train"]["lr_min"], config["train"]["lr_max"]),
+                                       config["train"]["decay_steps"], config["train"]["minimum_lr"])  # TODO add other
         if config["train"]["aae"]:
-            self.discriminator_optimizer = torch.optim.Adam(self.discriminator.parameters())  # TODO find lr
-            self.generator_optimizer = torch.optim.Adam([{"params": self.encoder.parameters()},
-                                                         {"params": self.latent_compressor.parameters()}])
+            self.discriminator_optimizer = CTOpt(torch.optim.Adam([{"params": self.discriminator.parameters()}], lr=0),
+                                                 config["train"]["warmup_steps"],
+                                                 (config["train"]["lr_min"] / 2, config["train"]["lr_max"] / 2),
+                                                 config["train"]["decay_steps"], config["train"]["minimum_lr"] / 2)
+            self.generator_optimizer = CTOpt(torch.optim.Adam([{"params": self.encoder.parameters()},
+                                                               {"params": self.latent_compressor.parameters()}], lr=0),
+                                             config["train"]["warmup_steps"],
+                                             (config["train"]["lr_min"] / 8, config["train"]["lr_max"] / 2),
+                                             config["train"]["decay_steps"], config["train"]["minimum_lr"] / 2)
 
         # Loss
         criterion = LabelSmoothing(size=config["tokens"]["vocab_size"],
@@ -251,25 +329,41 @@ class Trainer:
         # Wandb
         self.logger = Logger()
         wandb.login()
-        wandb.init(project="MusAE", config=config, name="r_"+self.save_path if remote else "l_"+self.save_path)
+        wandb.init(project="MusAE", config=config, name="r_" + self.save_path if remote else "l_" + self.save_path)
         wandb.watch(self.encoder)
         wandb.watch(self.latent_compressor)
         wandb.watch(self.decoder)
+        if config["train"]["aae"]:
+            wandb.watch(self.discriminator)
 
         # Print info about training
-        cmem_range = config["model"]["cmem_len"]*config["model"]["cmem_ratio"]
-        max_range = config["model"]["layers"]*(cmem_range+config["model"]["mem_len"])
-        given = config["train"]["truncated_bars"]*config["model"]["seq_len"]
+        cmem_range = config["model"]["cmem_len"] * config["model"]["cmem_ratio"]
+        max_range = config["model"]["layers"] * (cmem_range + config["model"]["mem_len"])
+        given = config["train"]["truncated_bars"] * config["model"]["seq_len"]
         assert given <= max_range, "Given {} as input to model with max range {}".format(given, max_range)
         print("Giving ", given, " as input to model with a maximum range of ", max_range)
         print("Giving ", len(tr_loader), " training samples and ", len(ts_loader), " test samples")
         print("Giving ", config["train"]["truncated_bars"], " bars to a model with ",
               config["model"]["layers"], " layers")
+        if config["train"]["aae"]:
+            print("Imposing prior distribution on latents")
+        else:
+            print("Just autoencoding")
+        if config["train"]["verbose"]:
+            print("VERBOSE MODE ON")
+        else:
+            print("VERBOSE MODE OFF: no images or song will be made")
+        if config["train"]["do_eval"]:
+            print("DOING evaluation")
+        else:
+            print("NOT DOING evaluation")
 
         # Train
         self.encoder.train()
         self.latent_compressor.train()
         self.decoder.train()
+        if config["train"]["aae"]:
+            self.discriminator.train()
         desc = "Train epoch " + str(self.epoch) + ", mb " + str(0)
         train_progress = tqdm(total=config["train"]["mb_before_eval"], position=0, leave=True, desc=desc)
         it_counter = 0
@@ -292,7 +386,7 @@ class Trainer:
                     for elem in batch:  # create mb
                         mb = mb + (elem[:, :, bar_it, ...],)
                     tr_losses = self.run_mb(mb)
-                    self.logger.log_losses(tr_losses, self.model_optimizer.lr, self.encoder.training)
+                    self.logger.log_losses(tr_losses, self.encoder_optimizer.lr, self.encoder.training)
                     train_progress.update()
 
                     # Eval
@@ -302,9 +396,9 @@ class Trainer:
                         self.encoder.eval()
                         self.latent_compressor.eval()
                         self.decoder.eval()
+                        if config["train"]["aae"]:
+                            self.discriminator.eval()
                         desc = "Eval epoch " + str(self.epoch) + ", mb " + str(song_it)
-                        # test = None
-                        # generated = None  # to suppress warning
 
                         # Compute validation score
                         for test in tqdm(ts_loader, position=0, leave=True, desc=desc):  # remember test losses
@@ -320,7 +414,8 @@ class Trainer:
                                 ts_mb = ()
                                 for elem in test:  # create mb
                                     ts_mb = ts_mb + (elem[:, :, i, ...],)
-                                ts_loss = self.run_mb(ts_mb)
+                                with torch.no_grad():
+                                    ts_loss = self.run_mb(ts_mb)
                                 ts_losses.append(ts_loss)
                         final = ()  # average losses
                         for i in range(len(ts_losses[0])):  # for each loss value
@@ -338,46 +433,52 @@ class Trainer:
                             best_ts_loss = final[0]
                             torch.save(self.encoder, os.path.join(self.save_path, "encoder_" + str(self.step) + '.pt'))
                             torch.save(self.latent_compressor, os.path.join(self.save_path,
-                                                                            "latent_compressor_"+str(self.step)+'.pt'))
+                                                                            "latent_compressor_" + str(
+                                                                                self.step) + '.pt'))
                             torch.save(self.decoder, os.path.join(self.save_path, "decoder_" + str(self.step) + '.pt'))
-                            # if config["train"]["aae"]:
-                            #     torch.save(self.discriminator,
-                            #                os.path.join(self.save_path, "discriminator_" + str(self.epoch) + '.pt'))
+                            if config["train"]["aae"]:
+                                torch.save(self.discriminator,
+                                           os.path.join(self.save_path, "discriminator_" + str(self.epoch) + '.pt'))
                             print("Model saved")
-                        self.logger.log_losses(final, self.model_optimizer.lr, self.encoder.training)
+                        self.logger.log_losses(final, self.encoder_optimizer.lr, self.encoder.training)
 
-                        # Reconstruction and generation
-                        note_manager = NoteRepresentationManager()
-                        # if config["train"]["aae"]:
-                        #     generated = self.generate(note_manager)  # generation
-                        to_reconstruct = ts_mb if remote else mb
-                        original, reconstructed = self.reconstruct(to_reconstruct, note_manager)  # TODO reconstruct
-                        prefix = "epoch_" + str(self.epoch) + "_mb_" + str(song_it)
-                        original.write_midi(os.path.join(wandb.run.dir, prefix + "_original.mid"))
-                        reconstructed.write_midi(os.path.join(wandb.run.dir, prefix + "_reconstructed.mid"))
-                        # if config["train"]["aae"]:
-                        #     generated.write_midi(os.path.join(wandb.run.dir, prefix + "_generated.mid"))
-                        midi_to_wav(os.path.join(wandb.run.dir, prefix + "_original.mid"),
-                                    os.path.join(wandb.run.dir, prefix + "_original.wav"))
-                        midi_to_wav(os.path.join(wandb.run.dir, prefix + "_reconstructed.mid"),
-                                    os.path.join(wandb.run.dir, prefix + "_reconstructed.wav"))
-                        # if config["train"]["aae"]:
-                        #     midi_to_wav(os.path.join(wandb.run.dir, prefix + "_generated.mid"),
-                        #                 os.path.join(wandb.run.dir, prefix + "_generated.wav"))
-                        songs = [
-                            wandb.Audio(os.path.join(wandb.run.dir, prefix + "_original.wav"),
-                                        caption="original", sample_rate=32),
-                            wandb.Audio(os.path.join(wandb.run.dir, prefix + "_reconstructed.wav"),
-                                        caption="reconstructed", sample_rate=32)]
-                        # if config["train"]["aae"]:
-                        #     songs.append(wandb.Audio(os.path.join(wandb.run.dir, prefix + "_generated.wav"),
-                        #                              caption="generated", sample_rate=32))
-                        wandb.log({"validation reconstruction example": songs})
+                        # Reconstruction and generation TODO generation
+                        if config["train"]["verbose"]:
+                            note_manager = NoteRepresentationManager()
+                            to_reconstruct = ts_mb if remote else mb
+                            original, reconstructed = self.reconstruct(to_reconstruct, note_manager)
+                            prefix = "epoch_" + str(self.epoch) + "_mb_" + str(song_it)
+                            original.write_midi(os.path.join(wandb.run.dir, prefix + "_original.mid"))
+                            reconstructed.write_midi(os.path.join(wandb.run.dir, prefix + "_reconstructed.mid"))
+                            midi_to_wav(os.path.join(wandb.run.dir, prefix + "_original.mid"),
+                                        os.path.join(wandb.run.dir, prefix + "_original.wav"))
+                            midi_to_wav(os.path.join(wandb.run.dir, prefix + "_reconstructed.mid"),
+                                        os.path.join(wandb.run.dir, prefix + "_reconstructed.wav"))
+                            songs = [
+                                wandb.Audio(os.path.join(wandb.run.dir, prefix + "_original.wav"),
+                                            caption="original", sample_rate=32),
+                                wandb.Audio(os.path.join(wandb.run.dir, prefix + "_reconstructed.wav"),
+                                            caption="reconstructed", sample_rate=32)]
+                            wandb.log({"validation reconstruction example": songs})
+
+                            if config["train"]["aae"]:
+                                generated = self.greedy_decoding(note_manager)  # generation
+                                generated.write_midi(os.path.join(wandb.run.dir, prefix + "_generated.mid"))
+                                midi_to_wav(os.path.join(wandb.run.dir, prefix + "_generated.mid"),
+                                            os.path.join(wandb.run.dir, prefix + "_generated.wav"))
+                                gen = [(wandb.Audio(os.path.join(wandb.run.dir, prefix + "_generated.wav"),
+                                                    caption="generated", sample_rate=32))]
+                                wandb.log({"generated": gen})
+
+                        # eval end
                         it_counter += 1
                         self.encoder.train()
                         self.latent_compressor.train()
                         self.decoder.train()
+                        if config["train"]["aae"]:
+                            self.discriminator.train()
                         desc = "Train epoch " + str(self.epoch) + ", mb " + str(song_it)
-                        train_progress = tqdm(total=config["train"]["mb_before_eval"], position=0, leave=True, desc=desc)
+                        train_progress = tqdm(total=config["train"]["mb_before_eval"], position=0, leave=True,
+                                              desc=desc)
 
                     self.step += 1
