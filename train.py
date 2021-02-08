@@ -6,7 +6,7 @@ from config import config, remote
 from iterate_dataset import SongIterator
 from optimizer import CTOpt
 from label_smoother import LabelSmoothing
-from loss_computer import SimpleLossCompute
+from loss_computer import SimpleLossCompute, compute_accuracy
 from create_bar_dataset import NoteRepresentationManager
 import glob
 import wandb
@@ -169,7 +169,10 @@ class Trainer:
         trg_ys = trg_ys.reshape(config["train"]["batch_size"], -1, 4)
         loss, loss_items = self.loss_computer(outs, trg_ys)
 
-        losses = (loss.item(), e_attn_losses.item(), d_attn_losses.item(), *loss_items)
+        # Compute accuracy
+        accuracy = compute_accuracy(outs, trg_ys, config["tokens"]["pad"])
+
+        losses = (loss.item(), accuracy, e_attn_losses.item(), d_attn_losses.item(), *loss_items)
 
         # SOME TESTS
         if self.encoder.training and config["train"]["verbose"]:
@@ -203,14 +206,17 @@ class Trainer:
             torch.nn.utils.clip_grad_norm_(self.latent_compressor.parameters(), 0.1)
             torch.nn.utils.clip_grad_norm_(self.decoder.parameters(), 0.1)
 
-            self.encoder_optimizer.optimize()
-            self.decoder_optimizer.optimize()
+            self.encoder_optimizer.step()
+            self.decoder_optimizer.step()
 
         # AAE part
-        if config["train"]["aae"]:
+        if config["train"]["aae"] and self.step > 6000:
 
             EPS = 1e-15
             was_training = self.encoder.training
+            self.encoder.zero_grad()
+            self.latent_compressor.zero_grad()
+            self.decoder.zero_grad()
             self.discriminator.zero_grad()
 
             # ***************** Discriminator
@@ -219,7 +225,7 @@ class Trainer:
 
             # real (prior)
             prior = self.get_prior(latent.shape)
-            real = self.discriminator(prior)
+            D_real = self.discriminator(prior)
 
             # fake
             e_mems, e_cmems, _, _ = get_memories()
@@ -228,23 +234,29 @@ class Trainer:
                 e_mems = e_mems.detach()
                 e_cmems = e_cmems.detach()
             latent = self.latent_compressor(latent)
-            fake = self.discriminator(latent)
+            D_fake = self.discriminator(latent)
 
             # optimize
-            D_loss = -torch.mean(torch.log(real + EPS) + torch.log(1 - fake + EPS))
+            smoothing = 0.1  # TODO is it a good idea?
+            # D_loss = -torch.mean(torch.log(D_real + smoothing + EPS) + torch.log((1 - smoothing) - D_fake + EPS))
+            D_loss = -torch.mean(torch.log(D_real) + torch.log(1 - D_fake))
 
-            if was_training:
+            if was_training and D_loss.item() > 0.2:
                 D_loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.encoder.parameters(), 0.1)
                 torch.nn.utils.clip_grad_norm_(self.latent_compressor.parameters(), 0.1)
                 torch.nn.utils.clip_grad_norm_(self.discriminator.parameters(), 0.1)
-                self.generator_optimizer.optimize()
+                self.discriminator_optimizer.step()
 
             # ***************** Generator
             if was_training:
                 self.encoder.train()
                 self.latent_compressor.train()
             self.discriminator.eval()
+
+            self.encoder.zero_grad()
+            self.latent_compressor.zero_grad()
+            self.discriminator.zero_grad()
 
             # compute fake output
             e_mems, e_cmems, _, _ = get_memories()
@@ -254,21 +266,22 @@ class Trainer:
                 e_cmems = e_cmems.detach()
             latent = self.latent_compressor(latent)
 
-            fake = self.discriminator(latent)
+            G_fake = self.discriminator(latent)
 
-            G_loss = -torch.mean(torch.log(fake + EPS))
+            # G_loss = -torch.mean(torch.log(G_fake + EPS))
+            G_loss = -torch.mean(torch.log(G_fake))
 
             if was_training:
                 G_loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.encoder.parameters(), 0.1)
                 torch.nn.utils.clip_grad_norm_(self.latent_compressor.parameters(), 0.1)
-                self.generator_optimizer.optimize()
+                self.generator_optimizer.step()
 
             if was_training:
                 self.discriminator.train()
             # add loss
-            losses = losses + (D_loss, G_loss)
-
+            # TODO adjust, once understand z
+            losses = losses + (D_loss.item(), G_loss.item(), D_real[0][0].item(), D_fake[0][0].item())
         return losses
 
     def train(self):
@@ -285,8 +298,7 @@ class Trainer:
         self.latent_compressor = LatentCompressor(config["model"]["d_model"]).to(config["train"]["device"])
         self.decoder = CompressiveDecoder().to(config["train"]["device"])
         if config["train"]["aae"]:
-            self.discriminator = Discriminator(config["model"]["seq_len"],
-                                               config["model"]["d_model"],  # TODO really?
+            self.discriminator = Discriminator(config["model"]["d_model"],
                                                config["model"]["discriminator_dropout"]).to(config["train"]["device"])
 
         # Create optimizers
@@ -301,16 +313,20 @@ class Trainer:
                                        (config["train"]["lr_min"], config["train"]["lr_max"]),
                                        config["train"]["decay_steps"], config["train"]["minimum_lr"])  # TODO add other
         if config["train"]["aae"]:
+            scale = config["train"]["ratio_reg_opt"]
             self.discriminator_optimizer = CTOpt(torch.optim.Adam([{"params": self.discriminator.parameters()}], lr=0),
                                                  config["train"]["warmup_steps"],
-                                                 (config["train"]["lr_min"] / 2, config["train"]["lr_max"] / 2),
-                                                 config["train"]["decay_steps"], config["train"]["minimum_lr"] / 2)
+                                                 (config["train"]["lr_min"] / scale, config["train"]["lr_max"] / scale),
+                                                 config["train"]["decay_steps"], config["train"]["minimum_lr"] / scale)
             self.generator_optimizer = CTOpt(torch.optim.Adam([{"params": self.encoder.parameters()},
                                                                {"params": self.latent_compressor.parameters()}], lr=0),
                                              config["train"]["warmup_steps"],
-                                             (config["train"]["lr_min"] / 8, config["train"]["lr_max"] / 2),
-                                             config["train"]["decay_steps"], config["train"]["minimum_lr"] / 2)
-
+                                             (config["train"]["lr_min"] / scale, config["train"]["lr_max"] / scale),
+                                             config["train"]["decay_steps"], config["train"]["minimum_lr"] / scale)
+            # reg_lr = config["train"]["reg_lr"]
+            # self.discriminator_optimizer = torch.optim.Adam(self.discriminator.parameters(), lr=reg_lr)
+            # self.generator_optimizer = torch.optim.Adam([{"params": self.encoder.parameters()},
+            #                                              {"params": self.latent_compressor.parameters()}], lr=reg_lr)
         # Loss
         criterion = LabelSmoothing(size=config["tokens"]["vocab_size"],
                                    padding_idx=config["tokens"]["pad"],
@@ -347,6 +363,8 @@ class Trainer:
               config["model"]["layers"], " layers")
         if config["train"]["aae"]:
             print("Imposing prior distribution on latents")
+            # print("With a learning rate of ", config["train"]["reg_lr"])
+            print("With a scale factor on reg_lr of ", config["train"]["ratio_reg_opt"])
         else:
             print("Just autoencoding")
         if config["train"]["verbose"]:
@@ -442,7 +460,7 @@ class Trainer:
                             print("Model saved")
                         self.logger.log_losses(final, self.encoder_optimizer.lr, self.encoder.training)
 
-                        # Reconstruction and generation TODO generation
+                        # Reconstruction and generation
                         if config["train"]["verbose"]:
                             note_manager = NoteRepresentationManager()
                             to_reconstruct = ts_mb if remote else mb

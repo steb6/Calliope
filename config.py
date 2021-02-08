@@ -28,8 +28,10 @@ config = {
         "lr_min": 1e-4,
         "lr_max": 1e-3,
         "decay_steps": 50000,
-        "minimum_lr": 1e-4,
+        "minimum_lr": 5e-5,
         "generated_iterations": 16,
+        "ratio_reg_opt": 2,
+        "reg_lr": 1e-6,
         "test_loss": False,
     },
     "model": {

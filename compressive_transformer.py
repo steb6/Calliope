@@ -226,7 +226,7 @@ class DecoderLayer(nn.Module):
     def forward(self, x, trg_mask, src_mask, latent, memories, pos_emb):
         x, new_mem, new_cmem, attn_loss, self_weights = self.self_mem_attn(x, memories=memories, input_mask=trg_mask,
                                                                            pos_emb=pos_emb)
-        x, src_weights = self.src_attn(x, key=latent, value=latent, mask=src_mask)  # TODO FIX src_mask!!!
+        x, src_weights = self.src_attn(x, key=latent, value=latent, mask=None)  # TODO FIX src_mask!!!
         x, = self.feed_forward(x)
         return x, new_mem, new_cmem, self_weights, src_weights, attn_loss
 

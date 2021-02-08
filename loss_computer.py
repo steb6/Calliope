@@ -40,3 +40,18 @@ class SimpleLossCompute:
         loss = (loss_drums + loss_guitar + loss_bass + loss_strings) / 4  # mean loss per token
 
         return loss, (loss_drums.item(), loss_guitar.item(), loss_bass.item(), loss_strings.item())
+
+
+def compute_accuracy(x, y, pad):
+    x = torch.max(x, dim=-2).indices.transpose(1, 2)
+    y = y.transpose(1, 2)
+    true = 0
+    count = 0
+    for xi, yi in zip(x, y):
+        for xij, yij in zip(xi, yi):
+            for xijk, yijk in zip(xij, yij):
+                if yijk != pad:
+                    count += 1
+                    if xijk == yijk:
+                        true += 1
+    return true/count
