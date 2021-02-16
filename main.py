@@ -23,5 +23,7 @@ if __name__ == "__main__":  # TODO put here assert I guess
         notes = NoteRepresentationManager()
         notes.convert_dataset()
 
+    assert config["train"]["batch_size"] > 1, "This can cause problem with squeeze in aae"
+
     trainer = Trainer()
     trainer.train()

@@ -8,9 +8,9 @@ import torch.nn.functional as F
 class Discriminator(nn.Module):
     def __init__(self, d_model, dropout):  # seq_len, d_model, dropout
         super(Discriminator, self).__init__()
-        self.lin1 = nn.Linear(d_model, d_model*2)
-        self.lin2 = nn.Linear(d_model*2, d_model)
-        self.lin3 = nn.Linear(d_model, 1)
+        self.lin1 = nn.Linear(d_model, d_model//2)
+        self.lin2 = nn.Linear(d_model//2, d_model//4)
+        self.lin3 = nn.Linear(d_model//4, 1)
         self.dropout = dropout
 
     def forward(self, x):

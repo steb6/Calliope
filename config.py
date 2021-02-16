@@ -31,8 +31,12 @@ config = {
         "minimum_lr": 5e-5,
         "generated_iterations": 16,
         "ratio_reg_opt": 2,
-        "reg_lr": 1e-6,
+        "reg_lr": 1e-4,
         "test_loss": False,
+        "train_aae_after_steps": 0,
+        "aae_label_smoothing": 0.1,
+        "disc_scale": 0.4,
+        "gen_scale": 0.1
     },
     "model": {
         "seq_len": max_bar_length,

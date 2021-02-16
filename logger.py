@@ -24,11 +24,17 @@ class Logger:
                mode + "guitar loss": losses[5],
                mode + "bass loss": losses[6],
                mode + "strings loss": losses[7]}
-        if config["train"]["aae"] and len(losses) == 12:
-            log[mode + "discriminator loss"] = losses[8]
-            log[mode + "generator loss"] = losses[9]
-            log[mode + "discriminator real score"] = losses[10]
-            log[mode + "discriminator fake score"] = losses[11]
+        if config["train"]["aae"] and len(losses) == 13:  # TODO careful
+            if losses[8] is not None:
+                log[mode + "discriminator loss"] = losses[8]
+            if losses[9] is not None:
+                log[mode + "generator loss"] = losses[9]
+            if losses[10] is not None:
+                log[mode + "discriminator real score"] = losses[10]
+            if losses[11] is not None:
+                log[mode + "discriminator fake score"] = losses[11]
+            if losses[12] is not None:
+                log[mode + "generator fake score"] = losses[12]
         wandb.log(log)
 
     @staticmethod
