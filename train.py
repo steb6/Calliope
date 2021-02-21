@@ -18,11 +18,13 @@ from logger import Logger
 from utilities import get_memories, create_trg_mask, pad_attention
 from discriminator import Discriminator
 from torch.autograd import Variable
+from loss_computer import calc_gradient_penalty
 
 
 class Trainer:
     def __init__(self):
         self.logger = None
+        self.latent = None
         self.save_path = None
         self.epoch = 0
         self.step = 0
@@ -37,13 +39,15 @@ class Trainer:
         self.encoder_optimizer = None
         self.decoder_optimizer = None
         if config["train"]["aae"]:
-            self.discriminator_optimizer = None
-            self.generator_optimizer = None
+            self.disc_optimizer = None
+            self.gen_optimizer = None
             self.train_discriminator_not_generator = True
             self.disc_losses = []
             self.gen_losses = []
             self.disc_loss_init = None
             self.gen_loss_init = None
+            self.beta = -0.1
+            self.reg_optimizer = None
 
     @staticmethod
     def get_prior(shape):
@@ -72,8 +76,9 @@ class Trainer:
 
     def greedy_decoding(self, note_manager):  # TODO CHECK THIS
         _, _, d_mems, d_cmems = get_memories(n_batch=1)
-        shape = (1, config["model"]["seq_len"], config["model"]["d_model"])
-        latent = self.get_prior(shape)
+        latent = self.get_prior(self.latent.shape)
+        dec_latent = latent.reshape(config["train"]["batch_size"], config["model"]["n_latents"],
+                                    config["model"]["d_model"])
         outs = []
         src_mask = torch.full((4, 1, 1), True).to(config["train"]["device"])  # TODO create src mask all true
         for b in tqdm(range(config["train"]["generated_iterations"]),
@@ -82,13 +87,13 @@ class Trainer:
             trg = torch.LongTensor(trg).to(config["train"]["device"])
             for _ in range(config["model"]["seq_len"] - 1):  # for each token of each bar
                 trg_mask = create_trg_mask(trg.cpu().numpy())
-                out, _, _, _, _, _ = self.decoder(trg, trg_mask, src_mask, latent, d_mems, d_cmems)
+                out, _, _, _, _, _ = self.decoder(trg, trg_mask, src_mask, dec_latent, d_mems, d_cmems)
                 out = torch.max(out, dim=-2).indices
                 out = out.permute(2, 0, 1)
                 trg = torch.cat((trg, out[..., -1:]), dim=-1)
                 trg = trg.detach()
             trg_mask = create_trg_mask(trg.cpu().numpy())
-            out, _, _, d_mems, d_cmems, _ = self.decoder(trg, trg_mask, src_mask, latent, d_mems, d_cmems)
+            out, _, _, d_mems, d_cmems, _ = self.decoder(trg, trg_mask, src_mask, dec_latent, d_mems, d_cmems)
             out = torch.max(out, dim=-2).indices
             out = out.permute(2, 0, 1)
             outs.append(out)
@@ -109,13 +114,12 @@ class Trainer:
         for src, src_mask in zip(srcs, src_masks):
             latent, e_mems, e_cmems, _, _ = self.encoder(src, src_mask, e_mems, e_cmems)
         latent = self.latent_compressor(latent)  # 1 x z_dim
-        latent = latent.transpose(0, 1)
+        dec_latent = latent.reshape(config["train"]["batch_size"], config["model"]["n_latents"],
+                                    config["model"]["d_model"])
         for trg, src_mask, trg_mask in zip(trgs, src_masks, trg_masks):
-            # trg, trg_mask = self.greedy_decoding(latent, src_mask, d_mems, d_cmems)
-            out, _, _, d_mems, d_cmems, _ = self.decoder(trg, trg_mask, src_mask, latent, d_mems, d_cmems)
+            out, _, _, d_mems, d_cmems, _ = self.decoder(trg, trg_mask, src_mask, dec_latent, d_mems, d_cmems)
             outs.append(out)
         outs = torch.stack(outs, dim=1)
-        # outs = outs.reshape(config["train"]["batch_size"], -1, config["tokens"]["vocab_size"], 4)
         outs = outs.permute(0, 4, 1, 2, 3)
         outs = torch.max(outs, dim=-1).indices
         outs = outs[0]
@@ -163,11 +167,14 @@ class Trainer:
             e_attn_losses.append(e_attn_loss)
 
         latent = self.latent_compressor(latent)
-        wandb.log({"stuff/latent distribution": latent[0][0].detach().cpu().numpy()})  # TODO put in logger or remove
+        self.latent = latent.detach().cpu().numpy()
+        dec_latent = latent.reshape(config["train"]["batch_size"], config["model"]["n_latents"],
+                                    config["model"]["d_model"])
 
         # Decode
         for trg, src_mask, trg_mask in zip(trgs, src_masks, trg_masks):
-            out, self_weight, src_weight, d_mems, d_cmems, d_attn_loss = self.decoder(trg, trg_mask, src_mask, latent,
+            out, self_weight, src_weight, d_mems, d_cmems, d_attn_loss = self.decoder(trg, trg_mask, src_mask,
+                                                                                      dec_latent,
                                                                                       d_mems, d_cmems)
             d_mems = d_mems.detach()
             d_cmems = d_cmems.detach()
@@ -204,7 +211,6 @@ class Trainer:
                 self.logger.log_memories(e_mems, e_cmems, d_mems, d_cmems)
             if self.step % config["train"]["after_mb_log_examples"] == 0:
                 self.logger.log_examples(srcs, trgs, outs, trg_ys)
-                self.logger.log_latent(latent)
             if self.step == 0 and config["train"]["test_loss"]:
                 self.test_losses(loss, e_attn_losses, d_attn_losses)
 
@@ -225,124 +231,77 @@ class Trainer:
             self.encoder_optimizer.step()
             self.decoder_optimizer.step()
 
-        # AAE part
-        if config["train"]["aae"] and self.step > config["train"]["train_aae_after_steps"]:
+        if config["train"]["aae"] and self.encoder.training:  # TODO adjust for evaluation
 
-            EPS = 1e-15
-            was_training = self.encoder.training
-            D_loss = None
-            G_loss = None
-            D_real = None
-            D_fake = None
-            G_fake = None
+            if self.step % config["train"]["increase_beta_every"] == 0 and self.beta < 1:
+                self.beta += 0.1
 
-            # TODO adapt it for evaluation
-            # ***************** Discriminator
-            if self.train_discriminator_not_generator:
-                self.set_trainable(encoder=False, latent_compressor=False, discriminator=True)
+            if self.beta > 0:
+                ########################
+                # UPDATE DISCRIMINATOR #
+                ########################
+                for p in self.encoder.parameters():
+                    p.requires_grad = False
+                for p in self.latent_compressor.parameters():
+                    p.requires_grad = False
+                for p in self.discriminator.parameters():
+                    p.requires_grad = True
 
-                # real (prior)
-                prior = self.get_prior(latent.squeeze().shape)
-                D_real = self.discriminator(prior)
+                for _ in range(config["train"]["critic_iterations"]):
+                    prior = self.get_prior(latent.shape)  # autograd is intern
+                    D_real = self.discriminator(prior).reshape(-1)
 
-                # fake
+                    e_mems, e_cmems, _, _ = get_memories()
+                    for src, src_mask in zip(srcs, src_masks):
+                        latent, e_mems, e_cmems, _, _ = self.encoder(src, src_mask, e_mems, e_cmems)
+                        e_mems = e_mems.detach()
+                        e_cmems = e_cmems.detach()
+                    latent = self.latent_compressor(latent)
+                    D_fake = self.discriminator(latent).reshape(-1)
+
+                    gradient_penalty = calc_gradient_penalty(self.discriminator, prior.data,
+                                                             latent.data)
+
+                    loss_critic = (
+                            torch.mean(D_fake) - torch.mean(D_real) + config["train"]["lambda"]*gradient_penalty
+                    )
+                    loss_critic = loss_critic * self.beta
+
+                    self.discriminator.zero_grad()
+                    loss_critic.backward(retain_graph=True)
+                    self.disc_optimizer.step(lr=self.encoder_optimizer.lr)
+
+                ####################
+                # UPDATE GENERATOR #
+                ####################
+                for p in self.encoder.parameters():
+                    p.requires_grad = True
+                for p in self.latent_compressor.parameters():
+                    p.requires_grad = True
+                for p in self.discriminator.parameters():
+                    p.requires_grad = False  # to avoid computation
+
                 e_mems, e_cmems, _, _ = get_memories()
                 for src, src_mask in zip(srcs, src_masks):
                     latent, e_mems, e_cmems, _, _ = self.encoder(src, src_mask, e_mems, e_cmems)
                     e_mems = e_mems.detach()
                     e_cmems = e_cmems.detach()
                 latent = self.latent_compressor(latent)
-                D_fake = self.discriminator(latent.squeeze())
 
-                # optimize
-                smoothing = config["train"]["aae_label_smoothing"]  # TODO is it a good idea?
-                D_loss = -torch.mean(torch.log(D_real + EPS) + torch.log((1 - smoothing) - D_fake + EPS))
+                G = self.discriminator(latent).reshape(-1)
 
-                if was_training and D_loss.item() > 0.2:
-                    D_loss.backward()
-                    torch.nn.utils.clip_grad_norm_(self.discriminator.parameters(), 0.1)
-                    self.discriminator_optimizer.step()
+                loss_gen = -torch.mean(G)
+                loss_gen = loss_gen * self.beta
 
-            # ***************** Generator
-            else:
-                # if was_training:
-                self.set_trainable(encoder=True, latent_compressor=True, discriminator=False)
+                self.encoder.zero_grad()
+                self.latent_compressor.zero_grad()
+                loss_gen.backward()
+                self.gen_optimizer.step(lr=self.encoder_optimizer.lr)
 
-                # compute fake output
-                e_mems, e_cmems, _, _ = get_memories()
-                for src, src_mask in zip(srcs, src_masks):
-                    latent, e_mems, e_cmems, _, _ = self.encoder(src, src_mask, e_mems, e_cmems)
-                    e_mems = e_mems.detach()
-                    e_cmems = e_cmems.detach()
-                latent = self.latent_compressor(latent)
+                losses += (D_real.mean().cpu().data.numpy(), D_fake.mean().cpu().data.numpy(),
+                           G.mean().cpu().data.numpy(), loss_critic.cpu().data.numpy(), loss_gen.cpu().data.numpy(),
+                           D_real.mean().cpu().data.numpy() - D_fake.mean().cpu().data.numpy())
 
-                G_fake = self.discriminator(latent.squeeze())
-
-                G_loss = -torch.mean(torch.log(G_fake + EPS))
-
-                if was_training:
-                    G_loss.backward()
-                    torch.nn.utils.clip_grad_norm_(self.encoder.parameters(), 0.1)
-                    torch.nn.utils.clip_grad_norm_(self.latent_compressor.parameters(), 0.1)
-                    self.generator_optimizer.step()
-
-            # if was_training:
-            #     self.discriminator.train()
-            #     self.encoder.train()
-            #     self.latent_compressor.train()
-
-            self.set_trainable(encoder=True, latent_compressor=True, discriminator=True)
-
-            if self.train_discriminator_not_generator:
-                self.disc_losses.append(D_loss.item())
-                if len(self.disc_losses) == 100:
-                    lst = self.disc_losses[:100]
-                    mean = sum(lst) / len(lst)
-                    self.disc_loss_init = mean
-                elif len(self.disc_losses) > 100:
-                    lst = self.disc_losses[-100:]
-                    mean = sum(lst) / len(lst)
-                    if mean < self.disc_loss_init / 2:
-                        self.train_discriminator_not_generator = False
-                        self.disc_losses = []
-                        self.disc_loss_init = None
-            else:
-                self.gen_losses.append(G_loss.item())
-                if len(self.gen_losses) == 100:
-                    lst = self.gen_losses[:100]
-                    mean = sum(lst) / len(lst)
-                    self.gen_loss_init = mean
-                elif len(self.gen_losses) > 100:
-                    lst = self.gen_losses[-100:]
-                    mean = sum(lst) / len(lst)
-                    if mean < self.gen_loss_init / 4:
-                        self.train_discriminator_not_generator = True
-                        self.gen_losses = []
-                        self.gen_loss_init = None
-
-            # # TODO by loss
-            # if D_loss is not None and D_loss.item() < self.disc_loss_limit:
-            #     self.train_discriminator_not_generator = False
-            #     self.disc_loss_limit -= self.disc_loss_limit/2
-            #     print("Training discriminator")
-            # if G_loss is not None and G_loss.item() < self.gen_loss_limit:
-            #     self.train_discriminator_not_generator = True
-            #     self.gen_loss_limit -= self.gen_loss_limit/2
-            #     print("Training generator")
-            #
-            # # TODO by step
-            # if self.step % config["train"]["aae_disc_steps"] == 0 and self.train_discriminator_not_generator:
-            #     self.train_discriminator_not_generator = False
-            #     print("Training generator")
-            # elif self.step % config["train"]["aae_gen_steps"] == 0 and not self.train_discriminator_not_generator:
-            #     self.train_discriminator_not_generator = True
-            #     print("Training discriminator")
-
-            losses = losses + (D_loss.item() if D_loss is not None else None,
-                               G_loss.item() if G_loss is not None else None,
-                               D_real[0][0].item() if D_real is not None else None,
-                               D_fake[0][0].item() if D_fake is not None else None,
-                               G_fake[0][0].item() if G_fake is not None else None)
         return losses
 
     def train(self):
@@ -372,21 +331,20 @@ class Trainer:
         self.decoder_optimizer = CTOpt(torch.optim.Adam([{"params": self.decoder.parameters()}], lr=0),
                                        config["train"]["warmup_steps"],
                                        (config["train"]["lr_min"], config["train"]["lr_max"]),
-                                       config["train"]["decay_steps"], config["train"]["minimum_lr"])  # TODO add other
+                                       config["train"]["decay_steps"], config["train"]["minimum_lr"])
         if config["train"]["aae"]:
-            ds = config["train"]["disc_scale"]
-            self.discriminator_optimizer = CTOpt(torch.optim.Adam([{"params": self.discriminator.parameters()}], lr=0),
-                                                 config["train"]["warmup_steps"],
-                                                 (config["train"]["lr_min"] * ds, config["train"]["lr_max"] * ds),
-                                                 config["train"]["decay_steps"], config["train"]["minimum_lr"] * ds)
-            gs = config["train"]["gen_scale"]
-            self.generator_optimizer = CTOpt(torch.optim.Adam([{"params": self.encoder.parameters()},
-                                                               {"params": self.latent_compressor.parameters()}], lr=0),
-                                             config["train"]["warmup_steps"],
-                                             (config["train"]["lr_min"] * gs, config["train"]["lr_max"] * gs),
-                                             config["train"]["decay_steps"], config["train"]["minimum_lr"] * gs)
-            # self.gen_loss_limit = config["train"]["gen_loss_limit"]
-            # self.disc_loss_limit = config["train"]["disc_loss_limit"]
+            r = config["train"]["reg_scale"]
+            self.disc_optimizer = CTOpt(torch.optim.Adam([{"params": self.discriminator.parameters()}], lr=0),
+                                        config["train"]["warmup_steps"],
+                                        (config["train"]["lr_min"]*r, config["train"]["lr_max"]*r),
+                                        config["train"]["decay_steps"], config["train"]["minimum_lr"]*r
+                                        )
+            self.gen_optimizer = CTOpt(torch.optim.Adam([{"params": self.encoder.parameters()},
+                                                         {"params": self.latent_compressor.parameters()}], lr=0),
+                                       config["train"]["warmup_steps"],
+                                       (config["train"]["lr_min"]*r, config["train"]["lr_max"]*r),
+                                       config["train"]["decay_steps"], config["train"]["minimum_lr"]*r
+                                       )
         # Loss
         criterion = LabelSmoothing(size=config["tokens"]["vocab_size"],
                                    padding_idx=config["tokens"]["pad"],
@@ -470,7 +428,14 @@ class Trainer:
                     for elem in batch:  # create mb
                         mb = mb + (elem[:, :, bar_it, ...],)
                     tr_losses = self.run_mb(mb)
-                    self.logger.log_losses(tr_losses, self.encoder_optimizer.lr, self.encoder.training)
+
+                    beta = None
+                    if config["train"]["aae"]:
+                        beta = self.beta
+                    self.logger.log_losses(tr_losses, self.encoder_optimizer.lr, self.encoder.training, beta,
+                                           self.latent)
+                    if config["train"]["aae"]:
+                        self.logger.log_lr(self.disc_optimizer.lr, self.gen_optimizer.lr)
                     train_progress.update()
 
                     # Eval
@@ -520,11 +485,12 @@ class Trainer:
                                                                             "latent_compressor_" + str(
                                                                                 self.step) + '.pt'))
                             torch.save(self.decoder, os.path.join(self.save_path, "decoder_" + str(self.step) + '.pt'))
-                            if config["train"]["aae"]:
+                            if config["train"]["aae"] and False:  # TODO adjust to save full model
                                 torch.save(self.discriminator,
                                            os.path.join(self.save_path, "discriminator_" + str(self.epoch) + '.pt'))
                             print("Model saved")
-                        self.logger.log_losses(final, self.encoder_optimizer.lr, self.encoder.training)
+                        self.logger.log_losses(final, self.encoder_optimizer.lr, self.encoder.training, self.beta,
+                                               self.latent)
 
                         # Reconstruction and generation
                         if config["train"]["verbose"]:

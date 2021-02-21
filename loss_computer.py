@@ -1,4 +1,6 @@
 import torch
+from config import config
+from torch import autograd
 
 
 class SimpleLossCompute:
@@ -55,3 +57,28 @@ def compute_accuracy(x, y, pad):
                     if xijk == yijk:
                         true += 1
     return true/count
+
+
+def calc_gradient_penalty(model, real_data, gen_data):
+    device = config["train"]["device"]
+    batch_size = config["train"]["batch_size"]
+    alpha = torch.rand(batch_size, 1)
+
+    alpha = alpha.expand(real_data.size()).to(device)
+
+    interpolates = alpha * real_data + ((1 - alpha) * gen_data)
+    interpolates = autograd.Variable(interpolates.to(device), requires_grad=True)
+    score_interpolates = model(interpolates)
+
+    gradients = autograd.grad(
+        outputs=score_interpolates,
+        inputs=interpolates,
+        grad_outputs=torch.ones(score_interpolates.size()).to(device),
+        create_graph=True,
+        retain_graph=True,
+        only_inputs=True
+    )[0]
+
+    gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean()
+
+    return gradient_penalty

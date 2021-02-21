@@ -35,8 +35,15 @@ config = {
         "test_loss": False,
         "train_aae_after_steps": 0,
         "aae_label_smoothing": 0.1,
+        "disc_loss_reduction": 2 if remote else 2,
+        "gen_loss_reduction": 4 if remote else 4,
         "disc_scale": 0.4,
-        "gen_scale": 0.1
+        "gen_scale": 0.1,
+        "reg_loss_avg": 100 if remote else 10,
+        "increase_beta_every": 1000 if remote else 1,
+        "lambda": 10,
+        "critic_iterations": 5,
+        "reg_scale": 1  # 0.2
     },
     "model": {
         "seq_len": max_bar_length,
@@ -50,7 +57,8 @@ config = {
         "reconstruction_attn_dropout": 0.1,
         "attn_layer_dropout": 0.1,
         "ff_dropout": 0.1,
-        "discriminator_dropout": 0.1
+        "discriminator_dropout": 0.1,
+        "n_latents": 3
     },
     "data": {  # Parameters to create and listen the note representation
         "max_bar_length": max_bar_length,

@@ -31,8 +31,11 @@ class CTOpt:
         self.n_step += 1
         return lr
 
-    def step(self):
-        self.lr = self.get_lr()
+    def step(self, lr=None):
+        if lr is None:
+            self.lr = self.get_lr()
+        else:
+            self.lr = lr
         for p in self.optimizer.param_groups:
             p['lr'] = self.lr
         self.optimizer.step()

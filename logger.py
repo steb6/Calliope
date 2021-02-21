@@ -13,9 +13,10 @@ class Logger:
         pass
 
     @staticmethod
-    def log_losses(losses, lr, train):
+    def log_losses(losses, lr, train, beta, latent):
         mode = "train/" if train else "eval/"
         log = {"stuff/lr": lr,
+               "stuff/latent": latent,
                mode + "loss": losses[0],
                mode + "accuracy": losses[1],
                mode + "encoder attention loss": losses[2],
@@ -24,38 +25,32 @@ class Logger:
                mode + "guitar loss": losses[5],
                mode + "bass loss": losses[6],
                mode + "strings loss": losses[7]}
-        if config["train"]["aae"] and len(losses) == 13:  # TODO careful
-            if losses[8] is not None:
-                log[mode + "discriminator loss"] = losses[8]
-            if losses[9] is not None:
-                log[mode + "generator loss"] = losses[9]
-            if losses[10] is not None:
-                log[mode + "discriminator real score"] = losses[10]
-            if losses[11] is not None:
-                log[mode + "discriminator fake score"] = losses[11]
-            if losses[12] is not None:
-                log[mode + "generator fake score"] = losses[12]
+        if beta is not None:
+            log["stuff/beta"] = beta
+        if config["train"]["aae"] and len(losses) == 14:
+            log[mode + "discriminator real score"] = losses[8]
+            log[mode + "discriminator fake score"] = losses[9]
+            log[mode + "generator score"] = losses[10]
+            log[mode + "loss_critic"] = losses[11]
+            log[mode + "loss_gen"] = losses[12]
+            log[mode + "wasserstain distance"] = losses[13]
+        # if config["train"]["aae"] and len(losses) == 13:  # TODO careful
+        #     if losses[8] is not None:
+        #         log[mode + "discriminator loss"] = losses[8]
+        #     if losses[9] is not None:
+        #         log[mode + "generator loss"] = losses[9]
+        #     if losses[10] is not None:
+        #         log[mode + "discriminator real score"] = losses[10]
+        #     if losses[11] is not None:
+        #         log[mode + "discriminator fake score"] = losses[11]
+        #     if losses[12] is not None:
+        #         log[mode + "generator fake score"] = losses[12]
         wandb.log(log)
 
     @staticmethod
-    def log_latent(latent):
-        latent = latent[0].transpose(0, 1).detach().cpu().numpy()  # transpose sequence length and batch
-        wandb.log({"Latent": latent[0]})
-        # latent = latent[0].transpose(0, 1).detach().cpu().numpy()  # transpose sequence length and batch
-        # T = [{'img': 0, 'picture': latent}]
-        # df = pd.DataFrame(T)
-        # true_height = latent.shape[-2]
-        # true_width = latent.shape[-1]
-        # aspect = true_width / true_height
-        # # grid = sns.FacetGrid(df, row='img', aspect=aspect)
-        # grid = sns.FacetGrid(df, col='img')
-        # grid.map(lambda x, **kwargs: (sns.heatmap(x.values[0]), plt.grid(False)), 'picture')
-        # wandb.log({"Latent": [wandb.Image(plt, caption="Latent")]})
-        # plt.close()
-        # # sns.heatmap(latent)
-        # # # plt.show()
-        # # wandb.log({"Latent": [wandb.Image(plt, caption="Latent")]})
-        # # plt.close()
+    def log_lr(disc, gen):
+        wandb.log({"stuff/disc lr": disc,
+                   "stuff/gen lr": gen})
 
     @staticmethod
     def log_examples(e_in, d_in, pred, exp):
