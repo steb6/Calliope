@@ -18,12 +18,13 @@ import shutil
 if __name__ == "__main__":  # TODO put here assert I guess
     set_freer_gpu()
 
-    if config["train"]["create_dataset"]:
-        shutil.rmtree(config["paths"]["dataset"], ignore_errors=True)
-        notes = NoteRepresentationManager()
-        notes.convert_dataset()
+    answer = ""
+    while answer not in ["y", "n"]:
+        answer = input("Dataset will be created from zero, do you want to proceed?").lower()
 
-    assert config["train"]["batch_size"] > 1, "This can cause problem with squeeze in aae"
+    shutil.rmtree(config["paths"]["dataset"], ignore_errors=True)
+    notes = NoteRepresentationManager()
+    notes.convert_dataset()
 
     trainer = Trainer()
     trainer.train()

@@ -1,7 +1,7 @@
 from config import config
 from train import Trainer
 import os
-from create_dataset import NoteRepresentationManager
+from create_bar_dataset import NoteRepresentationManager
 
 if __name__ == "__main__":
     note_manager = NoteRepresentationManager(**config["tokens"], **config["data"], **config["paths"])

@@ -12,7 +12,6 @@ class LatentCompressor(nn.Module):
         n_batch, n_track, seq_len, d_model = latent.shape
         latent = latent.reshape(n_batch, seq_len, d_model*4)
         latent = self.compressor(latent)
-        # latent = torch.mean(latent, dim=1, keepdim=True)
         latent = latent[:, :config["model"]["n_latents"], :]
         latent = latent.reshape(n_batch, -1)
         return latent

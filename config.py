@@ -5,52 +5,45 @@ import numpy as np
 
 remote = os.getcwd() != 'C:\\Users\\berti\\PycharmProjects\\MusAE'
 
-max_bar_length = 150  # for preprocessing, seq_len, mem_len e cmem_len
+max_bar_length = 200  # for preprocessing, seq_len, mem_len e cmem_len
 
 config = {
     "train": {
-        "verbose": False,
-        "do_eval": False,
+        "verbose": True,
+        "make_songs": True,
+        "log_images": True,
+        "do_eval": True,
         "aae": True,
-        "create_dataset": False,
+        "test_losses": False,
         "device": "cuda" if remote else "cpu",
-        "batch_size": 3 if remote else 3,
+        "batch_size": 1 if remote else 1,
         "test_size": 0.001 if remote else 0.3,  # 100 on remote  it was 0.0001 in remote
-        "truncated_bars": 16 if remote else 6,  # To truncate the song along bars
         "n_workers": 0,
         "n_epochs": 25000,
         "label_smoothing": 0.1,
-        "mb_before_eval": 1000 if remote else 1000,  # if >= early_stopping, happens at each epoch
-        "after_mb_log_attn_img": 1000 if remote else 1000,
-        "after_mb_log_examples": 1000 if remote else 1000,
-        "after_mb_log_memories": 1000 if remote else 1000,
+        "mb_before_eval": 1000 if remote else 1,  # if >= early_stopping, happens at each epoch
+        "after_mb_log_attn_img": 1000 if remote else 1,
+        "after_mb_log_examples": 1000 if remote else 1,
+        "after_mb_log_memories": 1000 if remote else 1,
         "warmup_steps": 4000,
         "lr_min": 1e-4,
         "lr_max": 1e-3,
         "decay_steps": 50000,
         "minimum_lr": 5e-5,
         "generated_iterations": 16,
-        "ratio_reg_opt": 2,
-        "reg_lr": 1e-4,
-        "test_loss": False,
+        # "test_loss": False,
         "train_aae_after_steps": 0,
-        "aae_label_smoothing": 0.1,
-        "disc_loss_reduction": 2 if remote else 2,
-        "gen_loss_reduction": 4 if remote else 4,
-        "disc_scale": 0.4,
-        "gen_scale": 0.1,
-        "reg_loss_avg": 100 if remote else 10,
-        "increase_beta_every": 1000 if remote else 1,
+        "increase_beta_every": 2000 if remote else 1,
+        "max_beta": 0.3 if remote else 1,
         "lambda": 10,
         "critic_iterations": 5,
-        "reg_scale": 1  # 0.2
     },
     "model": {
         "seq_len": max_bar_length,
         "d_model": 32,
         "heads": 4,
         "ff_mul": 2,
-        "layers": 4 if remote else 2,  # if remote else 1,  # 3 GB each
+        "layers": 7 if remote else 2,  # if remote else 1,  # 3 GB each
         "mem_len": max_bar_length,  # keep last 2 seq
         "cmem_len": max_bar_length,  # keep 4 compression
         "cmem_ratio": 4,
@@ -58,14 +51,15 @@ config = {
         "attn_layer_dropout": 0.1,
         "ff_dropout": 0.1,
         "discriminator_dropout": 0.1,
-        "n_latents": 3
+        "n_latents": 16
     },
     "data": {  # Parameters to create and listen the note representation
+        "truncated_bars": 32 if remote else 32,  # To truncate the song along bars
         "max_bar_length": max_bar_length,
-        "max_bars": 100,
+        "max_bars": 200,
         "use_velocity": True,
         "reconstruction_programs": [0, 0, 32, 40],
-        "early_stop": 0 if remote else 10,  # set this to 0 to disable early stop
+        "early_stop": 0 if remote else 100,  # set this to 0 to disable early stop
         "resolution": 24,
         "tempo": 120,
         "velocities_total": (0, 127),  # using min max scaling, limits are inclusive
@@ -89,7 +83,8 @@ config = {
     },
     "paths": {
         "raw_midi": "/data" if remote else "D:",
-        "dataset": ("/data" if remote else "D:") + os.sep + "lmd_matched_converted",
+        "dataset": ("/data" if remote else ".") + os.sep + "lmd_matched_converted",
+        "checkpoints": ("/data" if remote else ".") + os.sep + "musae_model_checkpoints"
     }
 }
 

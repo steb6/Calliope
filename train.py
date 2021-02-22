@@ -19,6 +19,8 @@ from utilities import get_memories, create_trg_mask, pad_attention
 from discriminator import Discriminator
 from torch.autograd import Variable
 from loss_computer import calc_gradient_penalty
+from config import set_freer_gpu
+import time
 
 
 class Trainer:
@@ -46,12 +48,19 @@ class Trainer:
             self.gen_losses = []
             self.disc_loss_init = None
             self.gen_loss_init = None
-            self.beta = -0.1
+            self.beta = -0.1  # so it become 0 at first iteration
             self.reg_optimizer = None
 
     @staticmethod
     def get_prior(shape):
-        return Variable(torch.randn(*shape) * 5.).to(config["train"]["device"])
+        reduced_shape = tuple([shape[0], shape[1] // 4])
+        g1 = torch.randn(*reduced_shape) - 2
+        g2 = torch.randn(*reduced_shape) - 6
+        g3 = torch.randn(*reduced_shape) + 2
+        g4 = torch.randn(*reduced_shape) + 6
+        g = torch.cat([g1, g2, g3, g4], dim=1)
+        return Variable(g).to(config["train"]["device"])
+        # return Variable(torch.randn(*shape) * 5.).to(config["train"]["device"])  # single gaussian
 
     def test_losses(self, loss, e_attn_losses, d_attn_losses):
         losses = [loss, e_attn_losses, d_attn_losses]
@@ -81,8 +90,7 @@ class Trainer:
                                     config["model"]["d_model"])
         outs = []
         src_mask = torch.full((4, 1, 1), True).to(config["train"]["device"])  # TODO create src mask all true
-        for b in tqdm(range(config["train"]["generated_iterations"]),
-                      desc="Generating song"):  # generate generated_iterations bars
+        for _ in tqdm(range(config["train"]["generated_iterations"]), position=0, leave=True, desc="Generating song"):
             trg = np.full((4, 1, 1), config["tokens"]["sos"])
             trg = torch.LongTensor(trg).to(config["train"]["device"])
             for _ in range(config["model"]["seq_len"] - 1):  # for each token of each bar
@@ -122,24 +130,24 @@ class Trainer:
         outs = torch.stack(outs, dim=1)
         outs = outs.permute(0, 4, 1, 2, 3)
         outs = torch.max(outs, dim=-1).indices
-        outs = outs[0]
         srcs = srcs.permute(2, 1, 0, 3)
-        # srcs = srcs.reshape(config["train"]["batch_size"], 4, -1)
-        srcs = srcs[0]
+        # find song with more notes
+        best = 0
+        max_notes = 0
+        for i, src in enumerate(srcs):
+            candidate = src.reshape(-1)
+            n_tokens = torch.numel(candidate) - \
+                       (candidate == config["tokens"]["pad"]).sum().item() - \
+                       (candidate == config["tokens"]["sos"]).sum().item() - \
+                       (candidate == config["tokens"]["eos"]).sum().item()
+            if n_tokens > max_notes:
+                max_notes = n_tokens
+                best = i
+        outs = outs[best]
+        srcs = srcs[best]
         original = note_manager.reconstruct_music(srcs.cpu().numpy())
         reconstructed = note_manager.reconstruct_music(outs.cpu().numpy())
-        # reconstructed = note_manager.cut_song(reconstructed, original.get_end_time())
         return original, reconstructed
-
-    def set_trainable(self, encoder, latent_compressor, discriminator):
-        models = [self.encoder, self.latent_compressor, self.discriminator]
-        trains = [encoder, latent_compressor, discriminator]
-
-        for model, train in zip(models, trains):
-            model.zero_grad()
-            model.train() if train else model.eval()
-            for parameter in model.parameters():
-                parameter.requires_grad = train
 
     def run_mb(self, batch):
         # SETUP VARIABLES
@@ -198,20 +206,22 @@ class Trainer:
         losses = (loss.item(), accuracy, e_attn_losses.item(), d_attn_losses.item(), *loss_items)
 
         # SOME TESTS
-        if self.encoder.training and config["train"]["verbose"]:
+        if self.encoder.training and config["train"]["log_images"]:
             if self.step % config["train"]["after_mb_log_attn_img"] == 0:
-                # enc_self_weights = pad_attention(enc_self_weights)
-                # dec_self_weights = pad_attention(dec_self_weights)
-                # dec_src_weights = pad_attention(dec_src_weights)
+                print("Logging latent image...")
+                self.logger.log_latent(self.latent)
+                print("Logging attention images...")
                 enc_self_weights = torch.stack(enc_self_weights)
                 dec_self_weights = torch.stack(dec_self_weights)
                 dec_src_weights = torch.stack(dec_src_weights)
                 self.logger.log_attn_heatmap(enc_self_weights, dec_self_weights, dec_src_weights)
             if self.step % config["train"]["after_mb_log_memories"] == 0:
+                print("Logging memory images...")
                 self.logger.log_memories(e_mems, e_cmems, d_mems, d_cmems)
             if self.step % config["train"]["after_mb_log_examples"] == 0:
+                print("Logging examples...")
                 self.logger.log_examples(srcs, trgs, outs, trg_ys)
-            if self.step == 0 and config["train"]["test_loss"]:
+            if self.step == 0 and config["train"]["test_losses"]:
                 self.test_losses(loss, e_attn_losses, d_attn_losses)
 
         # OPTIMIZE
@@ -233,7 +243,7 @@ class Trainer:
 
         if config["train"]["aae"] and self.encoder.training:  # TODO adjust for evaluation
 
-            if self.step % config["train"]["increase_beta_every"] == 0 and self.beta < 1:
+            if self.step % config["train"]["increase_beta_every"] == 0 and self.beta < config["train"]["max_beta"]:
                 self.beta += 0.1
 
             if self.beta > 0:
@@ -263,7 +273,7 @@ class Trainer:
                                                              latent.data)
 
                     loss_critic = (
-                            torch.mean(D_fake) - torch.mean(D_real) + config["train"]["lambda"]*gradient_penalty
+                            torch.mean(D_fake) - torch.mean(D_real) + config["train"]["lambda"] * gradient_penalty
                     )
                     loss_critic = loss_critic * self.beta
 
@@ -305,12 +315,11 @@ class Trainer:
         return losses
 
     def train(self):
-
         # Create checkpoint folder
         timestamp = str(datetime.now())
         timestamp = timestamp[:timestamp.index('.')]
         timestamp = timestamp.replace(' ', '_').replace(':', '-')
-        self.save_path = timestamp
+        self.save_path = config["paths"]["checkpoints"] + os.sep + timestamp
         os.mkdir(self.save_path)
 
         # Create models
@@ -333,17 +342,16 @@ class Trainer:
                                        (config["train"]["lr_min"], config["train"]["lr_max"]),
                                        config["train"]["decay_steps"], config["train"]["minimum_lr"])
         if config["train"]["aae"]:
-            r = config["train"]["reg_scale"]
             self.disc_optimizer = CTOpt(torch.optim.Adam([{"params": self.discriminator.parameters()}], lr=0),
                                         config["train"]["warmup_steps"],
-                                        (config["train"]["lr_min"]*r, config["train"]["lr_max"]*r),
-                                        config["train"]["decay_steps"], config["train"]["minimum_lr"]*r
+                                        (config["train"]["lr_min"], config["train"]["lr_max"]),
+                                        config["train"]["decay_steps"], config["train"]["minimum_lr"]
                                         )
             self.gen_optimizer = CTOpt(torch.optim.Adam([{"params": self.encoder.parameters()},
                                                          {"params": self.latent_compressor.parameters()}], lr=0),
                                        config["train"]["warmup_steps"],
-                                       (config["train"]["lr_min"]*r, config["train"]["lr_max"]*r),
-                                       config["train"]["decay_steps"], config["train"]["minimum_lr"]*r
+                                       (config["train"]["lr_min"], config["train"]["lr_max"]),
+                                       config["train"]["decay_steps"], config["train"]["minimum_lr"]
                                        )
         # Loss
         criterion = LabelSmoothing(size=config["tokens"]["vocab_size"],
@@ -363,7 +371,7 @@ class Trainer:
         # Wandb
         self.logger = Logger()
         wandb.login()
-        wandb.init(project="MusAE", config=config, name="r_" + self.save_path if remote else "l_" + self.save_path)
+        wandb.init(project="MusAE", config=config, name="r_" + timestamp if remote else "l_" + timestamp)
         wandb.watch(self.encoder)
         wandb.watch(self.latent_compressor)
         wandb.watch(self.decoder)
@@ -371,34 +379,34 @@ class Trainer:
             wandb.watch(self.discriminator)
 
         # Print info about training
-        cmem_range = config["model"]["cmem_len"] * config["model"]["cmem_ratio"]
-        max_range = config["model"]["layers"] * (cmem_range + config["model"]["mem_len"])
-        given = config["train"]["truncated_bars"] * config["model"]["seq_len"]
-        assert given <= max_range, "Given {} as input to model with max range {}".format(given, max_range)
-        print("Giving ", given, " as input to model with a maximum range of ", max_range)
-        print("Giving ", len(tr_loader), " training samples and ", len(ts_loader), " test samples")
-        print("Giving ", config["train"]["truncated_bars"], " bars to a model with ",
-              config["model"]["layers"], " layers")
-        if config["train"]["aae"]:
-            print("Imposing prior distribution on latents")
-            # print("With a learning rate of ", config["train"]["reg_lr"])
-            # print("With a scale factor on reg_lr of ", config["train"]["ratio_reg_opt"])
-            print("Starting training aae after ", config["train"]["train_aae_after_steps"])
-            # print("Initial Discriminator loss limit is ", config["train"]["disc_loss_limit"])
-            # print("Initial generator loss limit is ", config["train"]["gen_loss_limit"])
-            print("With a discriminator label smoothing of ", config["train"]["aae_label_smoothing"])
-            print("Discriminator scale is ", config["train"]["disc_scale"])
-            print("Generator scale is ", config["train"]["gen_scale"])
-        else:
-            print("Just autoencoding")
+        time.sleep(1.)  # sleep for one second to let the machine connect to wandb
         if config["train"]["verbose"]:
-            print("VERBOSE MODE ON")
-        else:
-            print("VERBOSE MODE OFF: no images or song will be made")
-        if config["train"]["do_eval"]:
-            print("DOING evaluation")
-        else:
-            print("NOT DOING evaluation")
+            cmem_range = config["model"]["cmem_len"] * config["model"]["cmem_ratio"]
+            max_range = config["model"]["layers"] * (cmem_range + config["model"]["mem_len"])
+            given = config["data"]["truncated_bars"] * config["model"]["seq_len"]
+            assert given <= max_range, "Given {} as input to model with max range {}".format(given, max_range)
+            print("Giving ", given, " as input to model with a maximum range of ", max_range)
+            print("Giving ", len(tr_loader), " training samples and ", len(ts_loader), " test samples")
+            print("Giving ", config["data"]["truncated_bars"], " bars to a model with ",
+                  config["model"]["layers"], " layers")
+            if config["train"]["aae"]:
+                print("Imposing prior distribution on latents")
+                print("Starting training aae after ", config["train"]["train_aae_after_steps"])
+                print("lambda:", config["train"]["lambda"], ", critic iterations:", config["train"]["critic_iterations"])
+            else:
+                print("NOT autoencoding")
+            if config["train"]["log_images"]:
+                print("Logging images")
+            else:
+                print("NOT logging images")
+            if config["train"]["make_songs"]:
+                print("making songs")
+            else:
+                print("NOT making songs")
+            if config["train"]["do_eval"]:
+                print("doing evaluation")
+            else:
+                print("NOT DOING evaluation")
 
         # Train
         self.encoder.train()
@@ -408,127 +416,109 @@ class Trainer:
             self.discriminator.train()
         desc = "Train epoch " + str(self.epoch) + ", mb " + str(0)
         train_progress = tqdm(total=config["train"]["mb_before_eval"], position=0, leave=True, desc=desc)
-        it_counter = 0
         self.step = 0  # -1 to do eval in first step
-        best_ts_loss = float("inf")
+
+        # main loop
         for self.epoch in range(config["train"]["n_epochs"]):  # for each epoch
             for song_it, batch in enumerate(tr_loader):  # for each song
-                for bar_it in range(batch[0].shape[2]):  # for each bar groups
 
-                    # Train
-                    n_tokens = 0  # useful only with few bars
-                    n_tokens += torch.numel(batch[0][:, :, bar_it, ...]) - \
-                                (batch[0][:, :, bar_it, ...] == config["tokens"]["pad"]).sum().item() - \
-                                (batch[0][:, :, bar_it, ...] == config["tokens"]["sos"]).sum().item() - \
-                                (batch[0][:, :, bar_it, ...] == config["tokens"]["eos"]).sum().item()
-                    if n_tokens == 0:
-                        print("Empty bars skipped")
-                        continue
-                    mb = ()
-                    for elem in batch:  # create mb
-                        mb = mb + (elem[:, :, bar_it, ...],)
-                    tr_losses = self.run_mb(mb)
+                #########
+                # TRAIN #
+                #########
+                tr_losses = self.run_mb(batch)
 
-                    beta = None
+                self.logger.log_losses(tr_losses, self.encoder.training)
+                self.logger.log_stuff(self.encoder_optimizer.lr,
+                                      self.latent,
+                                      self.disc_optimizer.lr if config["train"]["aae"] else None,
+                                      self.gen_optimizer.lr if config["train"]["aae"] else None,
+                                      self.beta if config["train"]["aae"] else None,
+                                      self.get_prior(self.latent.shape) if config["train"]["aae"] else None)
+                train_progress.update()
+
+                ########
+                # EVAL #
+                ########
+                if self.step % config["train"]["mb_before_eval"] == 0 and config["train"]["do_eval"]:
+                    train_progress.close()
+                    ts_losses = []
+
+                    self.encoder.eval()
+                    self.latent_compressor.eval()
+                    self.decoder.eval()
+
                     if config["train"]["aae"]:
-                        beta = self.beta
-                    self.logger.log_losses(tr_losses, self.encoder_optimizer.lr, self.encoder.training, beta,
-                                           self.latent)
+                        self.discriminator.eval()
+                    desc = "Eval epoch " + str(self.epoch) + ", mb " + str(song_it)
+
+                    # Compute validation score
+                    for test in tqdm(ts_loader, position=0, leave=True, desc=desc):  # remember test losses
+                        with torch.no_grad():
+                            ts_loss = self.run_mb(test)
+                        ts_losses.append(ts_loss)
+                    final = ()  # average losses
+                    for i in range(len(ts_losses[0])):  # for each loss value
+                        aux = []
+                        for loss in ts_losses:  # for each computed loss
+                            aux.append(loss[i])
+                        avg = sum(aux) / len(aux)
+                        final = final + (avg,)
+
+                    # Save best models
+                    full_path = self.save_path + os.sep + str(self.step)
+                    os.makedirs(full_path)
+                    print("Saving last model in " + full_path + ", DO NOT INTERRUPT")
+                    torch.save(self.encoder, os.path.join(full_path, "encoder.pt"))
+                    torch.save(self.latent_compressor, os.path.join(full_path,
+                                                                    "latent_compressor.pt"))
+                    torch.save(self.decoder, os.path.join(full_path, "decoder.pt"))
+                    print("Model saved")
+                    self.logger.log_losses(final, self.encoder.training)
+
+                    if config["train"]["make_songs"]:
+
+                        # RECONSTRUCTION
+                        note_manager = NoteRepresentationManager()
+                        to_reconstruct = test
+                        original, reconstructed = self.reconstruct(to_reconstruct, note_manager)
+                        prefix = "epoch_" + str(self.epoch) + "_mb_" + str(song_it)
+                        original.write_midi(os.path.join(wandb.run.dir, prefix + "_original.mid"))
+                        reconstructed.write_midi(os.path.join(wandb.run.dir, prefix + "_reconstructed.mid"))
+                        midi_to_wav(os.path.join(wandb.run.dir, prefix + "_original.mid"),
+                                    os.path.join(wandb.run.dir, prefix + "_original.wav"))
+                        midi_to_wav(os.path.join(wandb.run.dir, prefix + "_reconstructed.mid"),
+                                    os.path.join(wandb.run.dir, prefix + "_reconstructed.wav"))
+                        songs = [
+                            wandb.Audio(os.path.join(wandb.run.dir, prefix + "_original.wav"),
+                                        caption="original", sample_rate=32),
+                            wandb.Audio(os.path.join(wandb.run.dir, prefix + "_reconstructed.wav"),
+                                        caption="reconstructed", sample_rate=32)]
+                        wandb.log({"validation reconstruction example": songs})
+
+                        if config["train"]["aae"]:
+                            # GENERATION
+                            generated = self.greedy_decoding(note_manager)  # generation
+                            generated.write_midi(os.path.join(wandb.run.dir, prefix + "_generated.mid"))
+                            midi_to_wav(os.path.join(wandb.run.dir, prefix + "_generated.mid"),
+                                        os.path.join(wandb.run.dir, prefix + "_generated.wav"))
+                            gen = [(wandb.Audio(os.path.join(wandb.run.dir, prefix + "_generated.wav"),
+                                                caption="generated", sample_rate=32))]
+                            wandb.log({"generated": gen})
+
+                    # eval end
+                    self.encoder.train()
+                    self.latent_compressor.train()
+                    self.decoder.train()
                     if config["train"]["aae"]:
-                        self.logger.log_lr(self.disc_optimizer.lr, self.gen_optimizer.lr)
-                    train_progress.update()
+                        self.discriminator.train()
+                    desc = "Train epoch " + str(self.epoch) + ", mb " + str(song_it)
+                    train_progress = tqdm(total=config["train"]["mb_before_eval"], position=0, leave=True,
+                                          desc=desc)
 
-                    # Eval
-                    if self.step % config["train"]["mb_before_eval"] == 0 and config["train"]["do_eval"]:
-                        train_progress.close()
-                        ts_losses = []
-                        self.encoder.eval()
-                        self.latent_compressor.eval()
-                        self.decoder.eval()
-                        if config["train"]["aae"]:
-                            self.discriminator.eval()
-                        desc = "Eval epoch " + str(self.epoch) + ", mb " + str(song_it)
+                self.step += 1
 
-                        # Compute validation score
-                        for test in tqdm(ts_loader, position=0, leave=True, desc=desc):  # remember test losses
-                            for i in range(test[0].shape[2]):
-                                n_tokens = 0  # useful only with few bars
-                                n_tokens += torch.numel(test[0][:, :, i, ...]) - \
-                                            (test[0][:, :, i, ...] == config["tokens"]["pad"]).sum().item() - \
-                                            (test[0][:, :, i, ...] == config["tokens"]["sos"]).sum().item() - \
-                                            (test[0][:, :, i, ...] == config["tokens"]["eos"]).sum().item()
-                                if n_tokens == 0:
-                                    print("Empty bars skipped")
-                                    continue
-                                ts_mb = ()
-                                for elem in test:  # create mb
-                                    ts_mb = ts_mb + (elem[:, :, i, ...],)
-                                with torch.no_grad():
-                                    ts_loss = self.run_mb(ts_mb)
-                                ts_losses.append(ts_loss)
-                        final = ()  # average losses
-                        for i in range(len(ts_losses[0])):  # for each loss value
-                            aux = []
-                            for loss in ts_losses:  # for each computed loss
-                                aux.append(loss[i])
-                            avg = sum(aux) / len(aux)
-                            final = final + (avg,)
 
-                        # Save best models
-                        if final[0] < best_ts_loss:
-                            print("Saving best model in " + self.save_path + ", DO NOT INTERRUPT")
-                            for filename in glob.glob(os.path.join(self.save_path, '*')):
-                                os.remove(filename)
-                            best_ts_loss = final[0]
-                            torch.save(self.encoder, os.path.join(self.save_path, "encoder_" + str(self.step) + '.pt'))
-                            torch.save(self.latent_compressor, os.path.join(self.save_path,
-                                                                            "latent_compressor_" + str(
-                                                                                self.step) + '.pt'))
-                            torch.save(self.decoder, os.path.join(self.save_path, "decoder_" + str(self.step) + '.pt'))
-                            if config["train"]["aae"] and False:  # TODO adjust to save full model
-                                torch.save(self.discriminator,
-                                           os.path.join(self.save_path, "discriminator_" + str(self.epoch) + '.pt'))
-                            print("Model saved")
-                        self.logger.log_losses(final, self.encoder_optimizer.lr, self.encoder.training, self.beta,
-                                               self.latent)
-
-                        # Reconstruction and generation
-                        if config["train"]["verbose"]:
-                            note_manager = NoteRepresentationManager()
-                            to_reconstruct = ts_mb if remote else mb
-                            original, reconstructed = self.reconstruct(to_reconstruct, note_manager)
-                            prefix = "epoch_" + str(self.epoch) + "_mb_" + str(song_it)
-                            original.write_midi(os.path.join(wandb.run.dir, prefix + "_original.mid"))
-                            reconstructed.write_midi(os.path.join(wandb.run.dir, prefix + "_reconstructed.mid"))
-                            midi_to_wav(os.path.join(wandb.run.dir, prefix + "_original.mid"),
-                                        os.path.join(wandb.run.dir, prefix + "_original.wav"))
-                            midi_to_wav(os.path.join(wandb.run.dir, prefix + "_reconstructed.mid"),
-                                        os.path.join(wandb.run.dir, prefix + "_reconstructed.wav"))
-                            songs = [
-                                wandb.Audio(os.path.join(wandb.run.dir, prefix + "_original.wav"),
-                                            caption="original", sample_rate=32),
-                                wandb.Audio(os.path.join(wandb.run.dir, prefix + "_reconstructed.wav"),
-                                            caption="reconstructed", sample_rate=32)]
-                            wandb.log({"validation reconstruction example": songs})
-
-                            if config["train"]["aae"]:
-                                generated = self.greedy_decoding(note_manager)  # generation
-                                generated.write_midi(os.path.join(wandb.run.dir, prefix + "_generated.mid"))
-                                midi_to_wav(os.path.join(wandb.run.dir, prefix + "_generated.mid"),
-                                            os.path.join(wandb.run.dir, prefix + "_generated.wav"))
-                                gen = [(wandb.Audio(os.path.join(wandb.run.dir, prefix + "_generated.wav"),
-                                                    caption="generated", sample_rate=32))]
-                                wandb.log({"generated": gen})
-
-                        # eval end
-                        it_counter += 1
-                        self.encoder.train()
-                        self.latent_compressor.train()
-                        self.decoder.train()
-                        if config["train"]["aae"]:
-                            self.discriminator.train()
-                        desc = "Train epoch " + str(self.epoch) + ", mb " + str(song_it)
-                        train_progress = tqdm(total=config["train"]["mb_before_eval"], position=0, leave=True,
-                                              desc=desc)
-
-                    self.step += 1
+if __name__ == "__main__":
+    set_freer_gpu()
+    trainer = Trainer()
+    trainer.train()

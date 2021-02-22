@@ -13,11 +13,9 @@ class Logger:
         pass
 
     @staticmethod
-    def log_losses(losses, lr, train, beta, latent):
+    def log_losses(losses, train):
         mode = "train/" if train else "eval/"
-        log = {"stuff/lr": lr,
-               "stuff/latent": latent,
-               mode + "loss": losses[0],
+        log = {mode + "loss": losses[0],
                mode + "accuracy": losses[1],
                mode + "encoder attention loss": losses[2],
                mode + "decoder attention loss": losses[3],
@@ -25,8 +23,6 @@ class Logger:
                mode + "guitar loss": losses[5],
                mode + "bass loss": losses[6],
                mode + "strings loss": losses[7]}
-        if beta is not None:
-            log["stuff/beta"] = beta
         if config["train"]["aae"] and len(losses) == 14:
             log[mode + "discriminator real score"] = losses[8]
             log[mode + "discriminator fake score"] = losses[9]
@@ -34,23 +30,17 @@ class Logger:
             log[mode + "loss_critic"] = losses[11]
             log[mode + "loss_gen"] = losses[12]
             log[mode + "wasserstain distance"] = losses[13]
-        # if config["train"]["aae"] and len(losses) == 13:  # TODO careful
-        #     if losses[8] is not None:
-        #         log[mode + "discriminator loss"] = losses[8]
-        #     if losses[9] is not None:
-        #         log[mode + "generator loss"] = losses[9]
-        #     if losses[10] is not None:
-        #         log[mode + "discriminator real score"] = losses[10]
-        #     if losses[11] is not None:
-        #         log[mode + "discriminator fake score"] = losses[11]
-        #     if losses[12] is not None:
-        #         log[mode + "generator fake score"] = losses[12]
         wandb.log(log)
 
     @staticmethod
-    def log_lr(disc, gen):
-        wandb.log({"stuff/disc lr": disc,
-                   "stuff/gen lr": gen})
+    def log_stuff(lr, latent, disc=None, gen=None, beta=None, prior=None):
+        log = {"stuff/lr": lr, "stuff/latent": latent}
+        if config["train"]["aae"]:
+            log["stuff/disc lr"] = disc
+            log["stuff/gen lr"] = gen
+            log["stuff/beta"] = beta
+            log["stuff/prior"] = prior.detach().cpu().numpy()
+        wandb.log(log)
 
     @staticmethod
     def log_examples(e_in, d_in, pred, exp):
@@ -62,28 +52,6 @@ class Logger:
         table = wandb.Table(columns=columns)
         table.add_data(*inputs)
         wandb.log({"Inputs": table})
-
-        # predicted = torch.max(pred[0], dim=-2).indices.permute(0, 1).reshape(4, enc_input.shape[1], -1).transpose(0, 1).detach().cpu().numpy()
-        # expected = exp[0].transpose(0, 1).reshape(4, enc_input.shape[1], -1).transpose(0, 1).detach().cpu().numpy()
-        # T = []
-        # step = 0
-        # for b in range(predicted.shape[0]):
-        #     T.append({'bar': step,
-        #               'picture': predicted[b, :, :],
-        #               })
-        #     step += 1
-        #     T.append({'bar': step,
-        #               'picture': expected[b, :, :],
-        #               })
-        #     step += 1
-        # df = pd.DataFrame(T)
-        # true_height = predicted.shape[0]
-        # true_width = predicted.shape[-1]
-        # aspect = true_width/true_height
-        # grid = sns.FacetGrid(df, row='bar', aspect=aspect)
-        # grid.map(lambda x, **kwargs: (sns.heatmap(x.values[0], annot=True, fmt="d"), plt.grid(False)), 'picture')
-        # wandb.log({"predicted and expected": [wandb.Image(plt, caption="predicted and expected")]})
-        # plt.close()
 
     @staticmethod
     def log_attn_heatmap(enc_self_weights, dec_self_weights, dec_src_weights):
@@ -154,3 +122,10 @@ class Logger:
             title = mem_name[i]
             wandb.log({title: [wandb.Image(plt, caption=title)]})
             plt.close()
+
+    @staticmethod
+    def log_latent(latent):  # track layer batch seq dim
+        sns.heatmap(latent)
+        title = "latent"
+        wandb.log({title: [wandb.Image(plt, caption="latent")]})
+        plt.close()

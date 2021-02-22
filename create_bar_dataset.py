@@ -7,6 +7,7 @@ from tqdm.auto import tqdm
 import copy
 import matplotlib.pyplot as plt
 from config import config
+import shutil
 # 100'000 songs take 400 GB
 
 
@@ -211,9 +212,10 @@ class NoteRepresentationManager:
                 filtered_song = self.filter_song(song)
                 if filtered_song is None:  # if the song has 4 valid tracks
                     continue
-                tensor_song = self.transform_song(filtered_song)
+                tensor_song = self.transform_song(filtered_song)  # TODO remove limit on n_bars
                 if tensor_song is None:
                     continue
+
                 # TODO test
                 # try:
                 #     song.write_midi("before.mid")
@@ -232,15 +234,35 @@ class NoteRepresentationManager:
                 #     self.log.write(e.__str__()+'\n')
                 #     print(e.__str__()+'\n')
                 # TODO end test
-                with open(os.path.join(config["paths"]["dataset"], str(self.count) + '.pickle'), 'wb') as f:
-                    pickle.dump(tensor_song, f)
-                self.count += 1
-                if config["data"]["early_stop"] != 0:  # if early_stop, we update progbar only after a success
-                    progbar.update()
-                    if self.count >= config["data"]["early_stop"]:
-                        self.log.close()
-                        self.plot_lengths()
-                        return
+
+                # save only sequence of bars if no empty bar
+                tensor_song = np.swapaxes(tensor_song, 0, 1)
+                while (tensor_song[0] == 0).all():
+                    tensor_song = tensor_song[1:, ...]
+                while True:
+                    no_empty_bars = True
+                    candidate = tensor_song[:config["data"]["truncated_bars"], ...]
+                    for bar in candidate:
+                        if (bar == 0).all():
+                            no_empty_bars = False
+                    if no_empty_bars:
+                        with open(os.path.join(config["paths"]["dataset"], str(self.count) + '.pickle'), 'wb') as f:
+                            candidate = np.swapaxes(candidate, 0, 1)
+                            pickle.dump(candidate, f)
+                            reconstructed_music = self.reconstruct_music(candidate)  # TODO remove test
+                            reconstructed_music.write_midi("test.mid")  # TODO remove test
+                        self.count += 1
+                        # if early stop, update bar only after a success
+                        if config["data"]["early_stop"] != 0:
+                            progbar.update()
+                            if self.count >= config["data"]["early_stop"]:
+                                self.log.close()
+                                self.plot_lengths()
+                                return
+                        tensor_song = tensor_song[config["data"]["truncated_bars"]:, ...]
+                    else:
+                        break
+
         self.plot_lengths()
         self.log.close()
 
@@ -255,3 +277,9 @@ class NoteRepresentationManager:
         plt.xlabel('Number of bars')
         plt.savefig("song_length_distribution.png")
         plt.close()
+
+
+if __name__ == "__main__":
+        shutil.rmtree(config["paths"]["dataset"], ignore_errors=True)
+        notes = NoteRepresentationManager()
+        notes.convert_dataset()
