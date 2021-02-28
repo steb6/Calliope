@@ -21,11 +21,14 @@ from torch.autograd import Variable
 from loss_computer import calc_gradient_penalty
 from config import set_freer_gpu
 import time
+from utilities import get_prior
+from test import Tester
 
 
 class Trainer:
     def __init__(self):
         self.logger = None
+        self.tester = None
         self.latent = None
         self.save_path = None
         self.epoch = 0
@@ -51,17 +54,6 @@ class Trainer:
             self.beta = -0.1  # so it become 0 at first iteration
             self.reg_optimizer = None
 
-    @staticmethod
-    def get_prior(shape):
-        reduced_shape = tuple([shape[0], shape[1] // 4])
-        g1 = torch.randn(*reduced_shape) - 2
-        g2 = torch.randn(*reduced_shape) - 6
-        g3 = torch.randn(*reduced_shape) + 2
-        g4 = torch.randn(*reduced_shape) + 6
-        g = torch.cat([g1, g2, g3, g4], dim=1)
-        return Variable(g).to(config["train"]["device"])
-        # return Variable(torch.randn(*shape) * 5.).to(config["train"]["device"])  # single gaussian
-
     def test_losses(self, loss, e_attn_losses, d_attn_losses):
         losses = [loss, e_attn_losses, d_attn_losses]
         names = ["loss", "e_att_losses", "d_attn_losses"]
@@ -82,72 +74,6 @@ class Trainer:
             for module_name, parameter in model.named_parameters():
                 if parameter.grad is None:
                     print(module_name)
-
-    def greedy_decoding(self, note_manager):  # TODO CHECK THIS
-        _, _, d_mems, d_cmems = get_memories(n_batch=1)
-        latent = self.get_prior(self.latent.shape)
-        dec_latent = latent.reshape(config["train"]["batch_size"], config["model"]["n_latents"],
-                                    config["model"]["d_model"])
-        outs = []
-        src_mask = torch.full((4, 1, 1), True).to(config["train"]["device"])  # TODO create src mask all true
-        for _ in tqdm(range(config["train"]["generated_iterations"]), position=0, leave=True, desc="Generating song"):
-            trg = np.full((4, 1, 1), config["tokens"]["sos"])
-            trg = torch.LongTensor(trg).to(config["train"]["device"])
-            for _ in range(config["model"]["seq_len"] - 1):  # for each token of each bar
-                trg_mask = create_trg_mask(trg.cpu().numpy())
-                out, _, _, _, _, _ = self.decoder(trg, trg_mask, src_mask, dec_latent, d_mems, d_cmems)
-                out = torch.max(out, dim=-2).indices
-                out = out.permute(2, 0, 1)
-                trg = torch.cat((trg, out[..., -1:]), dim=-1)
-                trg = trg.detach()
-            trg_mask = create_trg_mask(trg.cpu().numpy())
-            out, _, _, d_mems, d_cmems, _ = self.decoder(trg, trg_mask, src_mask, dec_latent, d_mems, d_cmems)
-            out = torch.max(out, dim=-2).indices
-            out = out.permute(2, 0, 1)
-            outs.append(out)
-        outs = torch.stack(outs)
-        outs = outs[:, :, 0, :]
-        outs = outs.transpose(0, 1).cpu().numpy()
-        return note_manager.reconstruct_music(outs)  # TODO fix format
-
-    def reconstruct(self, batch, note_manager):
-        srcs, trgs, src_masks, trg_masks, _ = batch
-        srcs = torch.LongTensor(srcs.long()).to(config["train"]["device"]).transpose(0, 2)
-        trgs = torch.LongTensor(trgs.long()).to(config["train"]["device"]).transpose(0, 2)
-        src_masks = torch.BoolTensor(src_masks).to(config["train"]["device"]).transpose(0, 2)
-        trg_masks = torch.BoolTensor(trg_masks).to(config["train"]["device"]).transpose(0, 2)
-        e_mems, e_cmems, d_mems, d_cmems = get_memories()
-        outs = []
-        latent = None
-        for src, src_mask in zip(srcs, src_masks):
-            latent, e_mems, e_cmems, _, _ = self.encoder(src, src_mask, e_mems, e_cmems)
-        latent = self.latent_compressor(latent)  # 1 x z_dim
-        dec_latent = latent.reshape(config["train"]["batch_size"], config["model"]["n_latents"],
-                                    config["model"]["d_model"])
-        for trg, src_mask, trg_mask in zip(trgs, src_masks, trg_masks):
-            out, _, _, d_mems, d_cmems, _ = self.decoder(trg, trg_mask, src_mask, dec_latent, d_mems, d_cmems)
-            outs.append(out)
-        outs = torch.stack(outs, dim=1)
-        outs = outs.permute(0, 4, 1, 2, 3)
-        outs = torch.max(outs, dim=-1).indices
-        srcs = srcs.permute(2, 1, 0, 3)
-        # find song with more notes
-        best = 0
-        max_notes = 0
-        for i, src in enumerate(srcs):
-            candidate = src.reshape(-1)
-            n_tokens = torch.numel(candidate) - \
-                       (candidate == config["tokens"]["pad"]).sum().item() - \
-                       (candidate == config["tokens"]["sos"]).sum().item() - \
-                       (candidate == config["tokens"]["eos"]).sum().item()
-            if n_tokens > max_notes:
-                max_notes = n_tokens
-                best = i
-        outs = outs[best]
-        srcs = srcs[best]
-        original = note_manager.reconstruct_music(srcs.cpu().numpy())
-        reconstructed = note_manager.reconstruct_music(outs.cpu().numpy())
-        return original, reconstructed
 
     def run_mb(self, batch):
         # SETUP VARIABLES
@@ -258,7 +184,8 @@ class Trainer:
                     p.requires_grad = True
 
                 for _ in range(config["train"]["critic_iterations"]):
-                    prior = self.get_prior(latent.shape)  # autograd is intern
+                    prior = get_prior(latent.shape)  # autograd is intern
+                    prior = Variable(prior).to(config["train"]["device"])
                     D_real = self.discriminator(prior).reshape(-1)
 
                     e_mems, e_cmems, _, _ = get_memories()
@@ -316,6 +243,8 @@ class Trainer:
 
     def train(self):
         # Create checkpoint folder
+        if not os.path.exists(config["paths"]["checkpoints"]):
+            os.makedirs(config["paths"]["checkpoints"])
         timestamp = str(datetime.now())
         timestamp = timestamp[:timestamp.index('.')]
         timestamp = timestamp.replace(' ', '_').replace(':', '-')
@@ -381,9 +310,10 @@ class Trainer:
         # Print info about training
         time.sleep(1.)  # sleep for one second to let the machine connect to wandb
         if config["train"]["verbose"]:
+            print("Bar size reduced to ", config["train"]["n_bars"])
             cmem_range = config["model"]["cmem_len"] * config["model"]["cmem_ratio"]
             max_range = config["model"]["layers"] * (cmem_range + config["model"]["mem_len"])
-            given = config["data"]["truncated_bars"] * config["model"]["seq_len"]
+            given = config["train"]["n_bars"] * config["model"]["seq_len"]
             assert given <= max_range, "Given {} as input to model with max range {}".format(given, max_range)
             print("Giving ", given, " as input to model with a maximum range of ", max_range)
             print("Giving ", len(tr_loader), " training samples and ", len(ts_loader), " test samples")
@@ -392,7 +322,8 @@ class Trainer:
             if config["train"]["aae"]:
                 print("Imposing prior distribution on latents")
                 print("Starting training aae after ", config["train"]["train_aae_after_steps"])
-                print("lambda:", config["train"]["lambda"], ", critic iterations:", config["train"]["critic_iterations"])
+                print("lambda:", config["train"]["lambda"], ", critic iterations:",
+                      config["train"]["critic_iterations"])
             else:
                 print("NOT autoencoding")
             if config["train"]["log_images"]:
@@ -417,7 +348,7 @@ class Trainer:
         desc = "Train epoch " + str(self.epoch) + ", mb " + str(0)
         train_progress = tqdm(total=config["train"]["mb_before_eval"], position=0, leave=True, desc=desc)
         self.step = 0  # -1 to do eval in first step
-
+        first_batch = None  # TODO remove
         # main loop
         for self.epoch in range(config["train"]["n_epochs"]):  # for each epoch
             for song_it, batch in enumerate(tr_loader):  # for each song
@@ -425,6 +356,8 @@ class Trainer:
                 #########
                 # TRAIN #
                 #########
+                if first_batch is None:  # TODO remove
+                    first_batch = batch  # TODO remove
                 tr_losses = self.run_mb(batch)
 
                 self.logger.log_losses(tr_losses, self.encoder.training)
@@ -433,7 +366,7 @@ class Trainer:
                                       self.disc_optimizer.lr if config["train"]["aae"] else None,
                                       self.gen_optimizer.lr if config["train"]["aae"] else None,
                                       self.beta if config["train"]["aae"] else None,
-                                      self.get_prior(self.latent.shape) if config["train"]["aae"] else None)
+                                      get_prior(self.latent.shape) if config["train"]["aae"] else None)
                 train_progress.update()
 
                 ########
@@ -452,7 +385,10 @@ class Trainer:
                     desc = "Eval epoch " + str(self.epoch) + ", mb " + str(song_it)
 
                     # Compute validation score
+                    # first = None  TODO put it back
                     for test in tqdm(ts_loader, position=0, leave=True, desc=desc):  # remember test losses
+                        # if first is None:  TODO put it back
+                        #     first = test  TODO put it back
                         with torch.no_grad():
                             ts_loss = self.run_mb(test)
                         ts_losses.append(ts_loss)
@@ -465,6 +401,7 @@ class Trainer:
                         final = final + (avg,)
 
                     # Save best models
+                    test = batch  # TODO remove
                     full_path = self.save_path + os.sep + str(self.step)
                     os.makedirs(full_path)
                     print("Saving last model in " + full_path + ", DO NOT INTERRUPT")
@@ -475,37 +412,63 @@ class Trainer:
                     print("Model saved")
                     self.logger.log_losses(final, self.encoder.training)
 
-                    if config["train"]["make_songs"]:
+                ########
+                # TEST #
+                ########
+                if self.step % config["train"]["mb_before_eval"] == 0 and config["train"]["make_songs"]:
 
-                        # RECONSTRUCTION
-                        note_manager = NoteRepresentationManager()
-                        to_reconstruct = test
-                        original, reconstructed = self.reconstruct(to_reconstruct, note_manager)
-                        prefix = "epoch_" + str(self.epoch) + "_mb_" + str(song_it)
-                        original.write_midi(os.path.join(wandb.run.dir, prefix + "_original.mid"))
-                        reconstructed.write_midi(os.path.join(wandb.run.dir, prefix + "_reconstructed.mid"))
-                        midi_to_wav(os.path.join(wandb.run.dir, prefix + "_original.mid"),
-                                    os.path.join(wandb.run.dir, prefix + "_original.wav"))
-                        midi_to_wav(os.path.join(wandb.run.dir, prefix + "_reconstructed.mid"),
-                                    os.path.join(wandb.run.dir, prefix + "_reconstructed.wav"))
-                        songs = [
-                            wandb.Audio(os.path.join(wandb.run.dir, prefix + "_original.wav"),
-                                        caption="original", sample_rate=32),
-                            wandb.Audio(os.path.join(wandb.run.dir, prefix + "_reconstructed.wav"),
-                                        caption="reconstructed", sample_rate=32)]
-                        wandb.log({"validation reconstruction example": songs})
+                    self.tester = Tester(self.encoder, self.latent_compressor, self.decoder)
 
-                        if config["train"]["aae"]:
-                            # GENERATION
-                            generated = self.greedy_decoding(note_manager)  # generation
-                            generated.write_midi(os.path.join(wandb.run.dir, prefix + "_generated.mid"))
-                            midi_to_wav(os.path.join(wandb.run.dir, prefix + "_generated.mid"),
-                                        os.path.join(wandb.run.dir, prefix + "_generated.wav"))
-                            gen = [(wandb.Audio(os.path.join(wandb.run.dir, prefix + "_generated.wav"),
-                                                caption="generated", sample_rate=32))]
-                            wandb.log({"generated": gen})
+                    # RECONSTRUCTION
+                    note_manager = NoteRepresentationManager()
+                    to_reconstruct = test
+                    original, reconstructed = self.tester.reconstruct(to_reconstruct, note_manager)
+                    prefix = "epoch_" + str(self.epoch) + "_mb_" + str(song_it)
+                    original.write_midi(os.path.join(wandb.run.dir, prefix + "_original.mid"))
+                    reconstructed.write_midi(os.path.join(wandb.run.dir, prefix + "_reconstructed.mid"))
+                    midi_to_wav(os.path.join(wandb.run.dir, prefix + "_original.mid"),
+                                os.path.join(wandb.run.dir, prefix + "_original.wav"))
+                    midi_to_wav(os.path.join(wandb.run.dir, prefix + "_reconstructed.mid"),
+                                os.path.join(wandb.run.dir, prefix + "_reconstructed.wav"))
+                    songs = [
+                        wandb.Audio(os.path.join(wandb.run.dir, prefix + "_original.wav"),
+                                    caption="original", sample_rate=32),
+                        wandb.Audio(os.path.join(wandb.run.dir, prefix + "_reconstructed.wav"),
+                                    caption="reconstructed", sample_rate=32)]
+                    wandb.log({"validation reconstruction example": songs})
 
-                    # eval end
+                    if config["train"]["aae"]:
+                        # GENERATION
+                        generated = self.tester.generate(note_manager)  # generation
+                        generated.write_midi(os.path.join(wandb.run.dir, prefix + "_generated.mid"))
+                        midi_to_wav(os.path.join(wandb.run.dir, prefix + "_generated.mid"),
+                                    os.path.join(wandb.run.dir, prefix + "_generated.wav"))
+                        gen = [(wandb.Audio(os.path.join(wandb.run.dir, prefix + "_generated.wav"),
+                                            caption="generated", sample_rate=32))]
+                        wandb.log({"generated": gen})
+                        # INTERPOLATION
+                        second = test
+                        first, interpolation, second = self.tester.interpolation(note_manager, first_batch, second)
+                        first.write_midi(os.path.join(wandb.run.dir, prefix + "_first.mid"))
+                        interpolation.write_midi(os.path.join(wandb.run.dir, prefix + "_interpolation.mid"))
+                        second.write_midi(os.path.join(wandb.run.dir, prefix + "_second.mid"))
+                        midi_to_wav(os.path.join(wandb.run.dir, prefix + "_first.mid"),
+                                    os.path.join(wandb.run.dir, prefix + "_first.wav"))
+                        midi_to_wav(os.path.join(wandb.run.dir, prefix + "_interpolation.mid"),
+                                    os.path.join(wandb.run.dir, prefix + "_interpolation.wav"))
+                        midi_to_wav(os.path.join(wandb.run.dir, prefix + "_second.mid"),
+                                    os.path.join(wandb.run.dir, prefix + "_second.wav"))
+                        interpolation = [(wandb.Audio(os.path.join(wandb.run.dir, prefix + "_first.wav"),
+                                                      caption="first", sample_rate=32)),
+                                         (wandb.Audio(os.path.join(wandb.run.dir, prefix + "_interpolation.wav"),
+                                                      caption="interpolation", sample_rate=32)),
+                                         (wandb.Audio(os.path.join(wandb.run.dir, prefix + "_second.wav"),
+                                                      caption="second", sample_rate=32))
+                                         ]
+                        wandb.log({"interpolation": interpolation})
+
+                # eval end
+                if self.step % config["train"]["mb_before_eval"] == 0:
                     self.encoder.train()
                     self.latent_compressor.train()
                     self.decoder.train()

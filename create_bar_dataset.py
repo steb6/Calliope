@@ -8,6 +8,7 @@ import copy
 import matplotlib.pyplot as plt
 from config import config
 import shutil
+import time
 # 100'000 songs take 400 GB
 
 
@@ -167,9 +168,11 @@ class NoteRepresentationManager:
                         note = muspy.Note(bar[0] + time - config["tokens"]["time_first"],
                                           bar[1] - config["tokens"]["pitch_first"],
                                           bar[2] - config["tokens"]["duration_first"],
-                                          self.min_max_scaling(bar[3] - config["tokens"]["velocity_first"],
-                                                               config["data"]["velocities_compact"],
-                                                               config["data"]["velocities_total"]))
+                                          # self.min_max_scaling(bar[3] - config["tokens"]["velocity_first"],
+                                          #                      config["data"]["velocities_compact"],
+                                          #                      config["data"]["velocities_total"])
+                                          64  # TODO remove this
+                                          )
                         track.append(note)
                         bar = bar[4:]
                     else:
@@ -185,20 +188,27 @@ class NoteRepresentationManager:
         Given a dataset path and a destination path, it walks all directories of dataset
         and for each song create a tensor
         """
+        # download raw dataset if needed
         if not os.path.exists(os.path.join(config["paths"]["raw_midi"], "lmd_matched")):
             print("Downloading Lakh Dataset into "+config["paths"]["raw_midi"])
             muspy.LakhMIDIMatchedDataset(config["paths"]["raw_midi"], download_and_extract=True)
+        # counting songs if needed for progbar
         print("Converting Lakh Dataset from " + config["paths"]["raw_midi"] + " in " + config["paths"]["dataset"])
         raw_midi = config["paths"]["raw_midi"] + os.sep + "lmd_matched"
         if config["data"]["early_stop"] == 0:
+            print("No early_stop, counting all files...")
             dataset_length = sum([len(files) for _, _, files in os.walk(raw_midi)])
+            print("Found", dataset_length, "raw song audio.")
         else:
             dataset_length = config["data"]["early_stop"]
+        time.sleep(1.)  # sleep one second for a correct output presentation
         progbar = tqdm(total=dataset_length, leave=True, position=0, desc="Dataset creation")
         self.count = 0
         os.makedirs(config["paths"]["dataset"])
+        # setting up log file
         self.log = open(self.log_file, "w")
         self.log.write("Log of dataset_converter, to check if it is working right\n")
+        # main loop
         for subdir, dirs, files in os.walk(raw_midi):  # iterate over all subdirectories
             for filename in files:  # iterate over all files
                 if config["data"]["early_stop"] == 0 and self.count > 0:  # if not early stop, update bar anyway
@@ -212,7 +222,7 @@ class NoteRepresentationManager:
                 filtered_song = self.filter_song(song)
                 if filtered_song is None:  # if the song has 4 valid tracks
                     continue
-                tensor_song = self.transform_song(filtered_song)  # TODO remove limit on n_bars
+                tensor_song = self.transform_song(filtered_song)
                 if tensor_song is None:
                     continue
 
@@ -242,6 +252,8 @@ class NoteRepresentationManager:
                 while True:
                     no_empty_bars = True
                     candidate = tensor_song[:config["data"]["truncated_bars"], ...]
+                    if len(candidate) < config["data"]["truncated_bars"]:
+                        break
                     for bar in candidate:
                         if (bar == 0).all():
                             no_empty_bars = False
@@ -249,8 +261,8 @@ class NoteRepresentationManager:
                         with open(os.path.join(config["paths"]["dataset"], str(self.count) + '.pickle'), 'wb') as f:
                             candidate = np.swapaxes(candidate, 0, 1)
                             pickle.dump(candidate, f)
-                            reconstructed_music = self.reconstruct_music(candidate)  # TODO remove test
-                            reconstructed_music.write_midi("test.mid")  # TODO remove test
+                            # reconstructed_music = self.reconstruct_music(candidate)  # TODO remove test
+                            # reconstructed_music.write_midi("test.mid")  # TODO remove test
                         self.count += 1
                         # if early stop, update bar only after a success
                         if config["data"]["early_stop"] != 0:
@@ -258,6 +270,7 @@ class NoteRepresentationManager:
                             if self.count >= config["data"]["early_stop"]:
                                 self.log.close()
                                 self.plot_lengths()
+                                progbar.close()
                                 return
                         tensor_song = tensor_song[config["data"]["truncated_bars"]:, ...]
                     else:
@@ -265,6 +278,7 @@ class NoteRepresentationManager:
 
         self.plot_lengths()
         self.log.close()
+        progbar.close()
 
     def plot_lengths(self):
         plt.hist(self.bar_lengths, density=True, bins=30)  # `density=False` would make counts
@@ -280,6 +294,10 @@ class NoteRepresentationManager:
 
 
 if __name__ == "__main__":
-        shutil.rmtree(config["paths"]["dataset"], ignore_errors=True)
-        notes = NoteRepresentationManager()
-        notes.convert_dataset()
+    answer = input(config["paths"]["dataset"]+" will be removed and dataset will be created from zero, "
+                                              "do you want to proceed?").lower()
+    if answer not in ["y", "yes"]:
+        exit()
+    shutil.rmtree(config["paths"]["dataset"], ignore_errors=True)
+    notes = NoteRepresentationManager()
+    notes.convert_dataset()

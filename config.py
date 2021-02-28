@@ -11,40 +11,43 @@ config = {
     "train": {
         "verbose": True,
         "make_songs": True,
-        "log_images": True,
+        "log_images": False,
         "do_eval": True,
         "aae": True,
+        "n_bars": 8 if remote else 8,  # TODO careful
         "test_losses": False,
-        "device": "cuda" if remote else "cpu",
+        "device": "cuda" if remote else "cuda",
         "batch_size": 1 if remote else 1,
-        "test_size": 0.001 if remote else 0.3,  # 100 on remote  it was 0.0001 in remote
+        "test_size": 0.001 if remote else 0.001,  # 100 on remote  it was 0.0001 in remote
         "n_workers": 0,
         "n_epochs": 25000,
         "label_smoothing": 0.1,
-        "mb_before_eval": 1000 if remote else 1,  # if >= early_stopping, happens at each epoch
-        "after_mb_log_attn_img": 1000 if remote else 1,
-        "after_mb_log_examples": 1000 if remote else 1,
-        "after_mb_log_memories": 1000 if remote else 1,
+        "mb_before_eval": 1000 if remote else 500,  # if >= early_stopping, happens at each epoch
+        "after_mb_log_attn_img": 1000 if remote else 500,
+        "after_mb_log_examples": 1000 if remote else 500,
+        "after_mb_log_memories": 1000 if remote else 500,
         "warmup_steps": 4000,
         "lr_min": 1e-4,
         "lr_max": 1e-3,
         "decay_steps": 50000,
         "minimum_lr": 5e-5,
-        "generated_iterations": 16,
+        "generated_iterations": 16 if remote else 4,
         # "test_loss": False,
         "train_aae_after_steps": 0,
-        "increase_beta_every": 2000 if remote else 1,
-        "max_beta": 0.3 if remote else 1,
+        "increase_beta_every": 2000 if remote else 2000,
+        "max_beta": 0.3 if remote else 0.3,
         "lambda": 10,
         "critic_iterations": 5,
+        "interpolation_timesteps": 3,  # intermediate timesteps excluding first and second (with 3: 0 (1 2 3) 4)
+        "interpolation_timesteps_length": 4  # number of bar for each timesteps
     },
     "model": {
         "seq_len": max_bar_length,
         "d_model": 32,
         "heads": 4,
         "ff_mul": 2,
-        "layers": 7 if remote else 2,  # if remote else 1,  # 3 GB each
-        "mem_len": max_bar_length,  # keep last 2 seq
+        "layers": 6 if remote else 2,  # if remote else 1,  # 3 GB each
+        "mem_len": max_bar_length*2,  # keep last 2 seq
         "cmem_len": max_bar_length,  # keep 4 compression
         "cmem_ratio": 4,
         "reconstruction_attn_dropout": 0.1,
@@ -54,12 +57,12 @@ config = {
         "n_latents": 16
     },
     "data": {  # Parameters to create and listen the note representation
-        "truncated_bars": 32 if remote else 32,  # To truncate the song along bars
+        "truncated_bars": 32 if remote else 8,  # To truncate the song along bars
         "max_bar_length": max_bar_length,
         "max_bars": 200,
         "use_velocity": True,
         "reconstruction_programs": [0, 0, 32, 40],
-        "early_stop": 0 if remote else 100,  # set this to 0 to disable early stop
+        "early_stop": 0 if remote else 10000,  # set this to 0 to disable early stop
         "resolution": 24,
         "tempo": 120,
         "velocities_total": (0, 127),  # using min max scaling, limits are inclusive
@@ -82,9 +85,9 @@ config = {
         "vocab_size":     4 + 128*3 + 32
     },
     "paths": {
-        "raw_midi": "/data" if remote else "D:",
-        "dataset": ("/data" if remote else ".") + os.sep + "lmd_matched_converted",
-        "checkpoints": ("/data" if remote else ".") + os.sep + "musae_model_checkpoints"
+        "raw_midi": "/data/musae3.0/" if remote else "D:",
+        "dataset": ("/data/musae3.0/" if remote else "D:") + os.sep + "lmd_matched_converted3",
+        "checkpoints": ("/data/musae3.0/" if remote else ".") + os.sep + "musae_model_checkpoints"
     }
 }
 

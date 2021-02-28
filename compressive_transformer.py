@@ -108,20 +108,30 @@ class CompressiveDecoder(nn.Module):
                 nn.init.xavier_uniform_(p)
 
     def forward(self, trg, trg_mask, src_mask, latent, d_mems, d_cmems):
-        d_out, d_self_w, d_src_w, d_mem, d_cmem, d_loss = self.drums_decoder(trg[0, ...], trg_mask[0, ...],
-                                                                             src_mask[0, ...], latent,
+        src_mask = None  # TODO fix architecture
+        #  before each decoder received src_mask[0, ...] src_mask[1, ...] etc.
+        d_out, d_self_w, d_src_w, d_mem, d_cmem, d_loss = self.drums_decoder(trg[0, ...],
+                                                                             trg_mask[0, ...] if trg_mask is not None else None,
+                                                                             None,
+                                                                             latent,
                                                                              d_mems[0, ...], d_cmems[0, ...],
                                                                              self.pos_emb[0, ...])
-        b_out, b_self_w, b_src_w, b_mem, b_cmem, b_loss = self.bass_decoder(trg[1, ...], trg_mask[1, ...],
-                                                                            src_mask[1, ...], latent,
+        b_out, b_self_w, b_src_w, b_mem, b_cmem, b_loss = self.bass_decoder(trg[1, ...],
+                                                                            trg_mask[1, ...] if trg_mask is not None else None,
+                                                                            None,
+                                                                            latent,
                                                                             d_mems[1, ...], d_cmems[1, ...],
                                                                             self.pos_emb[1, ...])
-        g_out, g_self_w, g_src_w, g_mem, g_cmem, g_loss = self.guitar_decoder(trg[2, ...], trg_mask[2, ...],
-                                                                              src_mask[2, ...], latent,
+        g_out, g_self_w, g_src_w, g_mem, g_cmem, g_loss = self.guitar_decoder(trg[2, ...],
+                                                                              trg_mask[2, ...] if trg_mask is not None else None,
+                                                                              None,
+                                                                              latent,
                                                                               d_mems[2, ...], d_cmems[2, ...],
                                                                               self.pos_emb[2, ...])
-        s_out, s_self_w, s_src_w, s_mem, s_cmem, s_loss = self.strings_decoder(trg[3, ...], trg_mask[3, ...],
-                                                                               src_mask[3, ...], latent,
+        s_out, s_self_w, s_src_w, s_mem, s_cmem, s_loss = self.strings_decoder(trg[3, ...],
+                                                                               trg_mask[3, ...] if trg_mask is not None else None,
+                                                                               None,
+                                                                               latent,
                                                                                d_mems[3, ...], d_cmems[3, ...],
                                                                                self.pos_emb[3, ...])
         mems = torch.stack([d_mem, b_mem, g_mem, s_mem])
@@ -226,7 +236,7 @@ class DecoderLayer(nn.Module):
     def forward(self, x, trg_mask, src_mask, latent, memories, pos_emb):
         x, new_mem, new_cmem, attn_loss, self_weights = self.self_mem_attn(x, memories=memories, input_mask=trg_mask,
                                                                            pos_emb=pos_emb)
-        x, src_weights = self.src_attn(x, key=latent, value=latent, mask=None)  # TODO FIX src_mask!!!
+        x, src_weights = self.src_attn(x, key=latent, value=latent, mask=src_mask)  # TODO FIX src_mask!!!
         x, = self.feed_forward(x)
         return x, new_mem, new_cmem, self_weights, src_weights, attn_loss
 
@@ -250,9 +260,10 @@ class MyMemoryAttention(nn.Module):
 
     def forward(self, h, memories=None, input_mask=None, pos_emb=None):
         # Prepare mask
-        if input_mask.dim() == 2:  # encoder mask, cover just pad
-            input_mask = input_mask[:, :, None] * input_mask[:, None, :]
-        input_mask = F.pad(input_mask, (self.cmem_len + self.mem_len, 0), value=True)
+        if input_mask is not None:
+            if input_mask.dim() == 2:  # encoder mask, cover just pad
+                input_mask = input_mask[:, :, None] * input_mask[:, None, :]
+            input_mask = F.pad(input_mask, (self.cmem_len + self.mem_len, 0), value=True)
         # Algorithm from paper
         m, cm = memories
         mem = torch.cat((cm, m, h), dim=1)  # TODO x too?

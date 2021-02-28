@@ -16,15 +16,16 @@ import shutil
 
 
 if __name__ == "__main__":  # TODO put here assert I guess
-    set_freer_gpu()
-
-    answer = ""
-    while answer not in ["y", "n"]:
-        answer = input("Dataset will be created from zero, do you want to proceed?").lower()
-
-    shutil.rmtree(config["paths"]["dataset"], ignore_errors=True)
-    notes = NoteRepresentationManager()
-    notes.convert_dataset()
-
-    trainer = Trainer()
-    trainer.train()
+    print("Use create_bar_dataset to create the dataset, then use train to train the model")
+    # set_freer_gpu()
+    #
+    # answer = ""
+    # while answer not in ["y", "n"]:
+    #     answer = input("Dataset will be created from zero, do you want to proceed?").lower()
+    #
+    # shutil.rmtree(config["paths"]["dataset"], ignore_errors=True)
+    # notes = NoteRepresentationManager()
+    # notes.convert_dataset()
+    #
+    # trainer = Trainer()
+    # trainer.train()
