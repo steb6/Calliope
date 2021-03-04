@@ -28,8 +28,9 @@ class CompressiveEncoder(nn.Module):
         assert cmem_len >= (mem_len // cmem_ratio), f'len of cmem should be at least ' f'{int(mem_len // cmem_ratio)}' \
                                                     f' but it is ' f'{int(cmem_len)}'
 
-        self.pos_emb = nn.Parameter(torch.zeros(4, heads, seq_len*2 + mem_len + cmem_len, d_model // heads, device=device,
-                                                requires_grad=True))
+        self.pos_emb = nn.Parameter(
+            torch.zeros(4, heads, seq_len * 2 + mem_len + cmem_len, d_model // heads, device=device,
+                        requires_grad=True))
         c = copy.deepcopy
 
         self_mem_attn = Residual(PreNorm(d_model, MyMemoryAttention(heads, d_model, seq_len,
@@ -107,44 +108,84 @@ class CompressiveDecoder(nn.Module):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
-    def forward(self, trg, trg_mask, src_mask, latent, d_mems, d_cmems):
+    def forward(self, trg, trg_mask, src_mask, latent, d_mems, d_cmems, just=None, emb_weights=None):
         src_mask = None  # TODO fix architecture
         #  before each decoder received src_mask[0, ...] src_mask[1, ...] etc.
-        d_out, d_self_w, d_src_w, d_mem, d_cmem, d_loss = self.drums_decoder(trg[0, ...],
-                                                                             trg_mask[0, ...] if trg_mask is not None else None,
-                                                                             None,
-                                                                             latent,
-                                                                             d_mems[0, ...], d_cmems[0, ...],
-                                                                             self.pos_emb[0, ...])
-        b_out, b_self_w, b_src_w, b_mem, b_cmem, b_loss = self.bass_decoder(trg[1, ...],
-                                                                            trg_mask[1, ...] if trg_mask is not None else None,
-                                                                            None,
-                                                                            latent,
-                                                                            d_mems[1, ...], d_cmems[1, ...],
-                                                                            self.pos_emb[1, ...])
-        g_out, g_self_w, g_src_w, g_mem, g_cmem, g_loss = self.guitar_decoder(trg[2, ...],
-                                                                              trg_mask[2, ...] if trg_mask is not None else None,
-                                                                              None,
-                                                                              latent,
-                                                                              d_mems[2, ...], d_cmems[2, ...],
-                                                                              self.pos_emb[2, ...])
-        s_out, s_self_w, s_src_w, s_mem, s_cmem, s_loss = self.strings_decoder(trg[3, ...],
-                                                                               trg_mask[3, ...] if trg_mask is not None else None,
-                                                                               None,
-                                                                               latent,
-                                                                               d_mems[3, ...], d_cmems[3, ...],
-                                                                               self.pos_emb[3, ...])
-        mems = torch.stack([d_mem, b_mem, g_mem, s_mem])
-        cmems = torch.stack([d_cmem, b_cmem, g_cmem, s_cmem])
-        output = torch.stack([d_out, b_out, g_out, s_out], dim=-1)
-        output = self.generator(output)
-        aux_loss = torch.stack((d_loss, b_loss, g_loss, s_loss))
-        aux_loss = torch.mean(aux_loss)
-        # self_weights = torch.mean(torch.stack([d_self_w, b_self_w, g_self_w, s_self_w], dim=0), dim=0)
-        # src_weights = torch.mean(torch.stack([d_src_w, b_src_w, g_src_w, s_src_w]), dim=0)
-        self_weights = torch.stack([d_self_w, b_self_w, g_self_w, s_self_w], dim=0)
-        src_weights = torch.stack([d_src_w, b_src_w, g_src_w, s_src_w])
-        return output, self_weights, src_weights, mems, cmems, aux_loss
+        if just is None:
+            d_out, d_self_w, d_src_w, d_mem, d_cmem, d_loss = self.drums_decoder(trg[0, ...],
+                                                                                 trg_mask[0, ...],
+                                                                                 None,
+                                                                                 latent,
+                                                                                 d_mems[0, ...], d_cmems[0, ...],
+                                                                                 self.pos_emb[0, ...],
+                                                                                 emb_weights=emb_weights[0, ...] if emb_weights is not None else None)
+            b_out, b_self_w, b_src_w, b_mem, b_cmem, b_loss = self.bass_decoder(trg[1, ...],
+                                                                                trg_mask[1, ...],
+                                                                                None,
+                                                                                latent,
+                                                                                d_mems[1, ...], d_cmems[1, ...],
+                                                                                self.pos_emb[1, ...],
+                                                                                emb_weights=emb_weights[1, ...] if emb_weights is not None else None)
+            g_out, g_self_w, g_src_w, g_mem, g_cmem, g_loss = self.guitar_decoder(trg[2, ...],
+                                                                                  trg_mask[2, ...],
+                                                                                  None,
+                                                                                  latent,
+                                                                                  d_mems[2, ...], d_cmems[2, ...],
+                                                                                  self.pos_emb[2, ...],
+                                                                                  emb_weights=emb_weights[2, ...] if emb_weights is not None else None)
+            s_out, s_self_w, s_src_w, s_mem, s_cmem, s_loss = self.strings_decoder(trg[3, ...],
+                                                                                   trg_mask[3, ...],
+                                                                                   None,
+                                                                                   latent,
+                                                                                   d_mems[3, ...], d_cmems[3, ...],
+                                                                                   self.pos_emb[3, ...],
+                                                                                   emb_weights=emb_weights[3, ...] if emb_weights is not None else None)
+            mems = torch.stack([d_mem, b_mem, g_mem, s_mem])
+            cmems = torch.stack([d_cmem, b_cmem, g_cmem, s_cmem])
+            output = torch.stack([d_out, b_out, g_out, s_out], dim=-1)
+            output = self.generator(output)
+            aux_loss = torch.stack((d_loss, b_loss, g_loss, s_loss))
+            aux_loss = torch.mean(aux_loss)
+            self_weights = torch.stack([d_self_w, b_self_w, g_self_w, s_self_w], dim=0)
+            src_weights = torch.stack([d_src_w, b_src_w, g_src_w, s_src_w])
+            return output, self_weights, src_weights, mems, cmems, aux_loss
+        else:
+            if just == "drums":
+                out, _, _, _, _, _ = self.drums_decoder(trg,
+                                                        trg_mask,
+                                                        None,
+                                                        latent,
+                                                        d_mems[0, ...], d_cmems[0, ...],
+                                                        self.pos_emb[0, ...])
+                out = self.generator(out, just=just)
+                return out, None, None, None, None, None
+            elif just == "bass":
+                out, _, _, _, _, _ = self.bass_decoder(trg,
+                                                       trg_mask,
+                                                       None,
+                                                       latent,
+                                                       d_mems[1, ...], d_cmems[1, ...],
+                                                       self.pos_emb[1, ...])
+                out = self.generator(out, just=just)
+                return out, None, None, None, None, None
+            elif just == "guitar":
+                out, _, _, _, _, _ = self.guitar_decoder(trg,
+                                                         trg_mask,
+                                                         None,
+                                                         latent,
+                                                         d_mems[2, ...], d_cmems[2, ...],
+                                                         self.pos_emb[2, ...])
+                out = self.generator(out, just=just)
+                return out, None, None, None, None, None
+            elif just == "strings":
+                out, _, _, _, _, _ = self.strings_decoder(trg,
+                                                          trg_mask,
+                                                          None,
+                                                          latent,
+                                                          d_mems[3, ...], d_cmems[3, ...],
+                                                          self.pos_emb[3, ...])
+                out = self.generator(out, just=just)
+                return out, None, None, None, None, None
 
 
 class Encoder(nn.Module):
@@ -186,9 +227,17 @@ class Decoder(nn.Module):
         self.pos = PositionalEncoding(d_model)
         self.N = N
 
-    def forward(self, trg, trg_mask, src_mask, latent, mems, cmems, pos_emb):
+    def forward(self, trg, trg_mask, src_mask, latent, mems, cmems, pos_emb, emb_weights=None):
         attn_losses = torch.tensor(0., requires_grad=True, device=trg.device, dtype=torch.float32)
-        trg = self.embed(trg)
+        if emb_weights is None:
+            trg = self.embed(trg)
+        else:  # compute weighted sum of the embeddings
+            mix = torch.zeros((trg.shape[0], trg.shape[1], config["model"]["d_model"]), dtype=torch.float32,
+                              device=trg.device)
+            for i in range(trg.shape[-1]):
+                emb = self.embed(trg[..., i]) * emb_weights[..., i].unsqueeze(-1).expand_as(mix)
+                mix = mix + emb
+            trg = mix
         # trg = self.pos(trg)
         new_mems = []
         new_cmems = []
@@ -367,13 +416,26 @@ class Generator(nn.Module):
         self.proj_guitar = nn.Linear(d_model, vocab)
         self.proj_strings = nn.Linear(d_model, vocab)
 
-    def forward(self, x):
-        out_drums = F.log_softmax(self.proj_drums(x[:, :, :, 0]), dim=-1)
-        out_bass = F.log_softmax(self.proj_bass(x[:, :, :, 1]), dim=-1)
-        out_guitar = F.log_softmax(self.proj_guitar(x[:, :, :, 2]), dim=-1)
-        out_strings = F.log_softmax(self.proj_strings(x[:, :, :, 3]), dim=-1)
-        out = torch.stack([out_drums, out_bass, out_guitar, out_strings], dim=-1)
-        return out
+    def forward(self, x, just=None):
+        if just is None:
+            out_drums = F.log_softmax(self.proj_drums(x[:, :, :, 0]), dim=-1)
+            out_bass = F.log_softmax(self.proj_bass(x[:, :, :, 1]), dim=-1)
+            out_guitar = F.log_softmax(self.proj_guitar(x[:, :, :, 2]), dim=-1)
+            out_strings = F.log_softmax(self.proj_strings(x[:, :, :, 3]), dim=-1)
+            out = torch.stack([out_drums, out_bass, out_guitar, out_strings], dim=-1)
+            return out
+        elif just == "drums":
+            out = F.log_softmax(self.proj_drums(x), dim=-1)
+            return out
+        elif just == "bass":
+            out = F.log_softmax(self.proj_bass(x), dim=-1)
+            return out
+        elif just == "guitar":
+            out = F.log_softmax(self.proj_guitar(x), dim=-1)
+            return out
+        elif just == "strings":
+            out = F.log_softmax(self.proj_strings(x), dim=-1)
+            return out
 
 
 class ConvCompress(nn.Module):

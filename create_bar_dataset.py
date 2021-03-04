@@ -9,6 +9,9 @@ import matplotlib.pyplot as plt
 from config import config
 import shutil
 import time
+from utilities import min_max_scaling
+
+
 # 100'000 songs take 400 GB
 
 
@@ -32,14 +35,13 @@ class NoteRepresentationManager:
 
     def filter_song(self, s):
         """
-        Get a muspy.Music object
-        return the song with the 4 instruments with more notes, preserving tempos and time signatures
-        it returns None if the song does not have enough instruments
+        :param s: Muspy song
+        :return: filtered song or None if s is invalid
         """
-        for time in s.time_signatures:  # check time signature
-            if time.numerator != 4 or time.denominator != 4:
-                self.log.write(str(self.count)+": Song with weird time skipped: {} / {}\n".
-                               format(time.numerator, time.denominator))
+        for t in s.time_signatures:  # check time signature
+            if t.numerator != 4 or t.denominator != 4:
+                self.log.write(str(self.count) + ": Song with weird time skipped: {} / {}\n".
+                               format(t.numerator, t.denominator))
                 return None
         old_stdout = sys.stdout  # backup current stdout because adjust_resolution is too verbose
         sys.stdout = open(os.devnull, "w")
@@ -71,60 +73,68 @@ class NoteRepresentationManager:
         new.tracks = [drum, guitar, bass, strings]
         return new
 
-    @staticmethod
-    def min_max_scaling(value, old_interval, new_interval):
-        """
-        It scales a value with range [mn, mx] into a int value with range [a, b]
-        """
-        mn, mx = old_interval
-        a, b = new_interval
-        return round((((value - mn)*(b - a)) / (mx - mn)) + a)
-
     def transform_track(self, s):
+        """
+        :param s: Muspy song
+        :return: tensor version of the song or None if invalid
+        """
         track = np.full((config["data"]["max_bars"], config["data"]["max_bar_length"]), config["tokens"]["pad"],
                         dtype=np.int16)
         time_signature = 4  # default time signature, if none starts from 0
+        bar_steps = config["data"]["resolution"] * time_signature
+        use_velocity = config["data"]["use_velocity"]
         try:
             notes = s.to_note_representation()
         except Exception as e:
-            self.log.write(str(self.count)+': '+e.__str__()+'\n')
+            self.log.write(str(self.count) + ': ' + e.__str__() + '\n')
             return None
         i = 0  # bar index
         j = 0  # token index
-        for n, note in enumerate(notes):  # for all note in the track
-            while note[0] >= config["data"]["resolution"] * time_signature:
-                if i < config["data"]["max_bars"]-1:
+        n = 0  # notes index
+        while n < len(notes):
+            # add empty bar till note time value is in range
+            while notes[n][0] >= bar_steps:
+                if i < config["data"]["max_bars"] - 1:
                     i += 1
                     self.bar_lengths.append(j)  # empty bar
                     j = 0
+                    notes[n:, 0] -= round(bar_steps)  # decrease all time measures
                 else:
-                    self.log.write(str(self.count)+": Maximum number of bars reached\n")
-                    # TODO count total number of bar, add it to j and log to song_lengths
-                    self.song_lengths.append(i)
+                    # log bars length and return song
+                    bars_left = sorted(notes[n:], key=lambda x: x[0])[-1][0] % bar_steps
+                    self.log.write(str(self.count) + ": Maximum number of bars reached, total was "+str(i+bars_left))
+                    self.song_lengths.append(i + bars_left)
                     return track  # truncate song: no more space for bars
-                notes[n:, 0] -= round(config["data"]["resolution"] * time_signature)  # decrease all time measures
-            if not note[0] < config["tokens"]["time_n_values"]:  # check value of time
-                self.log.write(str(self.count) + ": Invalid time: " + str(note) + '\n')
+            # check note values
+            if not notes[n][0] < config["tokens"]["time_n_values"]:  # check value of time
+                self.log.write(str(self.count) + ": Invalid time: " + str(notes[n][0]) + '\n')
+                n += 1
                 continue  # skip note: invalid time
-            if not note[1] < config["tokens"]["pitch_n_values"]:  # check value of pitch
-                self.log.write(str(self.count) + ": Invalid pitch: " + str(note[1]))
+            if not notes[n][1] < config["tokens"]["pitch_n_values"]:  # check value of pitch
+                self.log.write(str(self.count) + ": Invalid pitch: " + str(notes[n][1]))
+                n += 1
                 continue  # skip note: invalid pitch
-            if not note[2] < config["tokens"]["duration_n_values"]:  # clip duration if > 127
-                note[2] = config["tokens"]["duration_n_values"] - 1
-            if config["data"]["use_velocity"]:  # if velocity, use min-max normalization with new interval
-                note[3] = self.min_max_scaling(note[3], config["data"]["velocities_total"],  # it was clipped, so
-                                               config["data"]["velocities_compact"])  # no need to check values
-            if j + 4 < config["data"]["max_bar_length"] - 1:
-                track[i][j] = note[0]+self.offsets[0]
-                track[i][j+1] = note[1]+self.offsets[1]
-                track[i][j+2] = note[2]+self.offsets[2]
-                track[i][j+3] = note[3]+self.offsets[3]
-                j += 4
+            if not notes[n][2] < config["tokens"]["duration_n_values"]:  # clip duration if > 127
+                notes[n][2] = config["tokens"]["duration_n_values"] - 1
+            if use_velocity:  # if velocity, use min-max normalization with new interval
+                notes[n][3] = min_max_scaling(notes[n][3], config["data"]["velocities_total"],
+                                              config["data"]["velocities_compact"])  # no need to check values
+            # add note
+            if j + (4 if use_velocity else 3) < config["data"]["max_bar_length"] - 1:  # if enough space for note
+                track[i][j] = notes[n][0] + self.offsets[0]
+                track[i][j + 1] = notes[n][1] + self.offsets[1]
+                track[i][j + 2] = notes[n][2] + self.offsets[2]
+                if use_velocity:
+                    track[i][j + 3] = notes[n][3] + self.offsets[3]
+                j += (4 if use_velocity else 3)
+                n += 1
             else:
-                self.log.write(str(self.count) + ": Reached max bar length\n")
-                self.bar_lengths.append(j)  # TODO fix
-                # TODO count total number of token notes, add it to i and log to bar_lengths
-                continue
+                # no more space inside the bar, count tokens left and skip bar notes
+                notes_left = (notes[n:, 0] < bar_steps).sum()
+                tok_left = notes_left * (4 if use_velocity else 3)
+                self.log.write(str(self.count) + ": Reached max bar length, left tokens: " + str(j + tok_left) + "\n")
+                self.bar_lengths.append(j + tok_left)
+                n += notes_left
         self.song_lengths.append(i)
         return track
 
@@ -145,39 +155,52 @@ class NoteRepresentationManager:
 
     @staticmethod
     def it_is_a_note(t, p, d, v):
+        """
+        :param t: note time
+        :param p: note pitch
+        :param d: note duration
+        :param v: note velocities
+        :return: True if it is a valid note, False otherwise
+        """
         x1 = config["tokens"]["time_first"]
         x2 = config["tokens"]["pitch_first"]
         x3 = config["tokens"]["duration_first"]
         x4 = config["tokens"]["velocity_first"]
         x5 = config["tokens"]["vocab_size"]
-        return x1 <= t < x2 <= p < x3 <= d < x4 <= v < x5
+        if config["data"]["use_velocity"]:
+            return x1 <= t < x2 <= p < x3 <= d < x4 <= v < x5
+        else:
+            return x1 <= t < x2 <= p < x3 <= d < x4
 
     def reconstruct_music(self, s):
         """
-        It takes a tensor song and return a muspy.Music element, music can be even in bar format,
-        it use time_offset to move the beginning of the notes after n bars
+        :param s: Tensor song to reconstruct
+        :return: Muspy song
         """
+        use_velocity = config["data"]["use_velocity"]
         music = muspy.Music(resolution=config["data"]["resolution"], tempos=[muspy.Tempo(qpm=120., time=0)])
         for i, instrument in enumerate(s):  # for each encoder track
-            time = 0
-            track = muspy.Track(is_drum=i == 0, program=config["data"]["reconstruction_programs"][i])
+            time_cursor = 0
+            track = muspy.Track(is_drum=(i == 0), program=config["data"]["reconstruction_programs"][i])
             for bar in instrument:
                 # track.notes.append(muspy.Note(time=time, pitch=60, duration=12, velocity=127))  # bar sound
-                while len(bar) > 4:  # and bar[0] != config["tokens"]["pad"]:
-                    if self.it_is_a_note(bar[0], bar[1], bar[2], bar[3]):
-                        note = muspy.Note(bar[0] + time - config["tokens"]["time_first"],
+                while len(bar) > (4 if use_velocity else 3):
+                    if self.it_is_a_note(bar[0], bar[1], bar[2], (bar[3] if use_velocity else 0)):
+                        velocity = 100  # default one
+                        if use_velocity:  # use the encoded one
+                            velocity = min_max_scaling(bar[3] - config["tokens"]["velocity_first"],
+                                                       config["data"]["velocities_compact"],
+                                                       config["data"]["velocities_total"])
+                        note = muspy.Note(bar[0] + time_cursor - config["tokens"]["time_first"],
                                           bar[1] - config["tokens"]["pitch_first"],
                                           bar[2] - config["tokens"]["duration_first"],
-                                          # self.min_max_scaling(bar[3] - config["tokens"]["velocity_first"],
-                                          #                      config["data"]["velocities_compact"],
-                                          #                      config["data"]["velocities_total"])
-                                          64  # TODO remove this
+                                          velocity
                                           )
                         track.append(note)
-                        bar = bar[4:]
+                        bar = bar[(4 if use_velocity else 3):]
                     else:
                         bar = bar[1:]
-                time += round(config["data"]["resolution"]*4)
+                time_cursor += round(config["data"]["resolution"] * 4)
             music.append(track)
         music.tempos.append(muspy.Tempo(time=0, qpm=120))
         music.time_signatures.append(muspy.TimeSignature(time=0, numerator=4, denominator=4))
@@ -190,7 +213,7 @@ class NoteRepresentationManager:
         """
         # download raw dataset if needed
         if not os.path.exists(os.path.join(config["paths"]["raw_midi"], "lmd_matched")):
-            print("Downloading Lakh Dataset into "+config["paths"]["raw_midi"])
+            print("Downloading Lakh Dataset into " + config["paths"]["raw_midi"])
             muspy.LakhMIDIMatchedDataset(config["paths"]["raw_midi"], download_and_extract=True)
         # counting songs if needed for progbar
         print("Converting Lakh Dataset from " + config["paths"]["raw_midi"] + " in " + config["paths"]["dataset"])
@@ -230,25 +253,27 @@ class NoteRepresentationManager:
                 # try:
                 #     song.write_midi("before.mid")
                 # except Exception as e:
-                #     self.log.write(e.__str__()+'\n')
-                #     print(e.__str__()+'\n')
+                #     self.log.write(e.__str__() + '\n')
+                #     print(e.__str__() + '\n')
                 # try:
                 #     filtered_song.write_midi("middle.mid")
                 # except Exception as e:
-                #     self.log.write(e.__str__()+'\n')
-                #     print(e.__str__()+'\n')
+                #     self.log.write(e.__str__() + '\n')
+                #     print(e.__str__() + '\n')
                 # try:
                 #     reconstructed_music = self.reconstruct_music(tensor_song)
                 #     reconstructed_music.write_midi("after.mid")
                 # except Exception as e:
-                #     self.log.write(e.__str__()+'\n')
-                #     print(e.__str__()+'\n')
+                #     self.log.write(e.__str__() + '\n')
+                #     print(e.__str__() + '\n')
                 # TODO end test
 
                 # save only sequence of bars if no empty bar
                 tensor_song = np.swapaxes(tensor_song, 0, 1)
-                while (tensor_song[0] == 0).all():
+                # skip empty bars at the beginning or with just drums (stick for tempos)
+                while (tensor_song[0, 1:, :] == 0).all():
                     tensor_song = tensor_song[1:, ...]
+                # divide song into sequence of bars and save them
                 while True:
                     no_empty_bars = True
                     candidate = tensor_song[:config["data"]["truncated_bars"], ...]
@@ -260,9 +285,8 @@ class NoteRepresentationManager:
                     if no_empty_bars:
                         with open(os.path.join(config["paths"]["dataset"], str(self.count) + '.pickle'), 'wb') as f:
                             candidate = np.swapaxes(candidate, 0, 1)
+                            self.reconstruct_music(candidate).write_midi("test.mid")
                             pickle.dump(candidate, f)
-                            # reconstructed_music = self.reconstruct_music(candidate)  # TODO remove test
-                            # reconstructed_music.write_midi("test.mid")  # TODO remove test
                         self.count += 1
                         # if early stop, update bar only after a success
                         if config["data"]["early_stop"] != 0:
@@ -294,8 +318,8 @@ class NoteRepresentationManager:
 
 
 if __name__ == "__main__":
-    answer = input(config["paths"]["dataset"]+" will be removed and dataset will be created from zero, "
-                                              "do you want to proceed?").lower()
+    answer = input(config["paths"]["dataset"] + " will be removed and dataset will be created from zero, "
+                                                "do you want to proceed?").lower()
     if answer not in ["y", "yes"]:
         exit()
     shutil.rmtree(config["paths"]["dataset"], ignore_errors=True)

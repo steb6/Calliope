@@ -46,10 +46,10 @@ class Tester:
 
         # Create interpolation
         latents = []
-        timesteps = config["train"]["interpolation_timesteps"]+2
+        timesteps = config["train"]["interpolation_timesteps"] + 2
         for i in range(timesteps):
             i += 1
-            first_amount = ((timesteps-i)/(timesteps-1))
+            first_amount = ((timesteps - i) / (timesteps - 1))
             second_amount = ((i - 1) / (timesteps - 1))
             first_part = first_latent * first_amount
             second_part = second_latent * second_amount
@@ -83,12 +83,12 @@ class Tester:
             trg = torch.LongTensor(trg).to(config["train"]["device"])
             for _ in range(config["model"]["seq_len"] - 1):  # for each token of each bar
                 trg_mask = create_trg_mask(trg.cpu().numpy())
-                out, _, _, _, _, _ = self.decoder(trg, None, None, latent, d_mems, d_cmems)
+                out, _, _, _, _, _ = self.decoder(trg, trg_mask, None, latent, d_mems, d_cmems)
                 out = torch.max(out, dim=-2).indices
                 out = out.permute(2, 0, 1)
                 trg = torch.cat((trg, out[..., -1:]), dim=-1)
             trg_mask = create_trg_mask(trg.cpu().numpy())
-            out, _, _, d_mems, d_cmems, _ = self.decoder(trg, None, None, latent, d_mems, d_cmems)
+            out, _, _, d_mems, d_cmems, _ = self.decoder(trg, trg_mask, None, latent, d_mems, d_cmems)
             out = torch.max(out, dim=-2).indices
             out = out.permute(2, 0, 1)
             outs.append(out)
@@ -125,11 +125,65 @@ class Tester:
             outs.append(out)
         return outs
 
+    def individual_beam_search_decode(self, latent, n_bars, desc, k=4):
+        _, _, d_mems, d_cmems = get_memories(n_batch=1)
+        outs = []
+        for _ in tqdm(range(n_bars), position=0, leave=True, desc=desc):
+            trg = np.full((1, 1), config["tokens"]["sos"])
+            pad = np.full((1, 1), config["tokens"]["pad"])
+            trg = torch.LongTensor(trg).to(config["train"]["device"])
+            pad = torch.LongTensor(pad).to(config["train"]["device"])
+
+            drums_candidates = [(trg, 0.)]
+            bass_candidates = [(trg, 0.)]
+            guitar_candidates = [(trg, 0.)]
+            strings_candidates = [(trg, 0.)]
+            instruments = [drums_candidates, bass_candidates, guitar_candidates, strings_candidates]
+
+            for _ in range(config["model"]["seq_len"] - 1):  # for each token of each bar
+                idx = 0
+                for candidates, name in zip(instruments, ["drums", "bass", "guitar", "strings"]):
+                    new_candidates = []
+                    for candidate in candidates:
+                        trg, score = candidate
+                        # if trg[0][-1] == config["tokens"]["pad"]:
+                        #     t = (
+                        #         torch.cat((trg, pad), dim=-1),
+                        #         score + 1.5)
+                        #     new_candidates.append(t)
+                        #     continue
+                        trg_mask = create_trg_mask(trg.unsqueeze(0).cpu().numpy())[0]  # TODO check
+                        out, _, _, _, _, _ = self.decoder(trg, trg_mask, None, latent, d_mems, d_cmems, just=name)
+                        out = torch.topk(out, k, dim=-1)
+                        tok = out.indices
+                        for i in range(k):
+                            c = tok[:, :, i]  # TODO if 3 then stop
+                            # if c[0][-1:].item() == config["tokens"]["eos"]:
+                            #     t = (
+                            #         torch.cat((trg, pad), dim=-1),
+                            #         score + 1.5)  # TODO wat
+                            # else:
+                            t = (
+                                torch.cat((trg, c[..., -1:]), dim=-1),
+                                score - torch.sum(out.values[:, -1:, i]).item())
+                            new_candidates.append(t)
+                    new_candidates = sorted(new_candidates, key=lambda x: x[1])  # TODO is this sorting right?
+                    new_candidates = new_candidates[:k]
+                    instruments[idx] = new_candidates
+                    idx += 1
+            trg = torch.stack((instruments[0][0][0], instruments[1][0][0], instruments[2][0][0], instruments[3][0][0]))
+            trg_mask = create_trg_mask(trg.cpu().numpy())
+            out, _, _, d_mems, d_cmems, _ = self.decoder(trg, trg_mask, None, latent, d_mems, d_cmems)
+            out = torch.max(out, dim=-2).indices
+            out = out.permute(2, 0, 1)
+            outs.append(out)
+        return outs
+
     def generate(self, note_manager):  # TODO CHECK THIS
-        latent = get_prior((1, config["model"]["n_latents"]*config["model"]["d_model"])).to(config["train"]["device"])
+        latent = get_prior((1, config["model"]["n_latents"] * config["model"]["d_model"])).to(config["train"]["device"])
         dec_latent = latent.reshape(config["train"]["batch_size"], config["model"]["n_latents"],
                                     config["model"]["d_model"])
-        outs = self.beam_search_decode(dec_latent, config["train"]["generated_iterations"], "generate")  # TODO careful
+        outs = self.greedy_decode(dec_latent, config["train"]["generated_iterations"], "generate")  # TODO careful
         outs = torch.stack(outs)
         outs = outs.transpose(0, 2)[0].cpu().numpy()
         return note_manager.reconstruct_music(outs)
@@ -148,7 +202,7 @@ class Tester:
         dec_latent = latent.reshape(config["train"]["batch_size"], config["model"]["n_latents"],
                                     config["model"]["d_model"])
 
-        outs = self.beam_search_decode(dec_latent, len(trgs), "reconstruct")  # TODO careful
+        outs = self.greedy_decode(dec_latent, len(trgs), "reconstruct")  # TODO careful
         # outs = []
         # for trg, src_mask, trg_mask in zip(trgs, src_masks, trg_masks):
         #     out, self_weight, src_weight, d_mems, d_cmems, d_attn_loss = self.decoder(trg, trg_mask, src_mask,
@@ -168,8 +222,8 @@ class Tester:
 
 if __name__ == "__main__":
     # load models
-    run_name = "2021-02-25_15-52-39"
-    run_batch = "11500"
+    run_name = "2021-02-28_17-54-44"
+    run_batch = "8500"
 
     checkpoint_name = os.path.join("musae_model_checkpoints", run_name, run_batch)
 
@@ -192,6 +246,7 @@ if __name__ == "__main__":
 
     with torch.no_grad():
         origin, recon = tester.reconstruct(song1, nm)
+        exit()
         gen = tester.generate(nm)
 
     gen.write_midi("test" + os.sep + "generated.mid")

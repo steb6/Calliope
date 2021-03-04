@@ -5,6 +5,8 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import torch
 import numpy as np
+import os
+from utilities import midi_to_wav
 sns.set_theme()
 
 
@@ -33,13 +35,14 @@ class Logger:
         wandb.log(log)
 
     @staticmethod
-    def log_stuff(lr, latent, disc=None, gen=None, beta=None, prior=None):
+    def log_stuff(lr, latent, disc=None, gen=None, beta=None, prior=None, tf_prob=None):
         log = {"stuff/lr": lr, "stuff/latent": latent}
         if config["train"]["aae"]:
             log["stuff/disc lr"] = disc
             log["stuff/gen lr"] = gen
             log["stuff/beta"] = beta
             log["stuff/prior"] = prior.detach().cpu().numpy()
+        log["stuff/tf_prob"] = tf_prob
         wandb.log(log)
 
     @staticmethod
@@ -129,3 +132,15 @@ class Logger:
         title = "latent"
         wandb.log({title: [wandb.Image(plt, caption="latent")]})
         plt.close()
+
+    @staticmethod
+    def log_songs(prefix, songs, names, log_name):
+        log = []
+        for song, name in zip(songs, names):
+            song.write_midi(os.path.join(wandb.run.dir, prefix + name + ".mid"))
+            midi_to_wav(os.path.join(wandb.run.dir, prefix + name + ".mid"),
+                        os.path.join(wandb.run.dir, prefix + name + ".wav"))
+            log.append(wandb.Audio(os.path.join(wandb.run.dir, prefix + name + ".wav"),
+                                   caption="original", sample_rate=32))
+
+        wandb.log({log_name: log})

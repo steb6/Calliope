@@ -10,12 +10,11 @@ from loss_computer import SimpleLossCompute, compute_accuracy
 from create_bar_dataset import NoteRepresentationManager
 import glob
 import wandb
-from midi_converter import midi_to_wav
 from compressive_transformer import CompressiveEncoder, CompressiveDecoder
 from compress_latents import LatentCompressor
 import numpy as np
 from logger import Logger
-from utilities import get_memories, create_trg_mask, pad_attention
+from utilities import get_memories, create_trg_mask, midi_to_wav
 from discriminator import Discriminator
 from torch.autograd import Variable
 from loss_computer import calc_gradient_penalty
@@ -23,6 +22,7 @@ from config import set_freer_gpu
 import time
 from utilities import get_prior
 from test import Tester
+import random
 
 
 class Trainer:
@@ -34,6 +34,7 @@ class Trainer:
         self.epoch = 0
         self.step = 0
         self.loss_computer = None
+        self.tf_prob = 0
         # Models
         self.encoder = None
         self.latent_compressor = None
@@ -95,8 +96,8 @@ class Trainer:
         # Encode
         for src, src_mask in zip(srcs, src_masks):
             latent, e_mems, e_cmems, e_attn_loss, sw = self.encoder(src, src_mask, e_mems, e_cmems)
-            e_mems = e_mems.detach()
-            e_cmems = e_cmems.detach()
+            # e_mems = e_mems.detach()
+            # e_cmems = e_cmems.detach()
             enc_self_weights.append(sw)
             e_attn_losses.append(e_attn_loss)
 
@@ -105,13 +106,60 @@ class Trainer:
         dec_latent = latent.reshape(config["train"]["batch_size"], config["model"]["n_latents"],
                                     config["model"]["d_model"])
 
-        # Decode
-        for trg, src_mask, trg_mask in zip(trgs, src_masks, trg_masks):
-            out, self_weight, src_weight, d_mems, d_cmems, d_attn_loss = self.decoder(trg, trg_mask, src_mask,
+        # first pass: compute decoder output
+        with torch.no_grad():
+            for trg, src_mask, trg_mask in zip(trgs, src_masks, trg_masks):
+                out, _, _, d_mems, d_cmems, _ = self.decoder(trg, trg_mask, src_mask, dec_latent, d_mems, d_cmems)
+                # d_mems = d_mems.detach()
+                # d_cmems = d_cmems.detach()
+                outs.append(out)
+        outs = torch.stack(outs)
+
+        outs = torch.detach(outs)  # TODO check, detach in order to not upgrade the first decoder
+        # select best k tokens and their probabilities
+        top_k = torch.topk(outs, config["train"]["top_k_mixed_embeddings"], dim=-2)
+        outs = top_k.indices  # 8 1 200 5 4
+        prob = torch.exp(top_k.values)
+        # permute
+        outs = outs.permute(0, 4, 1, 2, 3)
+        prob = prob.permute(0, 4, 1, 2, 3)
+        # transpose right of one dimension
+        sos = torch.full_like(outs, config["tokens"]["sos"], device=outs.device)[:, :, :, :1, :]
+        outs = torch.cat((sos, outs), dim=-2)
+        outs = outs[:, :, :, :-1, :]
+        fill_prob = torch.full_like(prob, 0.1, device=outs.device)[:, :, :, :1, :]
+        prob = torch.cat((fill_prob, prob), dim=-2)
+        prob = prob[:, :, :, :-1, :]
+        # scale probabilities
+        scaled_prob = torch.zeros_like(prob)
+        for b, bar in enumerate(prob):
+            for i, instrument in enumerate(bar):
+                for ba, batch in enumerate(instrument):
+                    for t, token in enumerate(batch):
+                        s = torch.sum(prob[b][i][ba][t])
+                        for e, _ in enumerate(token):
+                            scaled_prob[b][i][ba][t][e] = prob[b][i][ba][t][e] / s
+        # mix gold and predicted with given probability
+        self.tf_prob = max(config["train"]["min_tf_prob"],
+                           config["train"]["max_tf_prob"] - self.step * config["train"]["tf_prob_step_reduction"])
+        mix = torch.zeros_like(outs)
+        for b, bar in enumerate(outs):
+            for i, instrument in enumerate(bar):
+                for ba, batch in enumerate(instrument):
+                    for t, token in enumerate(batch):
+                        if random.random() < self.tf_prob:  # probability to do teacher forcing
+                            mix[b][i][ba][t] = trgs[b][i][ba][t].unsqueeze(-1).expand_as(outs[b][i][ba][t])
+                        else:
+                            mix[b][i][ba][t] = outs[b][i][ba][t]
+        # second pass with mixed target
+        _, _, d_mems, d_cmems = get_memories()
+        outs = []
+        for m, p, src_mask, trg_mask in zip(mix, scaled_prob, src_masks, trg_masks):
+            out, self_weight, src_weight, d_mems, d_cmems, d_attn_loss = self.decoder(m, trg_mask, src_mask,
                                                                                       dec_latent,
-                                                                                      d_mems, d_cmems)
-            d_mems = d_mems.detach()
-            d_cmems = d_cmems.detach()
+                                                                                      d_mems, d_cmems, emb_weights=p)
+            # d_mems = d_mems.detach()
+            # d_cmems = d_cmems.detach()
             d_attn_losses.append(d_attn_loss)
             outs.append(out)
             dec_self_weights.append(self_weight)
@@ -133,19 +181,14 @@ class Trainer:
 
         # SOME TESTS
         if self.encoder.training and config["train"]["log_images"]:
-            if self.step % config["train"]["after_mb_log_attn_img"] == 0:
-                print("Logging latent image...")
+            if self.step % config["train"]["after_steps_log_images"] == 0:
+                print("Logging images...")
                 self.logger.log_latent(self.latent)
-                print("Logging attention images...")
                 enc_self_weights = torch.stack(enc_self_weights)
                 dec_self_weights = torch.stack(dec_self_weights)
                 dec_src_weights = torch.stack(dec_src_weights)
                 self.logger.log_attn_heatmap(enc_self_weights, dec_self_weights, dec_src_weights)
-            if self.step % config["train"]["after_mb_log_memories"] == 0:
-                print("Logging memory images...")
                 self.logger.log_memories(e_mems, e_cmems, d_mems, d_cmems)
-            if self.step % config["train"]["after_mb_log_examples"] == 0:
-                print("Logging examples...")
                 self.logger.log_examples(srcs, trgs, outs, trg_ys)
             if self.step == 0 and config["train"]["test_losses"]:
                 self.test_losses(loss, e_attn_losses, d_attn_losses)
@@ -325,7 +368,7 @@ class Trainer:
                 print("lambda:", config["train"]["lambda"], ", critic iterations:",
                       config["train"]["critic_iterations"])
             else:
-                print("NOT autoencoding")
+                print("NOT imposing prior distribution on latents")
             if config["train"]["log_images"]:
                 print("Logging images")
             else:
@@ -346,7 +389,7 @@ class Trainer:
         if config["train"]["aae"]:
             self.discriminator.train()
         desc = "Train epoch " + str(self.epoch) + ", mb " + str(0)
-        train_progress = tqdm(total=config["train"]["mb_before_eval"], position=0, leave=True, desc=desc)
+        train_progress = tqdm(total=config["train"]["steps_before_eval"], position=0, leave=True, desc=desc)
         self.step = 0  # -1 to do eval in first step
         first_batch = None  # TODO remove
         # main loop
@@ -366,13 +409,15 @@ class Trainer:
                                       self.disc_optimizer.lr if config["train"]["aae"] else None,
                                       self.gen_optimizer.lr if config["train"]["aae"] else None,
                                       self.beta if config["train"]["aae"] else None,
-                                      get_prior(self.latent.shape) if config["train"]["aae"] else None)
+                                      get_prior(self.latent.shape) if config["train"]["aae"] else None,
+                                      self.tf_prob)
                 train_progress.update()
 
                 ########
                 # EVAL #
                 ########
-                if self.step % config["train"]["mb_before_eval"] == 0 and config["train"]["do_eval"]:
+                if self.step % config["train"]["steps_before_eval"] == 0 and config["train"]["do_eval"]:
+                    print("Evaluation")
                     train_progress.close()
                     ts_losses = []
 
@@ -399,8 +444,22 @@ class Trainer:
                             aux.append(loss[i])
                         avg = sum(aux) / len(aux)
                         final = final + (avg,)
+                    self.logger.log_losses(final, self.encoder.training)
 
-                    # Save best models
+                    # eval end
+                    self.encoder.train()
+                    self.latent_compressor.train()
+                    self.decoder.train()
+                    if config["train"]["aae"]:
+                        self.discriminator.train()
+                    desc = "Train epoch " + str(self.epoch) + ", mb " + str(song_it)
+                    train_progress = tqdm(total=config["train"]["steps_before_eval"], position=0, leave=True,
+                                          desc=desc)
+
+                ##############
+                # SAVE MODEL #
+                ##############
+                if (self.step % config["train"]["after_steps_save_model"]) == 0:
                     test = batch  # TODO remove
                     full_path = self.save_path + os.sep + str(self.step)
                     os.makedirs(full_path)
@@ -410,73 +469,51 @@ class Trainer:
                                                                     "latent_compressor.pt"))
                     torch.save(self.decoder, os.path.join(full_path, "decoder.pt"))
                     print("Model saved")
-                    self.logger.log_losses(final, self.encoder.training)
 
                 ########
                 # TEST #
                 ########
-                if self.step % config["train"]["mb_before_eval"] == 0 and config["train"]["make_songs"]:
+                if (self.step % config["train"]["after_steps_make_songs"]) == 0 and config["train"]["make_songs"]:
+                    print("Making songs")
+                    self.encoder.eval()
+                    self.latent_compressor.eval()
+                    self.decoder.eval()
 
                     self.tester = Tester(self.encoder, self.latent_compressor, self.decoder)
 
                     # RECONSTRUCTION
                     note_manager = NoteRepresentationManager()
                     to_reconstruct = test
-                    original, reconstructed = self.tester.reconstruct(to_reconstruct, note_manager)
+                    with torch.no_grad():
+                        original, reconstructed = self.tester.reconstruct(to_reconstruct, note_manager)
                     prefix = "epoch_" + str(self.epoch) + "_mb_" + str(song_it)
-                    original.write_midi(os.path.join(wandb.run.dir, prefix + "_original.mid"))
-                    reconstructed.write_midi(os.path.join(wandb.run.dir, prefix + "_reconstructed.mid"))
-                    midi_to_wav(os.path.join(wandb.run.dir, prefix + "_original.mid"),
-                                os.path.join(wandb.run.dir, prefix + "_original.wav"))
-                    midi_to_wav(os.path.join(wandb.run.dir, prefix + "_reconstructed.mid"),
-                                os.path.join(wandb.run.dir, prefix + "_reconstructed.wav"))
-                    songs = [
-                        wandb.Audio(os.path.join(wandb.run.dir, prefix + "_original.wav"),
-                                    caption="original", sample_rate=32),
-                        wandb.Audio(os.path.join(wandb.run.dir, prefix + "_reconstructed.wav"),
-                                    caption="reconstructed", sample_rate=32)]
-                    wandb.log({"validation reconstruction example": songs})
+                    self.logger.log_songs(os.path.join(wandb.run.dir, prefix),
+                                          [original, reconstructed],
+                                          ["original", "reconstructed"],
+                                          "validation reconstruction example")
 
                     if config["train"]["aae"]:
                         # GENERATION
-                        generated = self.tester.generate(note_manager)  # generation
-                        generated.write_midi(os.path.join(wandb.run.dir, prefix + "_generated.mid"))
-                        midi_to_wav(os.path.join(wandb.run.dir, prefix + "_generated.mid"),
-                                    os.path.join(wandb.run.dir, prefix + "_generated.wav"))
-                        gen = [(wandb.Audio(os.path.join(wandb.run.dir, prefix + "_generated.wav"),
-                                            caption="generated", sample_rate=32))]
-                        wandb.log({"generated": gen})
+                        with torch.no_grad():
+                            generated = self.tester.generate(note_manager)  # generation
+                        self.logger.log_songs(os.path.join(wandb.run.dir, prefix),
+                                              [generated],
+                                              ["generated"],
+                                              "generated")
+
                         # INTERPOLATION
                         second = test
-                        first, interpolation, second = self.tester.interpolation(note_manager, first_batch, second)
-                        first.write_midi(os.path.join(wandb.run.dir, prefix + "_first.mid"))
-                        interpolation.write_midi(os.path.join(wandb.run.dir, prefix + "_interpolation.mid"))
-                        second.write_midi(os.path.join(wandb.run.dir, prefix + "_second.mid"))
-                        midi_to_wav(os.path.join(wandb.run.dir, prefix + "_first.mid"),
-                                    os.path.join(wandb.run.dir, prefix + "_first.wav"))
-                        midi_to_wav(os.path.join(wandb.run.dir, prefix + "_interpolation.mid"),
-                                    os.path.join(wandb.run.dir, prefix + "_interpolation.wav"))
-                        midi_to_wav(os.path.join(wandb.run.dir, prefix + "_second.mid"),
-                                    os.path.join(wandb.run.dir, prefix + "_second.wav"))
-                        interpolation = [(wandb.Audio(os.path.join(wandb.run.dir, prefix + "_first.wav"),
-                                                      caption="first", sample_rate=32)),
-                                         (wandb.Audio(os.path.join(wandb.run.dir, prefix + "_interpolation.wav"),
-                                                      caption="interpolation", sample_rate=32)),
-                                         (wandb.Audio(os.path.join(wandb.run.dir, prefix + "_second.wav"),
-                                                      caption="second", sample_rate=32))
-                                         ]
-                        wandb.log({"interpolation": interpolation})
+                        with torch.no_grad():
+                            first, interpolation, second = self.tester.interpolation(note_manager, first_batch, second)
 
-                # eval end
-                if self.step % config["train"]["mb_before_eval"] == 0:
+                        self.logger.log_songs(os.path.join(wandb.run.dir, prefix),
+                                              [first, interpolation, second],
+                                              ["first", "interpolation", "second"],
+                                              "interpolation")
+                    # end test
                     self.encoder.train()
                     self.latent_compressor.train()
                     self.decoder.train()
-                    if config["train"]["aae"]:
-                        self.discriminator.train()
-                    desc = "Train epoch " + str(self.epoch) + ", mb " + str(song_it)
-                    train_progress = tqdm(total=config["train"]["mb_before_eval"], position=0, leave=True,
-                                          desc=desc)
 
                 self.step += 1
 

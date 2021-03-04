@@ -12,20 +12,20 @@ config = {
         "verbose": True,
         "make_songs": True,
         "log_images": False,
-        "do_eval": True,
-        "aae": True,
-        "n_bars": 8 if remote else 8,  # TODO careful
+        "do_eval": False,
+        "aae": False,
+        "n_bars": 32 if remote else 8,  # TODO careful
         "test_losses": False,
-        "device": "cuda" if remote else "cuda",
+        "device": "cuda" if remote else "cpu",
         "batch_size": 1 if remote else 1,
-        "test_size": 0.001 if remote else 0.001,  # 100 on remote  it was 0.0001 in remote
+        "test_size": 0.001 if remote else 0.1,  # 100 on remote  it was 0.0001 in remote
         "n_workers": 0,
         "n_epochs": 25000,
         "label_smoothing": 0.1,
-        "mb_before_eval": 1000 if remote else 500,  # if >= early_stopping, happens at each epoch
-        "after_mb_log_attn_img": 1000 if remote else 500,
-        "after_mb_log_examples": 1000 if remote else 500,
-        "after_mb_log_memories": 1000 if remote else 500,
+        "steps_before_eval": 1000 if remote else 500,  # if >= early_stopping, happens at each epoch
+        "after_steps_save_model": 1000 if remote else 500,
+        "after_steps_make_songs": 1000 if remote else 500,
+        "after_steps_log_images": 1000 if remote else 500,
         "warmup_steps": 4000,
         "lr_min": 1e-4,
         "lr_max": 1e-3,
@@ -39,7 +39,11 @@ config = {
         "lambda": 10,
         "critic_iterations": 5,
         "interpolation_timesteps": 3,  # intermediate timesteps excluding first and second (with 3: 0 (1 2 3) 4)
-        "interpolation_timesteps_length": 4  # number of bar for each timesteps
+        "interpolation_timesteps_length": 4,  # number of bar for each timesteps
+        "top_k_mixed_embeddings": 5,
+        "min_tf_prob": 0.1,
+        "max_tf_prob": 1.,
+        "tf_prob_step_reduction": 5e-4
     },
     "model": {
         "seq_len": max_bar_length,
@@ -60,7 +64,7 @@ config = {
         "truncated_bars": 32 if remote else 8,  # To truncate the song along bars
         "max_bar_length": max_bar_length,
         "max_bars": 200,
-        "use_velocity": True,
+        "use_velocity": False,
         "reconstruction_programs": [0, 0, 32, 40],
         "early_stop": 0 if remote else 10000,  # set this to 0 to disable early stop
         "resolution": 24,
@@ -70,7 +74,7 @@ config = {
     },
     "tokens": {
         "pad": 0,
-        "bar": 1,
+        # "bar": 1,
         "sos": 2,
         "eos": 3,
         # Values
@@ -82,12 +86,13 @@ config = {
         "pitch_first":    4 + 128,
         "duration_first": 4 + 128*2,
         "velocity_first": 4 + 128*3,
-        "vocab_size":     4 + 128*3 + 32
+        # "vocab_size":     4 + 128*3 + 32
+        "vocab_size": 4 + 128*3
     },
     "paths": {
         "raw_midi": "/data/musae3.0/" if remote else "D:",
-        "dataset": ("/data/musae3.0/" if remote else "D:") + os.sep + "lmd_matched_converted3",
-        "checkpoints": ("/data/musae3.0/" if remote else ".") + os.sep + "musae_model_checkpoints"
+        "dataset": ("/data/musae3.0/" if remote else "D:") + os.sep + "lmd_matched_converted_" + ("8" if remote else "8"),
+        "checkpoints": ("/data/musae3.0/" if remote else ".") + os.sep + "musae_model_checkpoints_" + ("8" if remote else "8")
     }
 }
 
