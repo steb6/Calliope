@@ -8,6 +8,8 @@ from utilities import get_prior
 from iterate_dataset import SongIterator
 from create_bar_dataset import NoteRepresentationManager
 from utilities import create_trg_mask
+from config import remote
+import copy
 
 
 class Tester:
@@ -75,24 +77,71 @@ class Tester:
 
         return one, full, two
 
+    def greedy_topk_decode(self, latent, n_bars, desc, k=5):
+        _, _, d_mems, d_cmems = get_memories(n_batch=1)
+        outs = []
+        for _ in tqdm(range(n_bars), position=0, leave=True, desc=desc):
+            trg = np.full((4, 1, 1), config["tokens"]["sos"])
+            trg = torch.LongTensor(trg).to(config["train"]["device"]).unsqueeze(-1).repeat(1, 1, 1, k)
+            prob = torch.full_like(trg, 1/k, device=config["train"]["device"], dtype=torch.float32)
+            for _ in range(config["model"]["seq_len"] - 1):  # for each token of each bar
+                trg_mask = create_trg_mask(trg[..., 0].cpu().numpy())
+                out, _, _, _, _, _ = self.decoder(trg, trg_mask, None, latent, d_mems, d_cmems, emb_weights=prob)
+
+                top_k = torch.topk(out, config["train"]["top_k_mixed_embeddings"], dim=-1)
+                last_trg = top_k.indices  # 8 1 200 5 4
+                last_prob = torch.exp(top_k.values)
+
+                last_trg = last_trg[:, :, -1:, :]
+                last_prob = last_prob[:, :, -1:, :]
+
+                scaled_prob = torch.zeros_like(last_prob)
+                for i, instrument in enumerate(last_prob):
+                    for ba, batch in enumerate(instrument):
+                        for t, token in enumerate(batch):
+                            s = torch.sum(last_prob[i][ba][t])
+                            for e, _ in enumerate(token):
+                                scaled_prob[i][ba][t][e] = last_prob[i][ba][t][e] / s
+
+                trg = torch.cat((trg, last_trg), dim=-2)
+                prob = torch.cat((prob, scaled_prob), dim=-2)
+
+            trg_mask = create_trg_mask(trg[..., 0].cpu().numpy())
+            out, _, _, d_mems, d_cmems, _ = self.decoder(trg, trg_mask, None, latent, d_mems, d_cmems, emb_weights=prob)
+            out = torch.max(out, dim=-1).indices
+            for i in range(len(out)):
+                eos_indices = torch.nonzero(out[i] == config["tokens"]["eos"])
+                if len(eos_indices) == 0:
+                    continue
+                eos_index = eos_indices[0][1]  # first element, column index
+                out[i][0][eos_index:] = config["tokens"]["pad"]  # TODO careful, select just first batch
+            outs.append(out)
+        return outs
+
     def greedy_decode(self, latent, n_bars, desc):
         _, _, d_mems, d_cmems = get_memories(n_batch=1)
         outs = []
+        outs_limited = []
         for _ in tqdm(range(n_bars), position=0, leave=True, desc=desc):
             trg = np.full((4, 1, 1), config["tokens"]["sos"])
             trg = torch.LongTensor(trg).to(config["train"]["device"])
             for _ in range(config["model"]["seq_len"] - 1):  # for each token of each bar
                 trg_mask = create_trg_mask(trg.cpu().numpy())
                 out, _, _, _, _, _ = self.decoder(trg, trg_mask, None, latent, d_mems, d_cmems)
-                out = torch.max(out, dim=-2).indices
-                out = out.permute(2, 0, 1)
+                out = torch.max(out, dim=-1).indices
                 trg = torch.cat((trg, out[..., -1:]), dim=-1)
             trg_mask = create_trg_mask(trg.cpu().numpy())
             out, _, _, d_mems, d_cmems, _ = self.decoder(trg, trg_mask, None, latent, d_mems, d_cmems)
-            out = torch.max(out, dim=-2).indices
-            out = out.permute(2, 0, 1)
-            outs.append(out)
-        return outs
+            out = torch.max(out, dim=-1).indices
+            outs.append(copy.deepcopy(out))
+            for i in range(len(out)):
+                eos_indices = torch.nonzero(out[i] == config["tokens"]["eos"])
+                if len(eos_indices) == 0:
+                    continue
+                eos_index = eos_indices[0][1]  # first element, column index
+                out[i][0][eos_index:] = config["tokens"]["pad"]  # TODO careful, select just first batch
+            outs_limited.append(out)
+        return outs, outs_limited
 
     def beam_search_decode(self, latent, n_bars, desc, k=4):
         _, _, d_mems, d_cmems = get_memories(n_batch=1)
@@ -199,56 +248,66 @@ class Tester:
         for src, src_mask in zip(srcs, src_masks):
             latent, e_mems, e_cmems, _, _ = self.encoder(src, src_mask, e_mems, e_cmems)
         latent = self.latent_compressor(latent)
-        dec_latent = latent.reshape(config["train"]["batch_size"], config["model"]["n_latents"],
-                                    config["model"]["d_model"])
+        # dec_latent = latent.reshape(config["train"]["batch_size"], config["model"]["n_latents"],
+        #                             config["model"]["d_model"])
+        dec_latent = latent
 
-        outs = self.greedy_decode(dec_latent, len(trgs), "reconstruct")  # TODO careful
+        outs, outs_limited = self.greedy_decode(dec_latent, len(trgs), "reconstruct")  # TODO careful
         # outs = []
         # for trg, src_mask, trg_mask in zip(trgs, src_masks, trg_masks):
         #     out, self_weight, src_weight, d_mems, d_cmems, d_attn_loss = self.decoder(trg, trg_mask, src_mask,
         #                                                                               dec_latent,
         #                                                                               d_mems, d_cmems)
-        #     out = torch.max(out, dim=-2).indices
-        #     out = out.permute(2, 0, 1)
+        #     out = torch.max(out, dim=-1).indices
         #     outs.append(out)
 
         outs = torch.stack(outs)
-        outs = outs.transpose(0, 2)[0].cpu().numpy()
+        outs_limited = torch.stack(outs_limited)
+
+        outs = outs.transpose(0, 2)[0].cpu().numpy()  # invert bars and batch and select first batch
         srcs = srcs.transpose(0, 2)[0].cpu().numpy()
+        outs_limited = outs_limited.transpose(0, 2)[0].cpu().numpy()
+
         original = note_manager.reconstruct_music(srcs)
         reconstructed = note_manager.reconstruct_music(outs)
-        return original, reconstructed
+        limited = note_manager.reconstruct_music(outs_limited)
+        return original, reconstructed, limited
 
 
 if __name__ == "__main__":
     # load models
-    run_name = "2021-02-28_17-54-44"
-    run_batch = "8500"
+    print("Loading models")
+    run_name = "remote" if not remote else "/data/musae3.0/musae_model_checkpoints_8/2021-03-03_12-23-00"
+    run_batch = "9000" if not remote else "9000"
 
-    checkpoint_name = os.path.join("musae_model_checkpoints", run_name, run_batch)
+    checkpoint_name = os.path.join("musae_model_checkpoints_8", run_name, run_batch)
 
     tester = Tester(torch.load(checkpoint_name + os.sep + "encoder.pt"),
                     torch.load(checkpoint_name + os.sep + "latent_compressor.pt"),
                     torch.load(checkpoint_name + os.sep + "decoder.pt"))
 
     # load songs
+    print("Creating iterator")
     dataset = SongIterator(dataset_path=config["paths"]["dataset"],
-                           test_size=config["train"]["test_size"],
+                           test_size=0.3,
                            batch_size=config["train"]["batch_size"],
                            n_workers=config["train"]["n_workers"])
-    _, ts_loader = dataset.get_loaders()
+    tr_loader, ts_loader = dataset.get_loaders()
 
-    song1 = ts_loader.__iter__().__next__()
-    song2 = ts_loader.__iter__().__next__()
+    print("tr_loader_length", len(tr_loader))
+    print("ts_loader_length", len(ts_loader))
+
+    song1 = tr_loader.__iter__().__next__()
+    song2 = tr_loader.__iter__().__next__()
 
     # load representation manager
     nm = NoteRepresentationManager()
 
+    print("Reconstructing")
     with torch.no_grad():
         origin, recon = tester.reconstruct(song1, nm)
-        exit()
-        gen = tester.generate(nm)
+        # gen = tester.generate(nm)
 
-    gen.write_midi("test" + os.sep + "generated.mid")
+    # gen.write_midi("test" + os.sep + "generated.mid")
     origin.write_midi("test" + os.sep + "original.mid")
     recon.write_midi("test" + os.sep + "reconstructed.mid")

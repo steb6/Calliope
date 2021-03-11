@@ -5,9 +5,8 @@ from tqdm.auto import tqdm
 from config import config, remote
 from iterate_dataset import SongIterator
 from optimizer import CTOpt
-from label_smoother import LabelSmoothing
-from loss_computer import SimpleLossCompute, compute_accuracy
-from create_bar_dataset import NoteRepresentationManager
+from loss_computer import SimpleLossCompute, compute_accuracy, LabelSmoothing
+from create_bar_dataset import NoteRepresentationManager  # TODO check
 import glob
 import wandb
 from compressive_transformer import CompressiveEncoder, CompressiveDecoder
@@ -103,79 +102,111 @@ class Trainer:
 
         latent = self.latent_compressor(latent)
         self.latent = latent.detach().cpu().numpy()
-        dec_latent = latent.reshape(config["train"]["batch_size"], config["model"]["n_latents"],
-                                    config["model"]["d_model"])
+        # dec_latent = latent.reshape(config["train"]["batch_size"], config["model"]["n_latents"],
+        #                             config["model"]["d_model"])
 
-        # first pass: compute decoder output
-        with torch.no_grad():
-            for trg, src_mask, trg_mask in zip(trgs, src_masks, trg_masks):
-                out, _, _, d_mems, d_cmems, _ = self.decoder(trg, trg_mask, src_mask, dec_latent, d_mems, d_cmems)
-                # d_mems = d_mems.detach()
-                # d_cmems = d_cmems.detach()
-                outs.append(out)
-        outs = torch.stack(outs)
+        # TODO ##################################
+        # TODO SCHEDULED SAMPLING FOR TRANSFORMER
+        # TODO ##################################
+        # dec_latent = latent
+        # # first pass: compute decoder output
+        # with torch.no_grad():
+        #     for trg, src_mask, trg_mask in zip(trgs, src_masks, trg_masks):
+        #         out, _, _, d_mems, d_cmems, _ = self.decoder(trg, trg_mask, src_mask, dec_latent, d_mems, d_cmems)
+        #         # d_mems = d_mems.detach()
+        #         # d_cmems = d_cmems.detach()
+        #         outs.append(out)
+        # outs = torch.stack(outs)
+        #
+        # # select best k tokens and their probabilities
+        # top_k = torch.topk(outs, config["train"]["top_k_mixed_embeddings"], dim=-1)
+        # outs = top_k.indices  # 8 1 200 5 4
+        # prob = torch.exp(top_k.values)
+        # # permute
+        # # outs = outs.permute(0, 4, 1, 2, 3)
+        # # prob = prob.permute(0, 4, 1, 2, 3)
+        # # transpose right of one dimension
+        # sos = torch.full_like(outs, config["tokens"]["sos"], device=outs.device)[:, :, :, :1, :]
+        # outs = torch.cat((sos, outs), dim=-2)
+        # outs = outs[:, :, :, :-1, :]
+        # fill_prob = torch.full_like(prob, 0.1, device=outs.device)[:, :, :, :1, :]
+        # prob = torch.cat((fill_prob, prob), dim=-2)
+        # prob = prob[:, :, :, :-1, :]
+        # # scale probabilities
+        # scaled_prob = torch.zeros_like(prob)
+        # for b, bar in enumerate(prob):
+        #     for i, instrument in enumerate(bar):
+        #         for ba, batch in enumerate(instrument):
+        #             for t, token in enumerate(batch):
+        #                 s = torch.sum(prob[b][i][ba][t])
+        #                 for e, _ in enumerate(token):
+        #                     scaled_prob[b][i][ba][t][e] = prob[b][i][ba][t][e] / s
+        # # mix gold and predicted with given probability
+        # self.tf_prob = max(config["train"]["min_tf_prob"],
+        #                    config["train"]["max_tf_prob"] - self.step * config["train"]["tf_prob_step_reduction"])
+        # mix = torch.zeros_like(outs)
+        # for b, bar in enumerate(outs):
+        #     for i, instrument in enumerate(bar):
+        #         for ba, batch in enumerate(instrument):
+        #             for t, token in enumerate(batch):
+        #                 if random.random() < self.tf_prob:  # probability to do teacher forcing
+        #                     mix[b][i][ba][t] = trgs[b][i][ba][t].unsqueeze(-1).expand_as(outs[b][i][ba][t])
+        #                 else:
+        #                     mix[b][i][ba][t] = outs[b][i][ba][t]
+        # # second pass with mixed target
+        # _, _, d_mems, d_cmems = get_memories()
+        # outs = []
+        # for m, p, src_mask, trg_mask in zip(mix, scaled_prob, src_masks, trg_masks):
+        #     out, self_weight, src_weight, d_mems, d_cmems, d_attn_loss = self.decoder(m, trg_mask, src_mask,
+        #                                                                               dec_latent,
+        #                                                                               d_mems, d_cmems, emb_weights=p)
+        #     # d_mems = d_mems.detach()
+        #     # d_cmems = d_cmems.detach()
+        #     d_attn_losses.append(d_attn_loss)
+        #     outs.append(out)
+        #     dec_self_weights.append(self_weight)
+        #     dec_src_weights.append(src_weight)
+        # TODO ##################################
+        # TODO SCHEDULED SAMPLING FOR TRANSFORMER
+        # TODO ##################################
 
-        outs = torch.detach(outs)  # TODO check, detach in order to not upgrade the first decoder
-        # select best k tokens and their probabilities
-        top_k = torch.topk(outs, config["train"]["top_k_mixed_embeddings"], dim=-2)
-        outs = top_k.indices  # 8 1 200 5 4
-        prob = torch.exp(top_k.values)
-        # permute
-        outs = outs.permute(0, 4, 1, 2, 3)
-        prob = prob.permute(0, 4, 1, 2, 3)
-        # transpose right of one dimension
-        sos = torch.full_like(outs, config["tokens"]["sos"], device=outs.device)[:, :, :, :1, :]
-        outs = torch.cat((sos, outs), dim=-2)
-        outs = outs[:, :, :, :-1, :]
-        fill_prob = torch.full_like(prob, 0.1, device=outs.device)[:, :, :, :1, :]
-        prob = torch.cat((fill_prob, prob), dim=-2)
-        prob = prob[:, :, :, :-1, :]
-        # scale probabilities
-        scaled_prob = torch.zeros_like(prob)
-        for b, bar in enumerate(prob):
-            for i, instrument in enumerate(bar):
-                for ba, batch in enumerate(instrument):
-                    for t, token in enumerate(batch):
-                        s = torch.sum(prob[b][i][ba][t])
-                        for e, _ in enumerate(token):
-                            scaled_prob[b][i][ba][t][e] = prob[b][i][ba][t][e] / s
-        # mix gold and predicted with given probability
+        # TODO ##################################
+        # TODO GREEDY DECODING
+        # TODO ##################################
+        _, _, d_mems, d_cmems = get_memories(n_batch=1)
+        outs = []
         self.tf_prob = max(config["train"]["min_tf_prob"],
                            config["train"]["max_tf_prob"] - self.step * config["train"]["tf_prob_step_reduction"])
-        mix = torch.zeros_like(outs)
-        for b, bar in enumerate(outs):
-            for i, instrument in enumerate(bar):
-                for ba, batch in enumerate(instrument):
-                    for t, token in enumerate(batch):
-                        if random.random() < self.tf_prob:  # probability to do teacher forcing
-                            mix[b][i][ba][t] = trgs[b][i][ba][t].unsqueeze(-1).expand_as(outs[b][i][ba][t])
-                        else:
-                            mix[b][i][ba][t] = outs[b][i][ba][t]
-        # second pass with mixed target
-        _, _, d_mems, d_cmems = get_memories()
-        outs = []
-        for m, p, src_mask, trg_mask in zip(mix, scaled_prob, src_masks, trg_masks):
-            out, self_weight, src_weight, d_mems, d_cmems, d_attn_loss = self.decoder(m, trg_mask, src_mask,
-                                                                                      dec_latent,
-                                                                                      d_mems, d_cmems, emb_weights=p)
-            # d_mems = d_mems.detach()
-            # d_cmems = d_cmems.detach()
-            d_attn_losses.append(d_attn_loss)
+        for i in range(len(srcs)):
+            trg = np.full((4, 1, 1), config["tokens"]["sos"])
+            trg = torch.LongTensor(trg).to(config["train"]["device"])
+            for j in range(config["model"]["seq_len"] - 1):  # for each token of each bar
+                if random.random() < self.tf_prob:
+                    trg = torch.cat((trg, trgs[i, :, :, j+1:j+2]), dim=-1)  # teacher forcing, add element j+1
+                else:
+                    trg_mask = create_trg_mask(trg.cpu().numpy())
+                    out, _, _, _, _, _ = self.decoder(trg, trg_mask, None, latent, d_mems, d_cmems)
+                    out = torch.max(out, dim=-1).indices
+                    trg = torch.cat((trg, out[..., -1:]), dim=-1)
+            trg_mask = create_trg_mask(trg.cpu().numpy())
+            out, self_weight, src_weight, d_mems, d_cmems, d_attn_loss = self.decoder(trg, trg_mask, None,
+                                                                                      latent, d_mems, d_cmems)
+            dec_self_weights.append(self_weight.detach())
+            dec_src_weights.append(src_weight.detach())
+            d_attn_losses.append(d_attn_loss.detach())
             outs.append(out)
-            dec_self_weights.append(self_weight)
-            dec_src_weights.append(src_weight)
-
-        outs = torch.stack(outs, dim=1)
-        outs = outs.reshape(config["train"]["batch_size"], -1, config["tokens"]["vocab_size"], 4)
+        # TODO ##################################
+        # TODO END GREEDY DECODING
+        # TODO ##################################
+        outs = torch.stack(outs, dim=0)
         e_attn_losses = torch.stack(e_attn_losses).mean()
         d_attn_losses = torch.stack(d_attn_losses).mean()
 
-        trg_ys = trg_ys.permute(2, 0, 3, 1)
-        trg_ys = trg_ys.reshape(config["train"]["batch_size"], -1, 4)
         loss, loss_items = self.loss_computer(outs, trg_ys)
 
         # Compute accuracy
-        accuracy = compute_accuracy(outs, trg_ys, config["tokens"]["pad"])
+        predicted = torch.max(outs, dim=-1).indices
+        accuracy = compute_accuracy(predicted, trg_ys, config["tokens"]["pad"])
 
         losses = (loss.item(), accuracy, e_attn_losses.item(), d_attn_losses.item(), *loss_items)
 
@@ -362,6 +393,7 @@ class Trainer:
             print("Giving ", len(tr_loader), " training samples and ", len(ts_loader), " test samples")
             print("Giving ", config["data"]["truncated_bars"], " bars to a model with ",
                   config["model"]["layers"], " layers")
+            print("Latent size:", config["model"]["n_latents"] * config["model"]["d_model"])
             if config["train"]["aae"]:
                 print("Imposing prior distribution on latents")
                 print("Starting training aae after ", config["train"]["train_aae_after_steps"])
@@ -460,7 +492,6 @@ class Trainer:
                 # SAVE MODEL #
                 ##############
                 if (self.step % config["train"]["after_steps_save_model"]) == 0:
-                    test = batch  # TODO remove
                     full_path = self.save_path + os.sep + str(self.step)
                     os.makedirs(full_path)
                     print("Saving last model in " + full_path + ", DO NOT INTERRUPT")
@@ -483,13 +514,14 @@ class Trainer:
 
                     # RECONSTRUCTION
                     note_manager = NoteRepresentationManager()
+                    test = batch  # TODO remove
                     to_reconstruct = test
                     with torch.no_grad():
-                        original, reconstructed = self.tester.reconstruct(to_reconstruct, note_manager)
+                        original, reconstructed, limited = self.tester.reconstruct(to_reconstruct, note_manager)
                     prefix = "epoch_" + str(self.epoch) + "_mb_" + str(song_it)
                     self.logger.log_songs(os.path.join(wandb.run.dir, prefix),
-                                          [original, reconstructed],
-                                          ["original", "reconstructed"],
+                                          [original, reconstructed, limited],
+                                          ["original", "reconstructed", "limited"],
                                           "validation reconstruction example")
 
                     if config["train"]["aae"]:

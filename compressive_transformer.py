@@ -142,7 +142,7 @@ class CompressiveDecoder(nn.Module):
                                                                                    emb_weights=emb_weights[3, ...] if emb_weights is not None else None)
             mems = torch.stack([d_mem, b_mem, g_mem, s_mem])
             cmems = torch.stack([d_cmem, b_cmem, g_cmem, s_cmem])
-            output = torch.stack([d_out, b_out, g_out, s_out], dim=-1)
+            output = torch.stack([d_out, b_out, g_out, s_out], dim=0)
             output = self.generator(output)
             aux_loss = torch.stack((d_loss, b_loss, g_loss, s_loss))
             aux_loss = torch.mean(aux_loss)
@@ -418,11 +418,11 @@ class Generator(nn.Module):
 
     def forward(self, x, just=None):
         if just is None:
-            out_drums = F.log_softmax(self.proj_drums(x[:, :, :, 0]), dim=-1)
-            out_bass = F.log_softmax(self.proj_bass(x[:, :, :, 1]), dim=-1)
-            out_guitar = F.log_softmax(self.proj_guitar(x[:, :, :, 2]), dim=-1)
-            out_strings = F.log_softmax(self.proj_strings(x[:, :, :, 3]), dim=-1)
-            out = torch.stack([out_drums, out_bass, out_guitar, out_strings], dim=-1)
+            out_drums = F.log_softmax(self.proj_drums(x[0]), dim=-1)
+            out_bass = F.log_softmax(self.proj_bass(x[1]), dim=-1)
+            out_guitar = F.log_softmax(self.proj_guitar(x[2]), dim=-1)
+            out_strings = F.log_softmax(self.proj_strings(x[3]), dim=-1)
+            out = torch.stack([out_drums, out_bass, out_guitar, out_strings], dim=0)
             return out
         elif just == "drums":
             out = F.log_softmax(self.proj_drums(x), dim=-1)

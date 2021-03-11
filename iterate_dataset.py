@@ -10,6 +10,7 @@ import numpy as np
 class SongIterator(torch.utils.data.Dataset):
     def __init__(self, dataset_path, test_size, max_len=3000, batch_size=3, n_workers=1):
         self.dataset_path = dataset_path
+        print(dataset_path)
         _, _, songs = next(os.walk(self.dataset_path))
         self.songs = [x.split(".")[0] for x in songs]
         random.shuffle(self.songs)
@@ -78,13 +79,5 @@ class SongIterator(torch.utils.data.Dataset):
         )
         return tr_loader, ts_loader
 
-
-        # n_batches, seq_len = seq.shape
-        # pad = torch.empty((n_batches, 1), dtype=torch.int64).fill_(config["tokens"]["pad"]
-        #                                                            ).to(config["train"]["device"])
-        # seq = torch.cat((seq, pad), dim=-1)
-        # for b, s in enumerate(seq):  # add eos token
-        #     idx = torch.nonzero(s == config["tokens"]["pad"])
-        #     if s.shape[0] == idx.shape[0]:
-        #         continue  # all pad, do nothing
-        #     seq[b][idx[0]] = config["tokens"]["eos"]
+    def get_random_item(self):
+        return self.__getitem__(0)

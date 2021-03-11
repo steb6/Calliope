@@ -91,6 +91,7 @@ class NoteRepresentationManager:
         i = 0  # bar index
         j = 0  # token index
         n = 0  # notes index
+        previous_time = -1
         while n < len(notes):
             # add empty bar till note time value is in range
             while notes[n][0] >= bar_steps:
@@ -98,6 +99,7 @@ class NoteRepresentationManager:
                     i += 1
                     self.bar_lengths.append(j)  # empty bar
                     j = 0
+                    previous_time = -1
                     notes[n:, 0] -= round(bar_steps)  # decrease all time measures
                 else:
                     # log bars length and return song
@@ -110,6 +112,9 @@ class NoteRepresentationManager:
                 self.log.write(str(self.count) + ": Invalid time: " + str(notes[n][0]) + '\n')
                 n += 1
                 continue  # skip note: invalid time
+            if notes[n][0] == previous_time:  # skip note if previous time is the same
+                n += 1
+                continue
             if not notes[n][1] < config["tokens"]["pitch_n_values"]:  # check value of pitch
                 self.log.write(str(self.count) + ": Invalid pitch: " + str(notes[n][1]))
                 n += 1
@@ -127,6 +132,7 @@ class NoteRepresentationManager:
                 if use_velocity:
                     track[i][j + 3] = notes[n][3] + self.offsets[3]
                 j += (4 if use_velocity else 3)
+                previous_time = notes[n][0]
                 n += 1
             else:
                 # no more space inside the bar, count tokens left and skip bar notes
@@ -285,7 +291,7 @@ class NoteRepresentationManager:
                     if no_empty_bars:
                         with open(os.path.join(config["paths"]["dataset"], str(self.count) + '.pickle'), 'wb') as f:
                             candidate = np.swapaxes(candidate, 0, 1)
-                            self.reconstruct_music(candidate).write_midi("test.mid")
+                            # self.reconstruct_music(candidate).write_midi("test.mid")  # TODO remove test
                             pickle.dump(candidate, f)
                         self.count += 1
                         # if early stop, update bar only after a success
