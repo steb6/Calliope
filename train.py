@@ -177,20 +177,27 @@ class Trainer:
         outs = []
         self.tf_prob = max(config["train"]["min_tf_prob"],
                            config["train"]["max_tf_prob"] - self.step * config["train"]["tf_prob_step_reduction"])
+        n_batch, n_latents = latent.shape
         for i in range(len(srcs)):
             trg = np.full((4, 1, 1), config["tokens"]["sos"])
             trg = torch.LongTensor(trg).to(config["train"]["device"])
+            k = None
+            v = None
+            bar_one_hot = torch.zeros((n_batch, n_latents), dtype=torch.float32, device=trg.device)
+            m = latent.shape[1]//len(trgs)
+            bar_one_hot[:, (i*m):((i+1)*m)] = 1.
+            bar_one_hot = Variable(bar_one_hot)
+            bar_latent = torch.cat((latent, bar_one_hot), dim=0)
             for j in range(config["model"]["seq_len"] - 1):  # for each token of each bar
                 if random.random() < self.tf_prob:
                     trg = torch.cat((trg, trgs[i, :, :, j+1:j+2]), dim=-1)  # teacher forcing, add element j+1
                 else:
                     trg_mask = create_trg_mask(trg.cpu().numpy())
-                    out, _, _, _, _, _ = self.decoder(trg, trg_mask, None, latent, d_mems, d_cmems)
+                    out, _, _, _, _, _, _, _ = self.decoder(trg, trg_mask, bar_latent, k, v)  # TODO CAREFUL FAST
                     out = torch.max(out, dim=-1).indices
                     trg = torch.cat((trg, out[..., -1:]), dim=-1)
             trg_mask = create_trg_mask(trg.cpu().numpy())
-            out, self_weight, src_weight, d_mems, d_cmems, d_attn_loss = self.decoder(trg, trg_mask, None,
-                                                                                      latent, d_mems, d_cmems)
+            out, self_weight, src_weight, _, _, d_attn_loss, k, v = self.decoder(trg, trg_mask, bar_latent, k, v)
             dec_self_weights.append(self_weight.detach())
             dec_src_weights.append(src_weight.detach())
             d_attn_losses.append(d_attn_loss.detach())
@@ -259,7 +266,7 @@ class Trainer:
 
                 for _ in range(config["train"]["critic_iterations"]):
                     prior = get_prior(latent.shape)  # autograd is intern
-                    prior = Variable(prior).to(config["train"]["device"])
+                    # prior = Variable(prior).to(config["train"]["device"])
                     D_real = self.discriminator(prior).reshape(-1)
 
                     e_mems, e_cmems, _, _ = get_memories()
@@ -527,20 +534,21 @@ class Trainer:
                     if config["train"]["aae"]:
                         # GENERATION
                         with torch.no_grad():
-                            generated = self.tester.generate(note_manager)  # generation
+                            generated, limited = self.tester.generate(note_manager)  # generation
                         self.logger.log_songs(os.path.join(wandb.run.dir, prefix),
-                                              [generated],
-                                              ["generated"],
+                                              [generated, limited],
+                                              ["generated", "limited"],
                                               "generated")
 
                         # INTERPOLATION
                         second = test
                         with torch.no_grad():
-                            first, interpolation, second = self.tester.interpolation(note_manager, first_batch, second)
+                            first, interpolation, limited, second = self.tester.interpolation(note_manager, first_batch,
+                                                                                              second)
 
                         self.logger.log_songs(os.path.join(wandb.run.dir, prefix),
-                                              [first, interpolation, second],
-                                              ["first", "interpolation", "second"],
+                                              [first, interpolation, limited, second],
+                                              ["first", "interpolation", "limited", "second"],
                                               "interpolation")
                     # end test
                     self.encoder.train()

@@ -36,12 +36,12 @@ class Logger:
 
     @staticmethod
     def log_stuff(lr, latent, disc=None, gen=None, beta=None, prior=None, tf_prob=None):
-        log = {"stuff/lr": lr, "stuff/latent": latent}
+        log = {"stuff/lr": lr, "stuff/latent": latent[0]}
         if config["train"]["aae"]:
             log["stuff/disc lr"] = disc
             log["stuff/gen lr"] = gen
             log["stuff/beta"] = beta
-            log["stuff/prior"] = prior.detach().cpu().numpy()
+            log["stuff/prior"] = prior.detach().cpu().numpy()[0]
         log["stuff/tf_prob"] = tf_prob
         wandb.log(log)
 

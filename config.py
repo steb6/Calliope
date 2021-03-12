@@ -10,15 +10,15 @@ max_bar_length = 200  # for preprocessing, seq_len, mem_len e cmem_len
 config = {
     "train": {
         "verbose": True,
-        "make_songs": True,
+        "make_songs": True if remote else False,
         "log_images": False,
         "do_eval": False,
-        "aae": False,
+        "aae": True,
         "n_bars": 8 if remote else 8,  # TODO careful
         "test_losses": False,
         "device": "cuda" if remote else "cuda",
         "batch_size": 1 if remote else 1,
-        "test_size": 0.00001 if remote else 0.1,  # 0.001 if remote else 0.1,  # 100 on remote  it was 0.0001 in remote
+        "test_size": 0.00001 if remote else 0.1,  # 0.00001
         "n_workers": 0,
         "n_epochs": 25000,
         "label_smoothing": 0.1,
@@ -34,7 +34,7 @@ config = {
         "generated_iterations": 16 if remote else 4,
         # "test_loss": False,
         "train_aae_after_steps": 0,
-        "increase_beta_every": 2000 if remote else 2000,
+        "increase_beta_every": 2000 if remote else 1,
         "max_beta": 0.3 if remote else 0.3,
         "lambda": 10,
         "critic_iterations": 5,
@@ -43,14 +43,14 @@ config = {
         "top_k_mixed_embeddings": 5,
         "min_tf_prob": 0.,
         "max_tf_prob": 1.,
-        "tf_prob_step_reduction": 5e-4 if remote else 1e-3  # 5e-4 seems good
+        "tf_prob_step_reduction": 1e-4 if remote else 1e-3  # 5e-4 seems good
     },
     "model": {
         "seq_len": max_bar_length,
         "d_model": 32,
         "heads": 4,
         "ff_mul": 2,
-        "layers": 2 if remote else 2,  # if remote else 1,  # 3 GB each
+        "layers": 6 if remote else 2,  # if remote else 1,  # 3 GB each
         "mem_len": max_bar_length,  # keep last 2 seq
         "cmem_len": max_bar_length,  # keep 4 compression
         "cmem_ratio": 4,

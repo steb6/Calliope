@@ -5,16 +5,19 @@ from torch.nn import functional as f
 import os
 import subprocess
 from config import remote
+from torch.autograd import Variable
+
 
 def get_prior(shape):
-    reduced_shape = tuple([shape[0], shape[1] // 4])
-    g1 = torch.randn(*reduced_shape) - 2
-    g2 = torch.randn(*reduced_shape) - 6
-    g3 = torch.randn(*reduced_shape) + 2
-    g4 = torch.randn(*reduced_shape) + 6
-    g = torch.cat([g1, g2, g3, g4], dim=1)
-    return g
+    # reduced_shape = tuple([shape[0], shape[1] // 4])
+    # g1 = torch.randn(*reduced_shape) - 2
+    # g2 = torch.randn(*reduced_shape) - 6
+    # g3 = torch.randn(*reduced_shape) + 2
+    # g4 = torch.randn(*reduced_shape) + 6
+    # g = torch.cat([g1, g2, g3, g4], dim=1)
+    # return g
     # return Variable(torch.randn(*shape) * 5.).to(config["train"]["device"])  # single gaussian
+    return Variable(torch.normal(0., 1., shape)).to(config["train"]["device"])
 
 
 def get_memories(n_batch=None):
