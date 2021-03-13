@@ -20,7 +20,7 @@ class Tester:
 
     def interpolation(self, note_manager, first, second):
         # Encode first
-        e_mems, e_cmems, _, _ = get_memories()
+        e_mems, e_cmems = get_memories()
         srcs, _, src_masks, _, _ = first
         latent = None
         srcs = srcs[0].unsqueeze(0)  # select first song of the batch
@@ -29,12 +29,10 @@ class Tester:
         src_masks = torch.BoolTensor(src_masks).to(config["train"]["device"]).transpose(0, 2)
         for src, src_mask in zip(srcs, src_masks):
             latent, e_mems, e_cmems, e_attn_loss, sw = self.encoder(src, src_mask, e_mems, e_cmems)
-            e_mems = e_mems.detach()
-            e_cmems = e_cmems.detach()
         first_latent = self.latent_compressor(latent)
 
         # Encode second
-        e_mems, e_cmems, _, _ = get_memories()
+        e_mems, e_cmem = get_memories()
         srcs, _, src_masks, _, _ = second
         srcs = srcs[0].unsqueeze(0)  # select first song of the batch
         src_masks = src_masks[0].unsqueeze(0)  # add batch dimension of size 1
@@ -42,8 +40,6 @@ class Tester:
         src_masks = torch.BoolTensor(src_masks).to(config["train"]["device"]).transpose(0, 2)
         for src, src_mask in zip(srcs, src_masks):
             latent, e_mems, e_cmems, e_attn_loss, sw = self.encoder(src, src_mask, e_mems, e_cmems)
-            e_mems = e_mems.detach()
-            e_cmems = e_cmems.detach()
         second_latent = self.latent_compressor(latent)
 
         # Create interpolation
@@ -62,69 +58,27 @@ class Tester:
         steps = config["train"]["interpolation_timesteps_length"]
         outs = []
         limited = []
-        _, _, d_mems, d_cmems = get_memories(n_batch=1)
         for latent in latents:
             step_outs, limit = self.greedy_decode(latent, steps, "interpolating")
             outs = outs + step_outs
             limited = limited + limit
         outs = torch.stack(outs)
-        outs = outs[:, :, 0, :]
-        outs = outs.transpose(0, 1).cpu().numpy()
+        outs = outs[:, :, 0, :]  # select first batch
+        outs = outs.transpose(0, 1).cpu().numpy()  # invert bars and instruments
 
         limited = torch.stack(limited)
-        limited = limited[:, :, 0, :]
-        limited = limited.transpose(0, 1).cpu().numpy()
+        limited = limited[:, :, 0, :]  # select first batch
+        limited = limited.transpose(0, 1).cpu().numpy()  # invert bars and instruments
 
-        one = note_manager.reconstruct_music(first[0][0].detach().cpu().numpy())  # src of batch, first batch
+        # src of batch, first batch, first bar
+        one = note_manager.reconstruct_music(first[0][0, :, :1, :].detach().cpu().numpy())
         full = note_manager.reconstruct_music(outs)
         limited = note_manager.reconstruct_music(limited)
-        two = note_manager.reconstruct_music(second[0][0].detach().cpu().numpy())
+        two = note_manager.reconstruct_music(second[0][0, :, :1, :].detach().cpu().numpy())
 
         return one, full, limited, two
 
-    def greedy_topk_decode(self, latent, n_bars, desc, k=5):
-        _, _, d_mems, d_cmems = get_memories(n_batch=1)
-        outs = []
-        for _ in tqdm(range(n_bars), position=0, leave=True, desc=desc):
-            trg = np.full((4, 1, 1), config["tokens"]["sos"])
-            trg = torch.LongTensor(trg).to(config["train"]["device"]).unsqueeze(-1).repeat(1, 1, 1, k)
-            prob = torch.full_like(trg, 1/k, device=config["train"]["device"], dtype=torch.float32)
-            for _ in range(config["model"]["seq_len"] - 1):  # for each token of each bar
-                trg_mask = create_trg_mask(trg[..., 0].cpu().numpy())
-                out, _, _, _, _, _ = self.decoder(trg, trg_mask, None, latent, d_mems, d_cmems, emb_weights=prob)
-
-                top_k = torch.topk(out, config["train"]["top_k_mixed_embeddings"], dim=-1)
-                last_trg = top_k.indices  # 8 1 200 5 4
-                last_prob = torch.exp(top_k.values)
-
-                last_trg = last_trg[:, :, -1:, :]
-                last_prob = last_prob[:, :, -1:, :]
-
-                scaled_prob = torch.zeros_like(last_prob)
-                for i, instrument in enumerate(last_prob):
-                    for ba, batch in enumerate(instrument):
-                        for t, token in enumerate(batch):
-                            s = torch.sum(last_prob[i][ba][t])
-                            for e, _ in enumerate(token):
-                                scaled_prob[i][ba][t][e] = last_prob[i][ba][t][e] / s
-
-                trg = torch.cat((trg, last_trg), dim=-2)
-                prob = torch.cat((prob, scaled_prob), dim=-2)
-
-            trg_mask = create_trg_mask(trg[..., 0].cpu().numpy())
-            out, _, _, d_mems, d_cmems, _ = self.decoder(trg, trg_mask, None, latent, d_mems, d_cmems, emb_weights=prob)
-            out = torch.max(out, dim=-1).indices
-            for i in range(len(out)):
-                eos_indices = torch.nonzero(out[i] == config["tokens"]["eos"])
-                if len(eos_indices) == 0:
-                    continue
-                eos_index = eos_indices[0][1]  # first element, column index
-                out[i][0][eos_index:] = config["tokens"]["pad"]  # TODO careful, select just first batch
-            outs.append(out)
-        return outs
-
     def greedy_decode(self, latent, n_bars, desc):
-        _, _, d_mems, d_cmems = get_memories(n_batch=1)
         outs = []
         outs_limited = []
         n_batch, n_latents = latent.shape
@@ -138,106 +92,21 @@ class Tester:
             bar_latent = torch.cat((latent, bar_one_hot), dim=0)
             for _ in range(config["model"]["seq_len"] - 1):  # for each token of each bar
                 trg_mask = create_trg_mask(trg.cpu().numpy())
-                out, _, _, _, _, _, _, _ = self.decoder(trg, trg_mask, bar_latent, None, None)
+                out, _, _ = self.decoder(trg, trg_mask, bar_latent)
                 out = torch.max(out, dim=-1).indices
                 trg = torch.cat((trg, out[..., -1:]), dim=-1)
             trg_mask = create_trg_mask(trg.cpu().numpy())
-            out, _, _, _, _, _, _, _ = self.decoder(trg, trg_mask, bar_latent, None, None)
+            out, _, _ = self.decoder(trg, trg_mask, bar_latent)
             out = torch.max(out, dim=-1).indices
             outs.append(copy.deepcopy(out))
-            for i in range(len(out)):
-                eos_indices = torch.nonzero(out[i] == config["tokens"]["eos"])
+            for b in range(len(out)):
+                eos_indices = torch.nonzero(out[b] == config["tokens"]["eos"])
                 if len(eos_indices) == 0:
                     continue
                 eos_index = eos_indices[0][1]  # first element, column index
-                out[i][0][eos_index:] = config["tokens"]["pad"]  # TODO careful, select just first batch
+                out[b][0][eos_index:] = config["tokens"]["pad"]  # TODO careful, select just first batch
             outs_limited.append(out)
         return outs, outs_limited
-
-    def beam_search_decode(self, latent, n_bars, desc, k=4):
-        _, _, d_mems, d_cmems = get_memories(n_batch=1)
-        outs = []
-        for _ in tqdm(range(n_bars), position=0, leave=True, desc=desc):
-            trg = np.full((4, 1, 1), config["tokens"]["sos"])
-            trg = torch.LongTensor(trg).to(config["train"]["device"])
-            candidates = [(trg, 0.)]
-            for _ in range(config["model"]["seq_len"] - 1):  # for each token of each bar
-                new_candidates = []
-                for candidate in candidates:
-                    trg, score = candidate
-                    # trg_mask = create_trg_mask(trg.cpu().numpy())
-                    out, _, _, _, _, _ = self.decoder(trg, None, None, latent, d_mems, d_cmems)
-                    out = torch.topk(out, k, dim=-2)
-                    tok = out.indices
-                    for i in range(k):
-                        c = tok[:, :, i, :]
-                        o = c.permute(2, 0, 1)
-                        t = (torch.cat((trg, o[..., -1:]), dim=-1), score - torch.sum(out.values[:, -1:, i, :]).item())
-                        new_candidates.append(t)
-                new_candidates = sorted(new_candidates, key=lambda x: x[1])  # TODO is this sorting right?
-                new_candidates = new_candidates[:k]
-                candidates = new_candidates
-            # trg_mask = create_trg_mask(trg.cpu().numpy())
-            trg = candidates[0][0]
-            out, _, _, d_mems, d_cmems, _ = self.decoder(trg, None, None, latent, d_mems, d_cmems)
-            out = torch.max(out, dim=-2).indices
-            out = out.permute(2, 0, 1)
-            outs.append(out)
-        return outs
-
-    def individual_beam_search_decode(self, latent, n_bars, desc, k=4):
-        _, _, d_mems, d_cmems = get_memories(n_batch=1)
-        outs = []
-        for _ in tqdm(range(n_bars), position=0, leave=True, desc=desc):
-            trg = np.full((1, 1), config["tokens"]["sos"])
-            pad = np.full((1, 1), config["tokens"]["pad"])
-            trg = torch.LongTensor(trg).to(config["train"]["device"])
-            pad = torch.LongTensor(pad).to(config["train"]["device"])
-
-            drums_candidates = [(trg, 0.)]
-            bass_candidates = [(trg, 0.)]
-            guitar_candidates = [(trg, 0.)]
-            strings_candidates = [(trg, 0.)]
-            instruments = [drums_candidates, bass_candidates, guitar_candidates, strings_candidates]
-
-            for _ in range(config["model"]["seq_len"] - 1):  # for each token of each bar
-                idx = 0
-                for candidates, name in zip(instruments, ["drums", "bass", "guitar", "strings"]):
-                    new_candidates = []
-                    for candidate in candidates:
-                        trg, score = candidate
-                        # if trg[0][-1] == config["tokens"]["pad"]:
-                        #     t = (
-                        #         torch.cat((trg, pad), dim=-1),
-                        #         score + 1.5)
-                        #     new_candidates.append(t)
-                        #     continue
-                        trg_mask = create_trg_mask(trg.unsqueeze(0).cpu().numpy())[0]  # TODO check
-                        out, _, _, _, _, _ = self.decoder(trg, trg_mask, None, latent, d_mems, d_cmems, just=name)
-                        out = torch.topk(out, k, dim=-1)
-                        tok = out.indices
-                        for i in range(k):
-                            c = tok[:, :, i]  # TODO if 3 then stop
-                            # if c[0][-1:].item() == config["tokens"]["eos"]:
-                            #     t = (
-                            #         torch.cat((trg, pad), dim=-1),
-                            #         score + 1.5)  # TODO wat
-                            # else:
-                            t = (
-                                torch.cat((trg, c[..., -1:]), dim=-1),
-                                score - torch.sum(out.values[:, -1:, i]).item())
-                            new_candidates.append(t)
-                    new_candidates = sorted(new_candidates, key=lambda x: x[1])  # TODO is this sorting right?
-                    new_candidates = new_candidates[:k]
-                    instruments[idx] = new_candidates
-                    idx += 1
-            trg = torch.stack((instruments[0][0][0], instruments[1][0][0], instruments[2][0][0], instruments[3][0][0]))
-            trg_mask = create_trg_mask(trg.cpu().numpy())
-            out, _, _, d_mems, d_cmems, _ = self.decoder(trg, trg_mask, None, latent, d_mems, d_cmems)
-            out = torch.max(out, dim=-2).indices
-            out = out.permute(2, 0, 1)
-            outs.append(out)
-        return outs
 
     def generate(self, note_manager):  # TODO CHECK THIS
         dec_latent = get_prior((1, config["model"]["d_model"])).to(config["train"]["device"])
@@ -254,7 +123,7 @@ class Tester:
         trgs = torch.LongTensor(trgs.long()).to(config["train"]["device"]).transpose(0, 2)
         src_masks = torch.BoolTensor(src_masks).to(config["train"]["device"]).transpose(0, 2)
         trg_masks = torch.BoolTensor(trg_masks).to(config["train"]["device"]).transpose(0, 2)
-        e_mems, e_cmems, d_mems, d_cmems = get_memories()
+        e_mems, e_cmems = get_memories()
         latent = None
         for src, src_mask in zip(srcs, src_masks):
             latent, e_mems, e_cmems, _, _ = self.encoder(src, src_mask, e_mems, e_cmems)

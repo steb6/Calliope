@@ -20,18 +20,17 @@ class Logger:
         log = {mode + "loss": losses[0],
                mode + "accuracy": losses[1],
                mode + "encoder attention loss": losses[2],
-               mode + "decoder attention loss": losses[3],
-               mode + "drums loss": losses[4],
-               mode + "guitar loss": losses[5],
-               mode + "bass loss": losses[6],
-               mode + "strings loss": losses[7]}
-        if config["train"]["aae"] and len(losses) == 14:
-            log[mode + "discriminator real score"] = losses[8]
-            log[mode + "discriminator fake score"] = losses[9]
-            log[mode + "generator score"] = losses[10]
-            log[mode + "loss_critic"] = losses[11]
-            log[mode + "loss_gen"] = losses[12]
-            log[mode + "wasserstain distance"] = losses[13]
+               mode + "drums loss": losses[3],
+               mode + "guitar loss": losses[4],
+               mode + "bass loss": losses[5],
+               mode + "strings loss": losses[6]}
+        if config["train"]["aae"] and len(losses) == 13:
+            log[mode + "discriminator real score"] = losses[7]
+            log[mode + "discriminator fake score"] = losses[8]
+            log[mode + "generator score"] = losses[9]
+            log[mode + "loss_critic"] = losses[10]
+            log[mode + "loss_gen"] = losses[11]
+            log[mode + "wasserstain distance"] = losses[12]
         wandb.log(log)
 
     @staticmethod
@@ -46,7 +45,7 @@ class Logger:
         wandb.log(log)
 
     @staticmethod
-    def log_examples(e_in, d_in, pred, exp):
+    def log_examples(e_in, d_in):
         enc_input = e_in.transpose(0, 2)[0].detach().cpu().numpy()
         dec_input = d_in.transpose(0, 2)[0].detach().cpu().numpy()
         columns = ["Encoder Input: " + str(enc_input.shape),

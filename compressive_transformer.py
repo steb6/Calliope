@@ -4,7 +4,6 @@ import math
 from torch.nn import functional as F
 import copy
 from config import config
-from torch.autograd import Variable
 
 
 class CompressiveEncoder(nn.Module):
@@ -13,7 +12,7 @@ class CompressiveEncoder(nn.Module):
                  heads=config["model"]["heads"],
                  ff_mul=config["model"]["ff_mul"],
                  attn_layer_dropout=config["model"]["attn_layer_dropout"],
-                 reconstruction_attn_dropout=config["model"]["reconstruction_attn_dropout"],
+                 recon_attn_dropout=config["model"]["reconstruction_attn_dropout"],
                  ff_dropout=config["model"]["ff_dropout"],
                  layers=config["model"]["layers"],
                  vocab_size=config["tokens"]["vocab_size"],
@@ -36,7 +35,7 @@ class CompressiveEncoder(nn.Module):
         self_mem_attn = Residual(PreNorm(d_model, MyMemoryAttention(heads, d_model, seq_len,
                                                                     mem_len, cmem_len, cmem_ratio,
                                                                     attn_dropout=attn_layer_dropout,
-                                                                    reconstruction_attn_dropout=reconstruction_attn_dropout)))
+                                                                    reconstruction_attn_dropout=recon_attn_dropout)))
 
         ff = Residual(PreNorm(d_model, FeedForward(d_model, ff_mul, dropout=ff_dropout)))
 
@@ -62,7 +61,6 @@ class CompressiveEncoder(nn.Module):
         cmems = torch.stack([d_cmem, b_cmem, g_cmem, s_cmem])
         latents = torch.stack([d_z, b_z, g_z, s_z], dim=1)
         aux_loss = torch.stack((d_l, b_l, g_l, s_l)).mean()
-        # aws = torch.mean(torch.stack([daw, baw, gaw, saw], dim=0), dim=0)
         aws = torch.stack([daw, baw, gaw, saw], dim=0)
         return latents, mems, cmems, aux_loss, aws
 
@@ -73,8 +71,6 @@ class CompressiveDecoder(nn.Module):
                  heads=config["model"]["heads"],
                  ff_mul=config["model"]["ff_mul"],
                  ff_dropout=config["model"]["ff_dropout"],
-                 reconstruction_attn_dropout=config["model"]["reconstruction_attn_dropout"],
-                 attn_layer_dropout=config["model"]["attn_layer_dropout"],
                  layers=config["model"]["layers"],
                  vocab_size=config["tokens"]["vocab_size"],
                  seq_len=config["model"]["seq_len"],
@@ -90,10 +86,6 @@ class CompressiveDecoder(nn.Module):
         self.pos_emb = nn.Parameter(torch.zeros(4, heads, seq_len + mem_len + cmem_len, d_model // heads, device=device,
                                                 requires_grad=True))
         c = copy.deepcopy
-        # self_mem_attn = Residual(PreNorm(d_model, MyMemoryAttention(heads, d_model, seq_len,
-        #                                                             mem_len, cmem_len, cmem_ratio,
-        #                                                             attn_dropout=attn_layer_dropout,
-        #                                                             reconstruction_attn_dropout=reconstruction_attn_dropout)))
         self_mem_attn = Residual(PreNorm(d_model, MultiHeadedAttention(heads, d_model, dropout=0.1)))
         src_attn = Residual(PreNorm(d_model, MultiHeadedAttention(heads, d_model, dropout=0.1)))
         ff = Residual(PreNorm(d_model, FeedForward(d_model, ff_mul, dropout=ff_dropout)))
@@ -109,40 +101,16 @@ class CompressiveDecoder(nn.Module):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
-    def forward(self, trg, trg_mask, latent, old_k, old_v):
-        d_out, d_self_w, d_src_w, d_mem, d_cmem, d_loss, d_k, d_v = self.drums_decoder(trg[0, ...],
-                                                                                       trg_mask[0, ...],
-                                                                                       latent,
-                                                                                       self.pos_emb[0, ...],
-                                                                                       old_k[0] if old_k is not None else None,
-                                                                                       old_v[0] if old_v is not None else None)
-        b_out, b_self_w, b_src_w, b_mem, b_cmem, b_loss, b_k, b_v = self.bass_decoder(trg[1, ...],
-                                                                                      trg_mask[1, ...],
-                                                                                      latent,
-                                                                                      self.pos_emb[1, ...],
-                                                                                      old_k[1] if old_k is not None else None,
-                                                                                      old_v[1] if old_v is not None else None)
-        g_out, g_self_w, g_src_w, g_mem, g_cmem, g_loss, g_k, g_v = self.guitar_decoder(trg[2, ...],
-                                                                                        trg_mask[2, ...],
-                                                                                        latent,
-                                                                                        self.pos_emb[2, ...],
-                                                                                        old_k[2] if old_k is not None else None,
-                                                                                        old_v[2] if old_v is not None else None)
-        s_out, s_self_w, s_src_w, s_mem, s_cmem, s_loss, s_k, s_v = self.strings_decoder(trg[3, ...],
-                                                                                         trg_mask[3, ...],
-                                                                                         latent,
-                                                                                         self.pos_emb[3, ...],
-                                                                                         old_k[3] if old_k is not None else None,
-                                                                                         old_v[3] if old_v is not None else None)
+    def forward(self, trg, trg_mask, latent):
+        d_out, d_self_w, d_src_w, = self.drums_decoder(trg[0, ...], trg_mask[0, ...], latent, self.pos_emb[0, ...])
+        b_out, b_self_w, b_src_w, = self.bass_decoder(trg[1, ...], trg_mask[1, ...], latent, self.pos_emb[1, ...])
+        g_out, g_self_w, g_src_w, = self.guitar_decoder(trg[2, ...], trg_mask[2, ...], latent, self.pos_emb[2, ...])
+        s_out, s_self_w, s_src_w, = self.strings_decoder(trg[3, ...], trg_mask[3, ...], latent, self.pos_emb[3, ...])
         output = torch.stack([d_out, b_out, g_out, s_out], dim=0)
         output = self.generator(output)
-        aux_loss = torch.stack((d_loss, b_loss, g_loss, s_loss))
-        aux_loss = torch.mean(aux_loss)
         self_weights = torch.stack([d_self_w, b_self_w, g_self_w, s_self_w], dim=0)
         src_weights = torch.stack([d_src_w, b_src_w, g_src_w, s_src_w])
-        new_k = torch.stack([d_k, b_k, g_k, s_k])
-        new_v = torch.stack([d_v, b_v, g_v, s_v])
-        return output, self_weights, src_weights, 0, 0, aux_loss, new_k, new_v
+        return output, self_weights, src_weights
 
 
 class Encoder(nn.Module):
@@ -150,13 +118,11 @@ class Encoder(nn.Module):
         super(Encoder, self).__init__()
         self.layers = clones(layer, N)
         self.embed = nn.Embedding(vocab_size, d_model)
-        self.pos = PositionalEncoding(d_model)
         self.N = N
 
     def forward(self, seq, mask, mems, cmems, pos_emb):
         attn_losses = torch.tensor(0., requires_grad=True, device=seq.device, dtype=torch.float32)
         seq = self.embed(seq)
-        # seq = self.pos(seq)
         new_mems = []
         new_cmems = []
         self_weights = []
@@ -174,38 +140,23 @@ class Encoder(nn.Module):
 
 
 class Decoder(nn.Module):
-    """Generic N layer decoder with masking."""
-
     def __init__(self, layer, N, vocab_size, d_model):
         super(Decoder, self).__init__()
         self.layers = clones(layer, N)
         self.embed = nn.Embedding(vocab_size, d_model)
-        self.pos = PositionalEncoding(d_model)
         self.N = N
 
-    def forward(self, trg, trg_mask, latent, pos_emb, old_k, old_v):
-        attn_losses = torch.tensor(0., requires_grad=True, device=trg.device, dtype=torch.float32)
+    def forward(self, trg, trg_mask, latent, pos_emb):
         trg = self.embed(trg)
-        new_mems = []
-        new_cmems = []
         self_weights = []
         src_weights = []
-        new_k = []
-        new_v = []
         for i, layer in enumerate(self.layers):
-            trg, self_weight, src_weight, k, v = layer(trg, trg_mask, latent, pos_emb,
-                                                       old_k[i] if old_k is not None else None,
-                                                       old_v[i] if old_v is not None else None)  # pos_emb
+            trg, self_weight, src_weight = layer(trg, trg_mask, latent, pos_emb)  # pos_emb
             self_weights.append(self_weight)
             src_weights.append(src_weight)
-            new_k.append(k)
-            new_v.append(v)
         src_weights = torch.stack(src_weights, dim=0)
         self_weights = torch.stack(self_weights, dim=0)
-        new_k = torch.stack(new_k)
-        new_v = torch.stack(new_v)
-        attn_losses = attn_losses / self.N  # normalize w.r.t number of layers
-        return trg, self_weights, src_weights, new_mems, new_cmems, attn_losses, new_k, new_v
+        return trg, self_weights, src_weights
 
 
 class EncoderLayer(nn.Module):
@@ -227,14 +178,11 @@ class DecoderLayer(nn.Module):
         self.src_attn = src_attn
         self.feed_forward = feed_forward
 
-    def forward(self, x, trg_mask, latent, pos_emb, old_k, old_v):
-        x, self_weights, self_k, self_v = self.self_mem_attn(x, key=x, value=x, mask=trg_mask, pos_emb=pos_emb,
-                                                             fast=True,
-                                                             old_k=old_k if old_k is not None else None,
-                                                             old_v=old_v if old_v is not None else None)
-        x, src_weights = self.src_attn(x, key=latent, value=latent, fast=False)
+    def forward(self, x, trg_mask, latent, pos_emb):
+        x, self_weights = self.self_mem_attn(x, key=x, value=x, mask=trg_mask, pos_emb=pos_emb)
+        x, src_weights = self.src_attn(x, key=latent, value=latent)
         x, = self.feed_forward(x)
-        return x, self_weights, src_weights, self_k, self_v
+        return x, self_weights, src_weights
 
 
 class MyMemoryAttention(nn.Module):
@@ -300,35 +248,17 @@ class MultiHeadedAttention(nn.Module):
         self.linears = (clones(nn.Linear(d_model, d_model, bias=False), 4))  # TODO bias or not?
         self.dropout = nn.Dropout(p=dropout)
 
-    def forward(self, query, key=None, value=None, mask=None, pos_emb=None, old_k=None, old_v=None, fast=False):
+    def forward(self, query, key=None, value=None, mask=None, pos_emb=None):
         if mask is not None:  # apply same mask to all heads
             if mask.dim() == 2:
                 mask = mask[:, :, None] * mask[:, None, :]
             mask = mask.unsqueeze(1)
         n_batches = query.size(0)
-
-        if fast:
-            if old_k is not None:
-                q, key, value = [l(x).view(n_batches, -1, self.h, self.d_out).transpose(1, 2)
-                                     for l, x in zip(self.linears, (query[:, -1:, :], key[:, -1, :], value[:, -1, :]))]
-                key = torch.cat((old_k, key), dim=-2)
-                value = torch.cat((old_v, value), dim=-2)
-            else:
-                q, key, value = [l(x).view(n_batches, -1, self.h, self.d_out).transpose(1, 2)
-                                     for l, x in zip(self.linears, (query, key, value))]
-            x, weights = full_attn(q, key, value, mask=mask, dropout=self.dropout, pos_emb=pos_emb)
-            x = x.transpose(1, 2).contiguous().view(n_batches, -1, self.h * self.d_out)
-            # x = self.linears[-1](x)
-            # x = torch.cat((query, x), dim=-2)
-            # return x, weights, key, value
-            return self.linears[-1](x), weights, key, value
-
-        else:
-            query, key, value = [l(x).view(n_batches, -1, self.h, self.d_out).transpose(1, 2)
-                                 for l, x in zip(self.linears, (query, key, value))]
-            x, weights = full_attn(query, key, value, mask=mask, dropout=self.dropout, pos_emb=pos_emb)
-            x = x.transpose(1, 2).contiguous().view(n_batches, -1, self.h * self.d_out)
-            return self.linears[-1](x), weights
+        query, key, value = [l(x).view(n_batches, -1, self.h, self.d_out).transpose(1, 2)
+                             for l, x in zip(self.linears, (query, key, value))]
+        x, weights = full_attn(query, key, value, mask=mask, dropout=self.dropout, pos_emb=pos_emb)
+        x = x.transpose(1, 2).contiguous().view(n_batches, -1, self.h * self.d_out)
+        return self.linears[-1](x), weights
 
 
 class FeedForward(nn.Module):
@@ -415,8 +345,6 @@ def full_attn(q, k, v, mask=None, dropout=None, pos_emb=None):
     dots = torch.einsum('bhid,bhjd->bhij', q, k) * (dim ** -0.5)  # Q K^T
 
     if pos_emb is not None:
-        # pos_emb = pos_emb[:, -(k.shape[-2] + v.shape[-2]):].type(q.dtype) TODO add if use lucidrains memattn
-        # pos_dots = torch.einsum('bhid,hjd->bhij', q, pos_emb) * (q.shape[-1] ** 0.5)  TODO remove we have dim
         pos_dots = torch.einsum('bhid,hjd->bhij', q, pos_emb) * (dim ** 0.5)
         pos_dots = shift(pos_dots)  # left upper triangular has positional embedding of illegal token
         pos_dots = pos_dots[..., :dots.shape[-1]]  # TODO select useful embedding, confirm or remove
@@ -433,22 +361,6 @@ def full_attn(q, k, v, mask=None, dropout=None, pos_emb=None):
 def clones(module, N):
     """ Produce N identical layers."""
     return nn.ModuleList([copy.deepcopy(module) for _ in range(N)])
-
-
-def max_neg_value(tensor):
-    return -torch.finfo(tensor.dtype).max
-
-
-def reshape_dim(t, dim, split_dims):
-    """
-    Reshape dimension dim of tensor t with split dims
-    Ex: t = (2, 200, 16), dim = -1, split_dims = (-1, 4) ---> t = (2, 200, -1, 4)
-    """
-    shape = list(t.shape)
-    num_dims = len(shape)
-    dim = (dim + num_dims) % num_dims
-    shape[dim:dim + 1] = split_dims
-    return t.reshape(shape)
 
 
 def shift(x):
@@ -472,17 +384,6 @@ def to(t):
     return {'dtype': t.dtype, 'device': t.device}
 
 
-def queue_fifo(*args, length, dim=-2):
-    queue = torch.cat(args, dim=dim)
-    if length > 0:
-        return split_at_index(dim, -length, queue)
-
-    device = queue.device
-    shape = list(queue.shape)
-    shape[dim] = 0
-    return queue, torch.empty(shape, device=device)
-
-
 def split_at_index(dim, index, t):
     pre_slices = (slice(None),) * dim
     left = (*pre_slices, slice(None, index))
@@ -492,155 +393,3 @@ def split_at_index(dim, index, t):
 
 def cast_tuple(el):
     return el if isinstance(el, tuple) else (el,)
-
-
-class MemorySelfAttention(nn.Module):
-    def __init__(self, heads, dim, seq_len, mem_len, cmem_len, cmem_ratio=4, attn_dropout=0., dropout=0.,
-                 reconstruction_attn_dropout=0., one_kv_head=False):
-        super().__init__()
-        assert (dim % heads) == 0, 'dimension must be divisible by the number of heads'
-
-        self.heads = heads
-        self.dim_head = dim // heads
-        self.seq_len = seq_len
-        self.mem_len = mem_len
-        self.cmem_len = cmem_len
-        self.cmem_ratio = cmem_ratio
-        self.scale = self.dim_head ** (-0.5)
-
-        self.compress_mem_fn = ConvCompress(dim, cmem_ratio)
-
-        self.to_q = nn.Linear(dim, dim, bias=False)
-
-        kv_dim = self.dim_head if one_kv_head else dim
-        self.to_kv = nn.Linear(dim, kv_dim * 2, bias=False)
-        self.to_out = nn.Linear(dim, dim)
-
-        self.attn_dropout = nn.Dropout(attn_dropout)
-        self.dropout = nn.Dropout(dropout)
-
-        self.reconstruction_attn_dropout = nn.Dropout(reconstruction_attn_dropout)
-
-    def forward(self, x, memories=None, pos_emb=None, input_mask=None, calc_memory=True, concat_q=True):
-        b, t, e, h, dim_h = *x.shape, self.heads, self.dim_head
-
-        mem, cmem = memories
-
-        mem_len = mem.shape[1]
-        cmem_len = cmem.shape[1]
-
-        q = self.to_q(x)
-
-        if concat_q:
-            kv_input = torch.cat((cmem, mem, x), dim=1)
-        else:
-            kv_input = torch.cat((cmem, mem), dim=1)
-        kv_len = kv_input.shape[1]
-        k, v = self.to_kv(kv_input).chunk(2, dim=-1)
-
-        merge_heads = lambda x: reshape_dim(x, -1, (-1, dim_h)).transpose(1, 2)
-        q, k, v = map(merge_heads, (q, k, v))
-
-        k, v = map(lambda x: x.expand(-1, h, -1, -1), (k, v))
-
-        dots = torch.einsum('bhid,bhjd->bhij', q, k) * self.scale
-        mask_value = max_neg_value(dots)
-
-        if pos_emb is not None:
-            pos_emb = pos_emb[:, -kv_len:].type(q.dtype)
-            pos_dots = torch.einsum('bhid,hjd->bhij', q, pos_emb) * self.scale
-            pos_dots = shift(pos_dots)
-            dots = dots + pos_dots
-
-        if input_mask is not None:
-            if input_mask.dim() == 2:
-                mask = input_mask[:, None, :, None] * input_mask[:, None, None, :]
-            else:
-                mask = input_mask.unsqueeze(1)
-            if concat_q:
-                mask = F.pad(mask, (mem_len + cmem_len, 0), value=True)
-            else:
-                mask = F.pad(mask, (mem_len + cmem_len - self.seq_len, 0), value=True)
-            dots.masked_fill_(~mask, mask_value)
-
-        # total_mem_len = mem_len + cmem_len
-        # mask = torch.ones(t, t + total_mem_len, **to(x)).triu_(diagonal = 1 + total_mem_len).bool()
-        # dots.masked_fill_(mask[None, None, ...], mask_value)
-
-        attn = dots.softmax(dim=-1)
-        weights = attn.detach().clone()
-        attn = self.attn_dropout(attn)
-
-        out = torch.einsum('bhij,bhjd->bhid', attn, v)
-        out = out.transpose(1, 2).reshape(b, t, -1)
-        logits = self.to_out(out)
-        logits = self.dropout(logits)
-
-        new_mem = mem
-        new_cmem = cmem
-        aux_loss = torch.zeros(1, requires_grad=True, **to(q))
-
-        # if self.seq_len > t or not calc_memory:
-        #     return logits, Memory(new_mem, new_cmem), aux_loss
-
-        # calculate memory and compressed memory
-
-        old_mem, new_mem = queue_fifo(mem, x, length=self.mem_len, dim=1)
-        old_mem_padding = old_mem.shape[1] % self.cmem_ratio
-
-        if old_mem_padding != 0:
-            old_mem = F.pad(old_mem, (0, 0, old_mem_padding, 0), value=0.)
-
-        if old_mem.shape[1] == 0 or self.cmem_len <= 0:
-            return logits, new_mem, new_cmem, aux_loss, weights
-
-        compressed_mem = self.compress_mem_fn(old_mem)
-        old_cmem, new_cmem = split_at_index(1, -self.cmem_len, torch.cat((cmem, compressed_mem), dim=1))
-
-        # if not self.training:
-        #     return logits, Memory(new_mem, new_cmem), aux_loss
-
-        # calculate compressed memory auxiliary loss if training
-        # old_mem = old_mem.detach()  # TODO detached
-        # compressed_mem = self.compress_mem_fn(old_mem)
-
-        freezed = self.to_kv.requires_grad_(False)
-        cmem_k, cmem_v = freezed(compressed_mem).chunk(2, dim=-1)
-        cmem_k, cmem_v = map(merge_heads, (cmem_k, cmem_v))
-        cmem_k, cmem_v = map(lambda x: x.expand(-1, h, -1, -1), (cmem_k, cmem_v))
-
-        old_mem_range = slice(- min(mem_len, self.mem_len) - self.seq_len, -self.seq_len)
-        old_mem_k, old_mem_v = map(lambda x: x[:, :, old_mem_range].clone(), (k, v))
-
-        q, old_mem_k, old_mem_v, cmem_k, cmem_v = map(torch.detach, (q, old_mem_k, old_mem_v, cmem_k, cmem_v))
-        # q, old_mem_k, old_mem_v = map(torch.detach, (q, old_mem_k, old_mem_v))
-
-        aux_loss = F.mse_loss(
-            full_attn(q, old_mem_k, old_mem_v, dropout=self.reconstruction_attn_dropout)[0],
-            full_attn(q, cmem_k, cmem_v, dropout=self.reconstruction_attn_dropout)[0]
-        )
-
-        return logits, new_mem, new_cmem, aux_loss, weights
-
-
-class PositionalEncoding(nn.Module):
-    "Implement the PE function."
-
-    def __init__(self, d_model, dropout=0.1, max_len=5000):
-        super(PositionalEncoding, self).__init__()
-        self.dropout = nn.Dropout(p=dropout)
-
-        # Compute the positional encodings once in log space.
-        pe = torch.zeros(max_len, d_model)
-        position = torch.arange(0, max_len).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2) *
-                             -(math.log(10000.0) / d_model))
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-        pe = pe.unsqueeze(0)
-        self.register_buffer('pe', pe)
-
-    def forward(self, x):
-        x = x + Variable(self.pe[:, :x.size(1)],
-                         requires_grad=False)
-        return self.dropout(x)

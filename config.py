@@ -10,7 +10,7 @@ max_bar_length = 200  # for preprocessing, seq_len, mem_len e cmem_len
 config = {
     "train": {
         "verbose": True,
-        "make_songs": True if remote else False,
+        "make_songs": True,
         "log_images": False,
         "do_eval": False,
         "aae": True,
@@ -47,10 +47,10 @@ config = {
     },
     "model": {
         "seq_len": max_bar_length,
-        "d_model": 32,
+        "d_model": 256,
         "heads": 4,
         "ff_mul": 2,
-        "layers": 6 if remote else 2,  # if remote else 1,  # 3 GB each
+        "layers": 2 if remote else 2,  # if remote else 1,  # 3 GB each
         "mem_len": max_bar_length,  # keep last 2 seq
         "cmem_len": max_bar_length,  # keep 4 compression
         "cmem_ratio": 4,

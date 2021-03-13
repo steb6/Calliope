@@ -17,7 +17,7 @@ def get_prior(shape):
     # g = torch.cat([g1, g2, g3, g4], dim=1)
     # return g
     # return Variable(torch.randn(*shape) * 5.).to(config["train"]["device"])  # single gaussian
-    return Variable(torch.normal(0., 1., shape)).to(config["train"]["device"])
+    return Variable(torch.normal(0., 5., shape)).to(config["train"]["device"])
 
 
 def get_memories(n_batch=None):
@@ -28,11 +28,9 @@ def get_memories(n_batch=None):
     device = config["train"]["device"]
     mem_len = config["model"]["mem_len"]
     cmem_len = config["model"]["cmem_len"]
-    e_mems = torch.zeros(a, b, c, mem_len, e, dtype=torch.float32, device=device)
-    e_cmems = torch.zeros(a, b, c, cmem_len, e, dtype=torch.float32, device=device)
-    d_mems = torch.zeros(a, b, c, mem_len, e, dtype=torch.float32, device=device)
-    d_cmems = torch.zeros(a, b, c, cmem_len, e, dtype=torch.float32, device=device)
-    return e_mems, e_cmems, d_mems, d_cmems
+    mems = torch.zeros(a, b, c, mem_len, e, dtype=torch.float32, device=device)
+    cmems = torch.zeros(a, b, c, cmem_len, e, dtype=torch.float32, device=device)
+    return mems, cmems
 
 
 def create_trg_mask(trg):
