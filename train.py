@@ -50,7 +50,7 @@ class Trainer:
             self.gen_losses = []
             self.disc_loss_init = None
             self.gen_loss_init = None
-            self.beta = -0.1  # so it become 0 at first iteration
+            self.beta = -0.001  # so it become 0 at first iteration
             self.reg_optimizer = None
 
     def run_mb(self, batch):
@@ -75,6 +75,8 @@ class Trainer:
             latent, e_mems, e_cmems, e_attn_loss, sw = self.encoder(src, src_mask, e_mems, e_cmems)
             enc_self_weights.append(sw)
             e_attn_losses.append(e_attn_loss)
+            e_mems = e_mems.detach()
+            e_cmems = e_cmems.detach()
 
         latent = self.latent_compressor(latent)
         self.latent = latent.detach().cpu().numpy()
@@ -98,7 +100,7 @@ class Trainer:
             bar_latent = torch.cat((latent, bar_one_hot), dim=0)
             # Get trg_mask for the bar
             trg_mask = trg_masks[i]
-            # Loop till almost end
+            # Loop till almost end  # TODO if all pad, then skip
             for j in range(config["model"]["seq_len"] - 1):  # for each token of each bar
                 if random.random() < self.tf_prob:  # TODO careful for teacher forcing
                     trg = torch.cat((trg, trgs[i, ..., j+1:j+2]), dim=-1)  # teacher forcing, add element j+1
@@ -156,7 +158,7 @@ class Trainer:
         if config["train"]["aae"] and self.encoder.training:  # TODO adjust for evaluation
 
             if self.step % config["train"]["increase_beta_every"] == 0 and self.beta < config["train"]["max_beta"]:
-                self.beta += 0.1
+                self.beta += 0.001
 
             if self.beta > 0:
                 # To suppress warnings
@@ -181,6 +183,8 @@ class Trainer:
                     e_mems, e_cmems = get_memories()
                     for src, src_mask in zip(srcs, src_masks):
                         latent, e_mems, e_cmems, _, _ = self.encoder(src, src_mask, e_mems, e_cmems)
+                        e_mems = e_mems.detach()
+                        e_cmems = e_cmems.detach()
                     latent = self.latent_compressor(latent)
                     D_fake = self.discriminator(latent).reshape(-1)
 
@@ -193,6 +197,9 @@ class Trainer:
 
                     self.discriminator.zero_grad()
                     loss_critic.backward(retain_graph=True)
+
+                    torch.nn.utils.clip_grad_norm_(self.discriminator.parameters(), 0.1)  # TODO experiment
+
                     self.disc_optimizer.step(lr=self.encoder_optimizer.lr)
 
                 ####################
@@ -205,9 +212,13 @@ class Trainer:
                 for p in self.discriminator.parameters():
                     p.requires_grad = False  # to avoid computation
 
+                e_attn_losses = []  # TODO experiment
                 e_mems, e_cmems = get_memories()
                 for src, src_mask in zip(srcs, src_masks):
-                    latent, e_mems, e_cmems, _, _ = self.encoder(src, src_mask, e_mems, e_cmems)
+                    latent, e_mems, e_cmems, e_attn_loss, _ = self.encoder(src, src_mask, e_mems, e_cmems)
+                    e_mems = e_mems.detach()
+                    e_cmems = e_cmems.detach()
+                    e_attn_losses.append(e_attn_loss)  # TODO experiment
                 latent = self.latent_compressor(latent)
 
                 G = self.discriminator(latent).reshape(-1)
@@ -215,9 +226,16 @@ class Trainer:
                 loss_gen = -torch.mean(G)
                 loss_gen = loss_gen * self.beta
 
+                e_attn_losses = torch.stack(e_attn_losses).mean()  # TODO experiment
+                # loss_gen = loss_gen + e_attn_losses  # TODO experiment
+
                 self.encoder.zero_grad()
                 self.latent_compressor.zero_grad()
                 loss_gen.backward()
+
+                torch.nn.utils.clip_grad_norm_(self.encoder.parameters(), 0.1)  # TODO experiment
+                torch.nn.utils.clip_grad_norm_(self.latent_compressor.parameters(), 0.1)  # TODO experiment
+
                 self.gen_optimizer.step(lr=self.encoder_optimizer.lr)
 
                 losses += (D_real.mean().cpu().data.numpy(), D_fake.mean().cpu().data.numpy(),

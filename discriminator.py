@@ -15,13 +15,21 @@ class Discriminator(nn.Module):
         # self.lin2 = nn.Linear(latent_size//2, latent_size//4)
         # self.norm2 = nn.LayerNorm(latent_size//4)
         # self.lin3 = nn.Linear(latent_size//4, 1)
+
         latent_size = config["model"]["d_model"]
-        self.lin1 = nn.Linear(latent_size, latent_size//2)
-        self.lin2 = nn.Linear(latent_size//2, latent_size//4)
-        self.norm2 = nn.LayerNorm(latent_size//4)
-        self.lin3 = nn.Linear(latent_size//4, latent_size//8)
-        self.norm3 = nn.LayerNorm(latent_size//8)
-        self.lin4 = nn.Linear(latent_size//8, 1)
+        # self.lin1 = nn.Linear(latent_size, latent_size//2)
+        # self.norm1 = nn.LayerNorm(latent_size//2)
+        # self.lin2 = nn.Linear(latent_size//2, latent_size//4)
+        # self.norm2 = nn.LayerNorm(latent_size//4)
+        # self.lin3 = nn.Linear(latent_size//4, latent_size//8)
+        # self.norm3 = nn.LayerNorm(latent_size//8)
+        # self.lin4 = nn.Linear(latent_size//8, 1)
+
+        self.lin1 = nn.Linear(latent_size, latent_size//4)
+        self.norm1 = nn.LayerNorm(latent_size//4)
+        self.lin2 = nn.Linear(latent_size//4, latent_size//8)
+        self.norm2 = nn.LayerNorm(latent_size//8)
+        self.lin3 = nn.Linear(latent_size//8, 1)
         self.dropout = dropout
 
     def forward(self, x):
@@ -35,12 +43,21 @@ class Discriminator(nn.Module):
         # x = F.leaky_relu(x)
         # x = self.lin3(x)
         # # return torch.sigmoid(x)
-        x = self.lin1(x)
-        x = F.leaky_relu(x, 0.2)
-        x = self.lin2(x)
+
+        # x = self.lin1(x)
+        # x = F.leaky_relu(x, 0.1)
+        # x = self.lin2(x)
+        # x = self.norm2(x)
+        # x = F.leaky_relu(x, 0.1)
+        # x = self.lin3(x)
+        # x = self.norm3(x)
+        # x = F.leaky_relu(x, 0.1)
+        # return self.lin4(x)
+
+        x = F.dropout(self.lin1(x), p=self.dropout, training=self.training)
+        x = self.norm1(x)
+        x = F.dropout(self.lin2(x), p=self.dropout, training=self.training)
         x = self.norm2(x)
-        x = F.leaky_relu(x, 0.2)
+        x = F.leaky_relu(x)
         x = self.lin3(x)
-        x = self.norm3(x)
-        x = F.leaky_relu(x, 0.2)
-        return self.lin4(x)
+        return x
