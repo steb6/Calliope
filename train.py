@@ -9,7 +9,7 @@ from loss_computer import SimpleLossCompute, compute_accuracy, LabelSmoothing
 from create_bar_dataset import NoteRepresentationManager
 import wandb
 from compressive_transformer import CompressiveEncoder, CompressiveDecoder
-from compress_latents import LatentCompressor
+from compress_latents import LatentCompressor, LatentDecompressor
 import numpy as np
 from logger import Logger
 from utilities import get_memories
@@ -36,6 +36,7 @@ class Trainer:
         # Models
         self.encoder = None
         self.latent_compressor = None
+        self.latent_decompressor = None
         self.decoder = None
         if config["train"]["aae"]:
             self.discriminator = None
@@ -99,9 +100,11 @@ class Trainer:
             e_mems = e_mems.detach()
             e_cmems = e_cmems.detach()
 
-        # latent = latent.transpose(0, 1)t
-        # latent = self.latent_compressor(latent)
+        # latent = latent.transpose(0, 1)
+        latent = self.latent_compressor(latent)
         self.latent = latent.detach().cpu().numpy()
+        latent = self.latent_decompressor(latent)
+        latent = latent.transpose(0, 1)
 
         ############
         # DECODING #
@@ -292,6 +295,7 @@ class Trainer:
         # Create models
         self.encoder = CompressiveEncoder().to(config["train"]["device"])
         self.latent_compressor = LatentCompressor(config["model"]["d_model"]).to(config["train"]["device"])
+        self.latent_decompressor = LatentDecompressor(config["model"]["d_model"]).to(config["train"]["device"])
         self.decoder = CompressiveDecoder().to(config["train"]["device"])
         if config["train"]["aae"]:
             self.discriminator = Discriminator(config["model"]["d_model"],
@@ -304,7 +308,8 @@ class Trainer:
                                        (config["train"]["lr_min"], config["train"]["lr_max"]),
                                        config["train"]["decay_steps"], config["train"]["minimum_lr"]
                                        )
-        self.decoder_optimizer = CTOpt(torch.optim.Adam([{"params": self.decoder.parameters()}], lr=0),
+        self.decoder_optimizer = CTOpt(torch.optim.Adam([{"params": self.latent_decompressor.parameters()},
+                                                         {"params": self.decoder.parameters()}], lr=0),
                                        config["train"]["warmup_steps"],
                                        (config["train"]["lr_min"], config["train"]["lr_max"]),
                                        config["train"]["decay_steps"], config["train"]["minimum_lr"])
@@ -341,6 +346,7 @@ class Trainer:
         wandb.init(project="MusAE", config=config, name="r_" + timestamp if remote else "l_" + timestamp)
         wandb.watch(self.encoder, log_freq=100, log="all")  # TODO remove
         wandb.watch(self.latent_compressor, log_freq=100, log="all")  # TODO remove
+        wandb.watch(self.latent_decompressor, log_freq=100, log="all")  # TODO remove
         wandb.watch(self.decoder, log_freq=100, log="all")  # TODO remove
         if config["train"]["aae"]:
             wandb.watch(self.discriminator, log_freq=100, log="all")  # TODO remove

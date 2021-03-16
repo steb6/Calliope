@@ -57,7 +57,7 @@ class CompressiveEncoder(nn.Module):
         s_z, s_mem, s_cmem, s_l, saw = self.strings_encoder(seq[3], mask[3], mems[3], cmems[3], self.pos_emb[3])
         mems = torch.stack([d_mem, b_mem, g_mem, s_mem])
         cmems = torch.stack([d_cmem, b_cmem, g_cmem, s_cmem])
-        latents = torch.stack([d_z, b_z, g_z, s_z], dim=0)
+        latents = torch.stack([d_z, b_z, g_z, s_z], dim=1)
         aux_loss = torch.stack((d_l, b_l, g_l, s_l)).mean()
         aws = torch.stack([daw, baw, gaw, saw], dim=0)
         return latents, mems, cmems, aux_loss, aws
