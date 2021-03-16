@@ -99,7 +99,7 @@ class Trainer:
             e_mems = e_mems.detach()
             e_cmems = e_cmems.detach()
 
-        # latent = latent.transpose(0, 1)
+        # latent = latent.transpose(0, 1)t
         # latent = self.latent_compressor(latent)
         self.latent = latent.detach().cpu().numpy()
 
