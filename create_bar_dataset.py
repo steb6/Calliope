@@ -282,8 +282,8 @@ class NoteRepresentationManager:
                 # divide song into sequence of bars and save them
                 while True:
                     no_empty_bars = True
-                    candidate = tensor_song[:config["data"]["truncated_bars"], ...]
-                    if len(candidate) < config["data"]["truncated_bars"]:
+                    candidate = tensor_song[:config["data"]["bars"], ...]
+                    if len(candidate) < config["data"]["bars"]:
                         break
                     for bar in candidate:
                         if (bar == 0).all():
@@ -291,7 +291,7 @@ class NoteRepresentationManager:
                     if no_empty_bars:
                         with open(os.path.join(config["paths"]["dataset"], str(self.count) + '.pickle'), 'wb') as f:
                             candidate = np.swapaxes(candidate, 0, 1)
-                            # self.reconstruct_music(candidate).write_midi("test.mid")  # TODO remove test
+                            self.reconstruct_music(candidate).write_midi("test.mid")  # TODO remove test
                             pickle.dump(candidate, f)
                         self.count += 1
                         # if early stop, update bar only after a success
@@ -302,7 +302,7 @@ class NoteRepresentationManager:
                                 self.plot_lengths()
                                 progbar.close()
                                 return
-                        tensor_song = tensor_song[config["data"]["truncated_bars"]:, ...]
+                        tensor_song = tensor_song[config["data"]["bars"]:, ...]
                     else:
                         break
 

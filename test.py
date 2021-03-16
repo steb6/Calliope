@@ -81,22 +81,24 @@ class Tester:
     def greedy_decode(self, latent, n_bars, desc):
         outs = []
         outs_limited = []
-        n_batch, n_latents = latent.shape
+        # n_batch, _, n_latents = latent.shape
+        mems, cmems = get_memories()
+        latent = latent.unsqueeze(1)
         for i in tqdm(range(n_bars), position=0, leave=True, desc=desc):
             trg = np.full((4, 1, 1), config["tokens"]["sos"])
             trg = torch.LongTensor(trg).to(config["train"]["device"])
-            bar_one_hot = torch.zeros((n_batch, n_latents), dtype=torch.float32, device=trg.device)
-            k = latent.shape[1]//n_bars
-            bar_one_hot[:, (i*k):((i+1)*k)] = 1.
-            bar_one_hot = bar_one_hot
-            bar_latent = torch.cat((latent, bar_one_hot), dim=0)
+            # bar_one_hot = torch.zeros((n_batch, n_latents), dtype=torch.float32, device=trg.device)
+            # k = latent.shape[1]//n_bars
+            # bar_one_hot[:, (i*k):((i+1)*k)] = 1.
+            # bar_one_hot = bar_one_hot
+            # bar_latent = torch.cat((latent, bar_one_hot), dim=0)
             for _ in range(config["model"]["seq_len"] - 1):  # for each token of each bar
                 trg_mask = create_trg_mask(trg.cpu().numpy())
-                out, _, _ = self.decoder(trg, trg_mask, bar_latent)
+                out, _, _, _, _, _ = self.decoder(trg, trg_mask, latent, mems, cmems)
                 out = torch.max(out, dim=-1).indices
                 trg = torch.cat((trg, out[..., -1:]), dim=-1)
             trg_mask = create_trg_mask(trg.cpu().numpy())
-            out, _, _ = self.decoder(trg, trg_mask, bar_latent)
+            out, mems, cmems, _, _, _ = self.decoder(trg, trg_mask, latent, mems, cmems)
             out = torch.max(out, dim=-1).indices
             outs.append(copy.deepcopy(out))
             for b in range(len(out)):
@@ -109,7 +111,7 @@ class Tester:
         return outs, outs_limited
 
     def generate(self, note_manager):  # TODO CHECK THIS
-        dec_latent = get_prior((1, config["model"]["d_model"])).to(config["train"]["device"])
+        dec_latent = get_prior((1, 1, config["model"]["d_model"])).to(config["train"]["device"])
         outs, limited = self.greedy_decode(dec_latent, config["train"]["generated_iterations"], "generate")  # TODO careful
         outs = torch.stack(outs)
         limited = torch.stack(limited)

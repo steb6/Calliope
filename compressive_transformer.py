@@ -4,6 +4,7 @@ import math
 from torch.nn import functional as F
 import copy
 from config import config
+from torch.autograd import Variable
 
 
 class CompressiveEncoder(nn.Module):
@@ -32,10 +33,11 @@ class CompressiveEncoder(nn.Module):
                         requires_grad=True))
         c = copy.deepcopy
 
-        self_mem_attn = Residual(PreNorm(d_model, MyMemoryAttention(heads, d_model, seq_len,
-                                                                    mem_len, cmem_len, cmem_ratio,
-                                                                    attn_dropout=attn_layer_dropout,
-                                                                    reconstruction_attn_dropout=recon_attn_dropout)))
+        # self_mem_attn = Residual(PreNorm(d_model, MyMemoryAttention(heads, d_model, seq_len,
+        #                                                             mem_len, cmem_len, cmem_ratio,
+        #                                                             attn_dropout=attn_layer_dropout,
+        #                                                             reconstruction_attn_dropout=recon_attn_dropout)))
+        self_mem_attn = Residual(PreNorm(d_model, MultiHeadedAttention(heads, d_model, dropout=0.1)))
 
         ff = Residual(PreNorm(d_model, FeedForward(d_model, ff_mul, dropout=ff_dropout)))
 
@@ -49,17 +51,13 @@ class CompressiveEncoder(nn.Module):
                 nn.init.xavier_uniform_(p)
 
     def forward(self, seq, mask, mems, cmems):
-        d_z, d_mem, d_cmem, d_l, daw = self.drums_encoder(seq[0, ...], mask[0, ...], mems[0, ...],
-                                                          cmems[0, ...], self.pos_emb[0, ...])
-        b_z, b_mem, b_cmem, b_l, baw = self.bass_encoder(seq[1, ...], mask[1, ...], mems[1, ...],
-                                                         cmems[1, ...], self.pos_emb[1, ...])
-        g_z, g_mem, g_cmem, g_l, gaw = self.guitar_encoder(seq[2, ...], mask[2, ...], mems[2, ...],
-                                                           cmems[2, ...], self.pos_emb[2, ...])
-        s_z, s_mem, s_cmem, s_l, saw = self.strings_encoder(seq[3, ...], mask[3, ...], mems[3, ...],
-                                                            cmems[3, ...], self.pos_emb[3, ...])
+        d_z, d_mem, d_cmem, d_l, daw = self.drums_encoder(seq[0], mask[0], mems[0], cmems[0], self.pos_emb[0])
+        b_z, b_mem, b_cmem, b_l, baw = self.bass_encoder(seq[1], mask[1], mems[1], cmems[1], self.pos_emb[1])
+        g_z, g_mem, g_cmem, g_l, gaw = self.guitar_encoder(seq[2], mask[2], mems[2], cmems[2], self.pos_emb[2])
+        s_z, s_mem, s_cmem, s_l, saw = self.strings_encoder(seq[3], mask[3], mems[3], cmems[3], self.pos_emb[3])
         mems = torch.stack([d_mem, b_mem, g_mem, s_mem])
         cmems = torch.stack([d_cmem, b_cmem, g_cmem, s_cmem])
-        latents = torch.stack([d_z, b_z, g_z, s_z], dim=1)
+        latents = torch.stack([d_z, b_z, g_z, s_z], dim=0)
         aux_loss = torch.stack((d_l, b_l, g_l, s_l)).mean()
         aws = torch.stack([daw, baw, gaw, saw], dim=0)
         return latents, mems, cmems, aux_loss, aws
@@ -71,6 +69,8 @@ class CompressiveDecoder(nn.Module):
                  heads=config["model"]["heads"],
                  ff_mul=config["model"]["ff_mul"],
                  ff_dropout=config["model"]["ff_dropout"],
+                 attn_layer_dropout=config["model"]["attn_layer_dropout"],
+                 recon_attn_dropout=config["model"]["reconstruction_attn_dropout"],
                  layers=config["model"]["layers"],
                  vocab_size=config["tokens"]["vocab_size"],
                  seq_len=config["model"]["seq_len"],
@@ -86,7 +86,12 @@ class CompressiveDecoder(nn.Module):
         self.pos_emb = nn.Parameter(torch.zeros(4, heads, seq_len + mem_len + cmem_len, d_model // heads, device=device,
                                                 requires_grad=True))
         c = copy.deepcopy
+        # self_mem_attn = Residual(PreNorm(d_model, MyMemoryAttention(heads, d_model, seq_len,
+        #                                                             mem_len, cmem_len, cmem_ratio,
+        #                                                             attn_dropout=attn_layer_dropout,
+        #                                                             reconstruction_attn_dropout=recon_attn_dropout)))
         self_mem_attn = Residual(PreNorm(d_model, MultiHeadedAttention(heads, d_model, dropout=0.1)))
+
         src_attn = Residual(PreNorm(d_model, MultiHeadedAttention(heads, d_model, dropout=0.1)))
         ff = Residual(PreNorm(d_model, FeedForward(d_model, ff_mul, dropout=ff_dropout)))
 
@@ -101,16 +106,23 @@ class CompressiveDecoder(nn.Module):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
-    def forward(self, trg, trg_mask, latent):
-        d_out, d_self_w, d_src_w, = self.drums_decoder(trg[0, ...], trg_mask[0, ...], latent, self.pos_emb[0, ...])
-        b_out, b_self_w, b_src_w, = self.bass_decoder(trg[1, ...], trg_mask[1, ...], latent, self.pos_emb[1, ...])
-        g_out, g_self_w, g_src_w, = self.guitar_decoder(trg[2, ...], trg_mask[2, ...], latent, self.pos_emb[2, ...])
-        s_out, s_self_w, s_src_w, = self.strings_decoder(trg[3, ...], trg_mask[3, ...], latent, self.pos_emb[3, ...])
+    def forward(self, trg, trg_mask, src_mask, latent, mems, cmems):
+        d_out, d_mem, d_cmem, d_l, d_self_w, d_src_w, = self.drums_decoder(trg[0], trg_mask[0], src_mask[0],
+                                                                           latent[0], mems[0], cmems[0], self.pos_emb[0])
+        b_out, b_mem, b_cmem, b_l, b_self_w, b_src_w, = self.bass_decoder(trg[1], trg_mask[1], src_mask[1],
+                                                                          latent[1], mems[1], cmems[1], self.pos_emb[1])
+        g_out, g_mem, g_cmem, g_l, g_self_w, g_src_w, = self.guitar_decoder(trg[2], trg_mask[2], src_mask[2],
+                                                                            latent[2], mems[2], cmems[2], self.pos_emb[2])
+        s_out, s_mem, s_cmem, s_l, s_self_w, s_src_w, = self.strings_decoder(trg[3], trg_mask[3], src_mask[3],
+                                                                             latent[3], mems[3], cmems[3], self.pos_emb[3])
         output = torch.stack([d_out, b_out, g_out, s_out], dim=0)
         output = self.generator(output)
         self_weights = torch.stack([d_self_w, b_self_w, g_self_w, s_self_w], dim=0)
         src_weights = torch.stack([d_src_w, b_src_w, g_src_w, s_src_w])
-        return output, self_weights, src_weights
+        mems = torch.stack([d_mem, b_mem, g_mem, s_mem])
+        cmems = torch.stack([d_cmem, b_cmem, g_cmem, s_cmem])
+        aux_loss = torch.stack((d_l, b_l, g_l, s_l)).mean()
+        return output, mems, cmems, aux_loss, self_weights, src_weights
 
 
 class Encoder(nn.Module):
@@ -119,6 +131,7 @@ class Encoder(nn.Module):
         self.layers = clones(layer, N)
         self.embed = nn.Embedding(vocab_size, d_model)
         self.N = N
+        self.norm = nn.LayerNorm(d_model)
 
     def forward(self, seq, mask, mems, cmems, pos_emb):
         attn_losses = torch.tensor(0., requires_grad=True, device=seq.device, dtype=torch.float32)
@@ -136,7 +149,7 @@ class Encoder(nn.Module):
         new_mems = torch.stack(new_mems)
         new_cmems = torch.stack(new_cmems)
         attn_loss = attn_losses / self.N  # normalize w.r.t number of layers
-        return seq, new_mems, new_cmems, attn_loss, self_weights
+        return self.norm(seq), new_mems, new_cmems, attn_loss, self_weights
 
 
 class Decoder(nn.Module):
@@ -145,18 +158,29 @@ class Decoder(nn.Module):
         self.layers = clones(layer, N)
         self.embed = nn.Embedding(vocab_size, d_model)
         self.N = N
+        self.norm = nn.LayerNorm(d_model)
 
-    def forward(self, trg, trg_mask, latent, pos_emb):
+    def forward(self, trg, trg_mask, src_mask, latent, mems, cmems, pos_emb):
+        attn_losses = torch.tensor(0., requires_grad=True, device=trg.device, dtype=torch.float32)
         trg = self.embed(trg)
         self_weights = []
         src_weights = []
-        for i, layer in enumerate(self.layers):
-            trg, self_weight, src_weight = layer(trg, trg_mask, latent, pos_emb)  # pos_emb
+        new_mems = []
+        new_cmems = []
+        for layer, mem, cmem in zip(self.layers, mems, cmems):
+            trg, new_mem, new_cmem, attn_loss, self_weight, src_weight = layer(trg, trg_mask, src_mask,
+                                                                               latent, (mem, cmem), pos_emb)
             self_weights.append(self_weight)
             src_weights.append(src_weight)
+            new_mems.append(new_mem)
+            new_cmems.append(new_cmem)
+            attn_losses = attn_losses + attn_loss
         src_weights = torch.stack(src_weights, dim=0)
         self_weights = torch.stack(self_weights, dim=0)
-        return trg, self_weights, src_weights
+        new_mems = torch.stack(new_mems)
+        new_cmems = torch.stack(new_cmems)
+        attn_losses = attn_losses / self.N
+        return self.norm(trg), new_mems, new_cmems, attn_losses, self_weights, src_weights
 
 
 class EncoderLayer(nn.Module):
@@ -166,9 +190,12 @@ class EncoderLayer(nn.Module):
         self.feed_forward = feed_forward
 
     def forward(self, x, memories, input_mask, pos_emb):
-        x, m, cm, attn_loss, attn = self.mem_attn(x, memories=memories, input_mask=input_mask, pos_emb=pos_emb)
+        # x, m, cm, attn_loss, self_weights = self.mem_attn(x, memories=memories, input_mask=input_mask, pos_emb=pos_emb)
+        x, self_weights = self.mem_attn(x, key=x, value=x, mask=input_mask, pos_emb=pos_emb)
+
         x, = self.feed_forward(x)
-        return x, m, cm, attn_loss, attn
+        # return x, m, cm, attn_loss, self_weights
+        return x, torch.zeros_like(x).to(x.device), torch.zeros_like(x).to(x.device), 0, self_weights
 
 
 class DecoderLayer(nn.Module):
@@ -178,11 +205,13 @@ class DecoderLayer(nn.Module):
         self.src_attn = src_attn
         self.feed_forward = feed_forward
 
-    def forward(self, x, trg_mask, latent, pos_emb):
+    def forward(self, x, trg_mask, src_mask, latent, memories, pos_emb):
+        # x, m, cm, attn_loss, self_weights = self.self_mem_attn(x, memories=memories, input_mask=trg_mask, pos_emb=pos_emb)
         x, self_weights = self.self_mem_attn(x, key=x, value=x, mask=trg_mask, pos_emb=pos_emb)
-        x, src_weights = self.src_attn(x, key=latent, value=latent)
+        x, src_weights = self.src_attn(x, key=latent, value=latent, mask=src_mask)
         x, = self.feed_forward(x)
-        return x, self_weights, src_weights
+        # return x, m, cm, attn_loss, self_weights, src_weights
+        return x, torch.zeros_like(x).to(x.device), torch.zeros_like(x).to(x.device), 0, self_weights, src_weights
 
 
 class MyMemoryAttention(nn.Module):
@@ -301,6 +330,17 @@ class PreNorm(nn.Module):
         return self.fn(x, **kwargs)
 
 
+class Norm(nn.Module):
+    def __init__(self, dim, fn):
+        super().__init__()
+        self.norm = nn.LayerNorm(dim)
+        self.fn = fn
+
+    def forward(self, x, **kwargs):
+        x = self.fn(x, **kwargs)
+        return self.norm(x[0]), *x[1:]
+
+
 class Generator(nn.Module):
     def __init__(self, d_model, vocab):
         super(Generator, self).__init__()
@@ -393,3 +433,41 @@ def split_at_index(dim, index, t):
 
 def cast_tuple(el):
     return el if isinstance(el, tuple) else (el,)
+
+
+class PositionalEncoding(nn.Module):
+    "Implement the PE function."
+
+    def __init__(self, d_model, dropout=0.1, max_len=5000):
+        super(PositionalEncoding, self).__init__()
+        self.dropout = nn.Dropout(p=dropout)
+
+        # Compute the positional encodings once in log space.
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2) *
+                             -(math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0)
+        self.register_buffer('pe', pe)
+
+    def forward(self, x):
+        x = x + Variable(self.pe[:, :x.size(1)],
+                         requires_grad=False)
+        return self.dropout(x)
+
+
+class SublayerConnection(nn.Module):
+    """
+    A residual connection followed by a layer norm.
+    Note for code simplicity the norm is first as opposed to last.
+    """
+    def __init__(self, size, dropout):
+        super(SublayerConnection, self).__init__()
+        self.norm = nn.LayerNorm(size)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x, sublayer):
+        "Apply residual connection to any sublayer with the same size."
+        return x + self.dropout(sublayer(self.norm(x)))

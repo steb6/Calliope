@@ -30,7 +30,7 @@ class SongIterator(torch.utils.data.Dataset):
             src = pickle.load(file)
         # src = src[:, :(src.shape[1]-src.shape[1] % config["train"]["truncated_bars"]), :]
         # src = src.reshape(4, -1, config["train"]["truncated_bars"], config["model"]["seq_len"])
-        src = src[:, :config["train"]["n_bars"], :]
+        # src = src[:, :config["data"]["bars"], :]
         sos = np.full(src.shape[:-1]+(1,), config["tokens"]["sos"], dtype=src.dtype)
         src = np.append(sos, src, axis=-1)
         for instrument in src:

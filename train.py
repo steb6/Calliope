@@ -50,8 +50,29 @@ class Trainer:
             self.gen_losses = []
             self.disc_loss_init = None
             self.gen_loss_init = None
-            self.beta = -0.001  # so it become 0 at first iteration
+            self.beta = -0.1  # so it become 0 at first iteration
             self.reg_optimizer = None
+
+    def test_losses(self, loss, e_attn_losses, d_attn_losses):
+        losses = [loss, e_attn_losses, d_attn_losses]
+        names = ["loss", "e_att_losses", "d_attn_losses"]
+        for ls, name in zip(losses, names):
+            print("********************** Optimized by " + name)
+            self.encoder_optimizer.optimizer.zero_grad(set_to_none=True)
+            self.decoder_optimizer.zero_grad(set_to_none=True)
+            ls.backward(retain_graph=True)
+            for model in [self.encoder, self.latent_compressor, self.decoder]:  # removed latent compressor
+                for module_name, parameter in model.named_parameters():
+                    if parameter.grad is not None:
+                        print(module_name)
+        self.encoder_optimizer.optimizer.zero_grad(set_to_none=True)
+        self.decoder_optimizer.zero_grad(set_to_none=True)
+        (losses[0] + losses[1] + losses[2]).backward(retain_graph=True)
+        print("********************** NOT OPTIMIZED BY NOTHING")
+        for model in [self.encoder, self.latent_compressor, self.decoder]:  # removed latent compressor
+            for module_name, parameter in model.named_parameters():
+                if parameter.grad is None:
+                    print(module_name)
 
     def run_mb(self, batch):
         # SETUP VARIABLES
@@ -66,11 +87,11 @@ class Trainer:
         dec_self_weights = []
         dec_src_weights = []
         latent = None
-        e_mems, e_cmems = get_memories()
 
         ############
         # ENCODING #
         ############
+        e_mems, e_cmems = get_memories()
         for src, src_mask in zip(srcs, src_masks):
             latent, e_mems, e_cmems, e_attn_loss, sw = self.encoder(src, src_mask, e_mems, e_cmems)
             enc_self_weights.append(sw)
@@ -78,53 +99,67 @@ class Trainer:
             e_mems = e_mems.detach()
             e_cmems = e_cmems.detach()
 
-        latent = self.latent_compressor(latent)
+        # latent = latent.transpose(0, 1)
+        # latent = self.latent_compressor(latent)
         self.latent = latent.detach().cpu().numpy()
 
         ############
         # DECODING #
         ############
+        # latent = latent.unsqueeze(1)  # .repeat(1, 200, 1)  # TODO module
         outs = []
-        self.tf_prob = max(config["train"]["min_tf_prob"],
-                           config["train"]["max_tf_prob"] - self.step * config["train"]["tf_prob_step_reduction"])
-        n_batch, n_latents = latent.shape
-        for i in range(len(srcs)):
-            # Create SOS tokens
-            trg = np.full((4, 1, 1), config["tokens"]["sos"])
-            trg = torch.LongTensor(trg).to(config["train"]["device"])
-            # Add information about bar's number to latent
-            bar_one_hot = torch.zeros((n_batch, n_latents), dtype=torch.float32, device=trg.device)
-            m = latent.shape[1]//len(trgs)
-            bar_one_hot[:, (i*m):((i+1)*m)] = 1.
-            bar_one_hot = Variable(bar_one_hot)
-            bar_latent = torch.cat((latent, bar_one_hot), dim=0)
-            # Get trg_mask for the bar
-            trg_mask = trg_masks[i]
-            # Loop till almost end  # TODO if all pad, then skip
-            for j in range(config["model"]["seq_len"] - 1):  # for each token of each bar
-                if random.random() < self.tf_prob:  # TODO careful for teacher forcing
-                    trg = torch.cat((trg, trgs[i, ..., j+1:j+2]), dim=-1)  # teacher forcing, add element j+1
-                else:
-                    # trg_mask = create_trg_mask(trg.cpu().numpy())  # TODO REMOVE
-                    out, _, _ = self.decoder(trg, trg_mask[..., :(j+1), :(j+1)], bar_latent)
-                    out = torch.max(out, dim=-1).indices
-                    trg = torch.cat((trg, out[..., -1:]), dim=-1)
-            # trg_mask = create_trg_mask(trg.cpu().numpy())  # TODO REMOVE
-            out, self_weight, src_weight = self.decoder(trg, trg_mask, bar_latent)
+        d_attn_losses = []
+        # TODO careful for teacher forcing
+        self.tf_prob = 1
+        # self.tf_prob = max(config["train"]["min_tf_prob"],
+        #                    config["train"]["max_tf_prob"] - self.step * config["train"]["tf_prob_step_reduction"])
+
+        d_mems, d_cmems = get_memories()
+        for trg, trg_mask, src_mask in zip(trgs, trg_masks, src_masks):
+            out, d_mems, d_cmems, d_attn_loss, self_weight, src_weight = self.decoder(trg, trg_mask, src_mask, latent,
+                                                                                      d_mems, d_cmems)
+            d_attn_losses.append(d_attn_loss)
             dec_self_weights.append(self_weight.detach())
             dec_src_weights.append(src_weight.detach())
             outs.append(out)
 
+        # for i in range(len(srcs)):
+        #     # Create SOS tokens
+        #     trg = np.full((4, 1, 1), config["tokens"]["sos"])
+        #     trg = torch.LongTensor(trg).to(config["train"]["device"])
+        #     # Get trg_mask for the bar
+        #     trg_mask = trg_masks[i]
+        #     # Loop till almost end  # TODO if all pad, then skip
+        #     for j in range(config["model"]["seq_len"] - 1):  # for each token of each bar
+        #         if random.random() < self.tf_prob:
+        #             trg = torch.cat((trg, trgs[i, ..., j+1:j+2]), dim=-1)  # teacher forcing, add element j+1
+        #         else:
+        #             # trg_mask = create_trg_mask(trg.cpu().numpy())  # TODO REMOVE
+        #             out, _, _, _, _, _ = self.decoder(trg, trg_mask[..., :(j+1), :(j+1)], src_masks[0], latent, d_mems, d_cmems)
+        #             out = torch.max(out, dim=-1).indices
+        #             trg = torch.cat((trg, out[..., -1:]), dim=-1)
+        #     # trg_mask = create_trg_mask(trg.cpu().numpy())  # TODO REMOVE
+        #     out, d_mems, d_cmems, d_attn_loss, self_weight, src_weight = self.decoder(trg, trg_mask, src_masks[0],
+        #                                                                               latent,
+        #                                                                               d_mems, d_cmems)
+        #     d_attn_losses.append(d_attn_loss)
+        #     dec_self_weights.append(self_weight.detach())
+        #     dec_src_weights.append(src_weight.detach())
+        #     outs.append(out)
+
+        # Format results
         outs = torch.stack(outs, dim=0)
         e_attn_losses = torch.stack(e_attn_losses).mean()
+        d_attn_losses = torch.stack(d_attn_losses).mean()
 
         # Compute loss and accuracy
         loss, loss_items = self.loss_computer(outs, trg_ys)
         predicted = torch.max(outs, dim=-1).indices
         accuracy = compute_accuracy(predicted, trg_ys, config["tokens"]["pad"])
-        losses = (loss.item(), accuracy, e_attn_losses.item(), *loss_items)
+        losses = (loss.item(), accuracy, e_attn_losses.item(), d_attn_losses.item(), *loss_items)
 
         # LOG IMAGES  # TODO move this (?)
+        # self.test_losses(loss, e_attn_losses, d_attn_losses)
         if self.encoder.training and config["train"]["log_images"]:
             if self.step % config["train"]["after_steps_log_images"] == 0:
                 print("Logging images...")
@@ -145,7 +180,7 @@ class Trainer:
             self.latent_compressor.zero_grad()
             self.decoder.zero_grad()
 
-            optimizing_losses = loss + e_attn_losses
+            optimizing_losses = loss + e_attn_losses + d_attn_losses
             optimizing_losses.backward()
 
             torch.nn.utils.clip_grad_norm_(self.encoder.parameters(), 0.1)
@@ -158,7 +193,7 @@ class Trainer:
         if config["train"]["aae"] and self.encoder.training:  # TODO adjust for evaluation
 
             if self.step % config["train"]["increase_beta_every"] == 0 and self.beta < config["train"]["max_beta"]:
-                self.beta += 0.001
+                self.beta += 0.1
 
             if self.beta > 0:
                 # To suppress warnings
@@ -177,7 +212,7 @@ class Trainer:
                     p.requires_grad = True
 
                 for _ in range(config["train"]["critic_iterations"]):
-                    prior = get_prior(latent.shape)  # autograd is intern
+                    prior = get_prior((1, config["model"]["d_model"]))  # autograd is intern
                     D_real = self.discriminator(prior).reshape(-1)
 
                     e_mems, e_cmems = get_memories()
@@ -198,7 +233,7 @@ class Trainer:
                     self.discriminator.zero_grad()
                     loss_critic.backward(retain_graph=True)
 
-                    torch.nn.utils.clip_grad_norm_(self.discriminator.parameters(), 0.1)  # TODO experiment
+                    # torch.nn.utils.clip_grad_norm_(self.discriminator.parameters(), 0.1)  # TODO experiment
 
                     self.disc_optimizer.step(lr=self.encoder_optimizer.lr)
 
@@ -227,14 +262,14 @@ class Trainer:
                 loss_gen = loss_gen * self.beta
 
                 e_attn_losses = torch.stack(e_attn_losses).mean()  # TODO experiment
-                # loss_gen = loss_gen + e_attn_losses  # TODO experiment
+                loss_gen = loss_gen + e_attn_losses  # TODO experiment
 
                 self.encoder.zero_grad()
                 self.latent_compressor.zero_grad()
                 loss_gen.backward()
 
-                torch.nn.utils.clip_grad_norm_(self.encoder.parameters(), 0.1)  # TODO experiment
-                torch.nn.utils.clip_grad_norm_(self.latent_compressor.parameters(), 0.1)  # TODO experiment
+                # torch.nn.utils.clip_grad_norm_(self.encoder.parameters(), 0.1)  # TODO experiment
+                # torch.nn.utils.clip_grad_norm_(self.latent_compressor.parameters(), 0.1)  # TODO experiment
 
                 self.gen_optimizer.step(lr=self.encoder_optimizer.lr)
 
@@ -304,18 +339,18 @@ class Trainer:
         self.logger = Logger()
         wandb.login()
         wandb.init(project="MusAE", config=config, name="r_" + timestamp if remote else "l_" + timestamp)
-        wandb.watch(self.encoder)
-        wandb.watch(self.latent_compressor)
-        wandb.watch(self.decoder)
+        wandb.watch(self.encoder, log_freq=100, log="all")  # TODO remove
+        wandb.watch(self.latent_compressor, log_freq=100, log="all")  # TODO remove
+        wandb.watch(self.decoder, log_freq=100, log="all")  # TODO remove
         if config["train"]["aae"]:
-            wandb.watch(self.discriminator)
+            wandb.watch(self.discriminator, log_freq=100, log="all")  # TODO remove
 
         # Print info about training
         time.sleep(1.)  # sleep for one second to let the machine connect to wandb
         if config["train"]["verbose"]:
             cmem_range = config["model"]["cmem_len"] * config["model"]["cmem_ratio"]
             max_range = config["model"]["layers"] * (cmem_range + config["model"]["mem_len"])
-            given = config["train"]["n_bars"] * config["model"]["seq_len"]
+            given = config["data"]["bars"] * config["model"]["seq_len"]
             assert given <= max_range, "Given {} as input to model with max range {}".format(given, max_range)
             print("Giving", given, "as input to model with a maximum range of", max_range)
             print("Giving", len(tr_loader), "training samples and", len(ts_loader), "test samples")
@@ -423,10 +458,10 @@ class Trainer:
                     full_path = self.save_path + os.sep + str(self.step)
                     os.makedirs(full_path)
                     print("Saving last model in " + full_path + ", DO NOT INTERRUPT")
-                    torch.save(self.encoder, os.path.join(full_path, "encoder.pt"))
-                    torch.save(self.latent_compressor, os.path.join(full_path,
-                                                                    "latent_compressor.pt"))
-                    torch.save(self.decoder, os.path.join(full_path, "decoder.pt"))
+                    # torch.save(self.encoder, os.path.join(full_path, "encoder.pt"))  # TODO readd
+                    # torch.save(self.latent_compressor, os.path.join(full_path,
+                    #                                                 "latent_compressor.pt"))
+                    # torch.save(self.decoder, os.path.join(full_path, "decoder.pt"))
                     print("Model saved")
 
                 ########
