@@ -100,10 +100,9 @@ class Trainer:
             e_mems = e_mems.detach()
             e_cmems = e_cmems.detach()
 
-        # latent = latent.transpose(0, 1)
-        latent = self.latent_compressor(latent)
+        # latent = self.latent_compressor(latent)
         self.latent = latent.detach().cpu().numpy()
-        latent = self.latent_decompressor(latent)
+        # latent = self.latent_decompressor(latent)
         latent = latent.transpose(0, 1)
 
         ############
@@ -361,6 +360,7 @@ class Trainer:
             print("Giving", given, "as input to model with a maximum range of", max_range)
             print("Giving", len(tr_loader), "training samples and", len(ts_loader), "test samples")
             print("Model has", config["model"]["layers"], "layers")
+            print("Batch size is", config["train"]["batch_size"])
             print("d_model is", config["model"]["d_model"])
             if config["train"]["aae"]:
                 print("Imposing prior distribution on latents")
@@ -479,7 +479,7 @@ class Trainer:
                     self.latent_compressor.eval()
                     self.decoder.eval()
 
-                    self.tester = Tester(self.encoder, self.latent_compressor, self.decoder)
+                    self.tester = Tester(self.encoder, self.latent_compressor, self.latent_decompressor, self.decoder)
 
                     # RECONSTRUCTION
                     note_manager = NoteRepresentationManager()

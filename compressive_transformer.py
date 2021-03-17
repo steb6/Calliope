@@ -7,6 +7,10 @@ from config import config
 from torch.autograd import Variable
 
 
+def ifn(x, i):
+    return x[i] if x is not None else None
+
+
 class CompressiveEncoder(nn.Module):
     def __init__(self,
                  d_model=config["model"]["d_model"],
@@ -37,9 +41,9 @@ class CompressiveEncoder(nn.Module):
         #                                                             mem_len, cmem_len, cmem_ratio,
         #                                                             attn_dropout=attn_layer_dropout,
         #                                                             reconstruction_attn_dropout=recon_attn_dropout)))
-        self_mem_attn = Residual(PreNorm(d_model, MultiHeadedAttention(heads, d_model, dropout=0.1)))
+        self_mem_attn = MultiHeadedAttention(heads, d_model, dropout=0.1)
 
-        ff = Residual(PreNorm(d_model, FeedForward(d_model, ff_mul, dropout=ff_dropout)))
+        ff = FeedForward(d_model, ff_mul, dropout=ff_dropout)
 
         encoder = Encoder(EncoderLayer(c(self_mem_attn), c(ff)), layers, vocab_size, d_model)
         self.drums_encoder = c(encoder)
@@ -90,10 +94,10 @@ class CompressiveDecoder(nn.Module):
         #                                                             mem_len, cmem_len, cmem_ratio,
         #                                                             attn_dropout=attn_layer_dropout,
         #                                                             reconstruction_attn_dropout=recon_attn_dropout)))
-        self_mem_attn = Residual(PreNorm(d_model, MultiHeadedAttention(heads, d_model, dropout=0.1)))
+        self_mem_attn = MultiHeadedAttention(heads, d_model, dropout=0.1)
 
-        src_attn = Residual(PreNorm(d_model, MultiHeadedAttention(heads, d_model, dropout=0.1)))
-        ff = Residual(PreNorm(d_model, FeedForward(d_model, ff_mul, dropout=ff_dropout)))
+        src_attn = MultiHeadedAttention(heads, d_model, dropout=0.1)
+        ff = FeedForward(d_model, ff_mul, dropout=ff_dropout)
 
         decoder = Decoder(DecoderLayer(c(self_mem_attn), c(src_attn), c(ff)), layers, vocab_size, d_model)
 
@@ -107,13 +111,13 @@ class CompressiveDecoder(nn.Module):
                 nn.init.xavier_uniform_(p)
 
     def forward(self, trg, trg_mask, src_mask, latent, mems, cmems):
-        d_out, d_mem, d_cmem, d_l, d_self_w, d_src_w, = self.drums_decoder(trg[0], trg_mask[0], src_mask[0],
+        d_out, d_mem, d_cmem, d_l, d_self_w, d_src_w, = self.drums_decoder(trg[0], trg_mask[0], ifn(src_mask, 0),
                                                                            latent[0], mems[0], cmems[0], self.pos_emb[0])
-        b_out, b_mem, b_cmem, b_l, b_self_w, b_src_w, = self.bass_decoder(trg[1], trg_mask[1], src_mask[1],
+        b_out, b_mem, b_cmem, b_l, b_self_w, b_src_w, = self.bass_decoder(trg[1], trg_mask[1], ifn(src_mask, 1),
                                                                           latent[1], mems[1], cmems[1], self.pos_emb[1])
-        g_out, g_mem, g_cmem, g_l, g_self_w, g_src_w, = self.guitar_decoder(trg[2], trg_mask[2], src_mask[2],
+        g_out, g_mem, g_cmem, g_l, g_self_w, g_src_w, = self.guitar_decoder(trg[2], trg_mask[2], ifn(src_mask, 2),
                                                                             latent[2], mems[2], cmems[2], self.pos_emb[2])
-        s_out, s_mem, s_cmem, s_l, s_self_w, s_src_w, = self.strings_decoder(trg[3], trg_mask[3], src_mask[3],
+        s_out, s_mem, s_cmem, s_l, s_self_w, s_src_w, = self.strings_decoder(trg[3], trg_mask[3], ifn(src_mask, 3),
                                                                              latent[3], mems[3], cmems[3], self.pos_emb[3])
         output = torch.stack([d_out, b_out, g_out, s_out], dim=0)
         output = self.generator(output)
@@ -149,7 +153,7 @@ class Encoder(nn.Module):
         new_mems = torch.stack(new_mems)
         new_cmems = torch.stack(new_cmems)
         attn_loss = attn_losses / self.N  # normalize w.r.t number of layers
-        return self.norm(seq), new_mems, new_cmems, attn_loss, self_weights
+        return seq, new_mems, new_cmems, attn_loss, self_weights
 
 
 class Decoder(nn.Module):
@@ -180,7 +184,7 @@ class Decoder(nn.Module):
         new_mems = torch.stack(new_mems)
         new_cmems = torch.stack(new_cmems)
         attn_losses = attn_losses / self.N
-        return self.norm(trg), new_mems, new_cmems, attn_losses, self_weights, src_weights
+        return trg, new_mems, new_cmems, attn_losses, self_weights, src_weights
 
 
 class EncoderLayer(nn.Module):
@@ -188,12 +192,15 @@ class EncoderLayer(nn.Module):
         super(EncoderLayer, self).__init__()
         self.mem_attn = mem_attn
         self.feed_forward = feed_forward
+        self.norm1 = nn.LayerNorm(config["model"]["d_model"])
+        self.norm2 = nn.LayerNorm(config["model"]["d_model"])
 
     def forward(self, x, memories, input_mask, pos_emb):
         # x, m, cm, attn_loss, self_weights = self.mem_attn(x, memories=memories, input_mask=input_mask, pos_emb=pos_emb)
-        x, self_weights = self.mem_attn(x, key=x, value=x, mask=input_mask, pos_emb=pos_emb)
-
-        x, = self.feed_forward(x)
+        out, self_weights = self.mem_attn(x, key=x, value=x, mask=input_mask, pos_emb=pos_emb)
+        x = self.norm1(x + out)
+        out = self.feed_forward(x)
+        x = self.norm2(x + out)
         # return x, m, cm, attn_loss, self_weights
         return x, torch.zeros_like(x).to(x.device), torch.zeros_like(x).to(x.device), 0, self_weights
 
@@ -204,12 +211,18 @@ class DecoderLayer(nn.Module):
         self.self_mem_attn = self_mem_attn
         self.src_attn = src_attn
         self.feed_forward = feed_forward
+        self.norm1 = nn.LayerNorm(config["model"]["d_model"])
+        self.norm2 = nn.LayerNorm(config["model"]["d_model"])
+        self.norm3 = nn.LayerNorm(config["model"]["d_model"])
 
     def forward(self, x, trg_mask, src_mask, latent, memories, pos_emb):
         # x, m, cm, attn_loss, self_weights = self.self_mem_attn(x, memories=memories, input_mask=trg_mask, pos_emb=pos_emb)
-        x, self_weights = self.self_mem_attn(x, key=x, value=x, mask=trg_mask, pos_emb=pos_emb)
-        x, src_weights = self.src_attn(x, key=latent, value=latent, mask=src_mask)
-        x, = self.feed_forward(x)
+        out, self_weights = self.self_mem_attn(x, key=x, value=x, mask=trg_mask, pos_emb=pos_emb)
+        x = self.norm1(x + out)
+        out, src_weights = self.src_attn(x, key=latent, value=latent, mask=src_mask)
+        x = self.norm2(x + out)
+        out = self.feed_forward(x)
+        x = self.norm3(x + out)
         # return x, m, cm, attn_loss, self_weights, src_weights
         return x, torch.zeros_like(x).to(x.device), torch.zeros_like(x).to(x.device), 0, self_weights, src_weights
 

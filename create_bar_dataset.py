@@ -91,7 +91,6 @@ class NoteRepresentationManager:
         i = 0  # bar index
         j = 0  # token index
         n = 0  # notes index
-        previous_time = -1
         while n < len(notes):
             # add empty bar till note time value is in range
             while notes[n][0] >= bar_steps:
@@ -99,7 +98,6 @@ class NoteRepresentationManager:
                     i += 1
                     self.bar_lengths.append(j)  # empty bar
                     j = 0
-                    previous_time = -1
                     notes[n:, 0] -= round(bar_steps)  # decrease all time measures
                 else:
                     # log bars length and return song
@@ -112,9 +110,6 @@ class NoteRepresentationManager:
                 self.log.write(str(self.count) + ": Invalid time: " + str(notes[n][0]) + '\n')
                 n += 1
                 continue  # skip note: invalid time
-            if notes[n][0] == previous_time:  # skip note if previous time is the same
-                n += 1
-                continue
             if not notes[n][1] < config["tokens"]["pitch_n_values"]:  # check value of pitch
                 self.log.write(str(self.count) + ": Invalid pitch: " + str(notes[n][1]))
                 n += 1

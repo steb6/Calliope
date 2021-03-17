@@ -17,8 +17,8 @@ config = {
         "aae": False,
         "test_losses": False,
         "device": "cuda" if remote else "cuda",
-        "batch_size": 1 if remote else 1,
-        "test_size": 0.0001 if remote else 0.1,  # 0.00001
+        "batch_size": 30 if remote else 8,  # 128 for 1 layer, 30 for 6 layer
+        "test_size": 0.0001 if remote else 0.5,  # 0.00001
         "n_workers": 0,
         "n_epochs": 25000,
         "label_smoothing": 0.1,
@@ -27,11 +27,11 @@ config = {
         "after_steps_make_songs": 1000 if remote else 500,
         "after_steps_log_images": 1000 if remote else 500,
         "warmup_steps": 4000,
-        "lr_min": 1e-5,
-        "lr_max": 1e-4,
+        "lr_min": 1e-3,
+        "lr_max": 1e-2,
         "decay_steps": 50000,
-        "minimum_lr": 5e-5,
-        "generated_iterations": 16 if remote else 4,
+        "minimum_lr": 5e-3,
+        "generated_iterations": 1 if remote else 1,
         # "test_loss": False,
         "train_aae_after_steps": 0,
         "increase_beta_every": 2000 if remote else 1,
@@ -39,7 +39,7 @@ config = {
         "lambda": 10,
         "critic_iterations": 5,
         "interpolation_timesteps": 3,  # intermediate timesteps excluding first and second (with 3: 0 (1 2 3) 4)
-        "interpolation_timesteps_length": 4,  # number of bar for each timesteps
+        "interpolation_timesteps_length": 1,  # number of bar for each timesteps
         "top_k_mixed_embeddings": 5,
         "min_tf_prob": 0.,
         "max_tf_prob": 1.,
@@ -50,7 +50,7 @@ config = {
         "d_model": 256,
         "heads": 4,
         "ff_mul": 2,
-        "layers": 1,  # if remote else 1,  # 3 GB each
+        "layers": 4 if remote else 1,  # 3 GB each
         "mem_len": max_bar_length,  # keep last 2 seq
         "cmem_len": max_bar_length,  # keep 4 compression
         "cmem_ratio": 4,
@@ -66,7 +66,7 @@ config = {
         "max_bars": 200,
         "use_velocity": False,
         "reconstruction_programs": [0, 0, 32, 40],
-        "early_stop": 10000 if remote else 10000,  # set this to 0 to disable early stop
+        "early_stop": 300000 if remote else 100,  # set this to 0 to disable early stop
         "resolution": 24,
         "tempo": 120,
         "velocities_total": (0, 127),  # using min max scaling, limits are inclusive
@@ -95,9 +95,9 @@ config = {
     },
     "paths": {
         "raw_midi": "/data/musae3.0/" if remote else "D:",
-        "dataset": ("/data/musae3.0/" if remote else "D:") + os.sep + "lmd_matched_converted_1",
-        "test": ("/data/musae3.0" if remote else "D:") + os.sep + "test_converted_1",
-        "checkpoints": ("/data/musae3.0/" if remote else ".") + os.sep + "musae_model_checkpoints_1"
+        "dataset": ("/data/musae3.0/" if remote else "D:") + os.sep + "lmd_matched_converted",
+        "test": ("/data/musae3.0" if remote else "D:") + os.sep + "test_converted",
+        "checkpoints": ("/data/musae3.0/" if remote else ".") + os.sep + "musae_model_checkpoints"
     }
 }
 
