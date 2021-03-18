@@ -24,10 +24,8 @@ class Tester:
         e_mems, e_cmems = get_memories()
         srcs, _, src_masks, _, _ = first
         latent = None
-        srcs = srcs[0].unsqueeze(0)  # select first song of the batch
-        src_masks = src_masks[0].unsqueeze(0)  # add batch dimension of size 1
-        srcs = torch.LongTensor(srcs.long()).to(config["train"]["device"]).transpose(0, 2)
-        src_masks = torch.BoolTensor(src_masks).to(config["train"]["device"]).transpose(0, 2)
+        srcs = torch.LongTensor(srcs.long()).to(config["train"]["device"])[:1].transpose(0, 2)
+        src_masks = torch.BoolTensor(src_masks).to(config["train"]["device"])[:1].transpose(0, 2)
         for src, src_mask in zip(srcs, src_masks):
             latent, e_mems, e_cmems, e_attn_loss, sw = self.encoder(src, src_mask, e_mems, e_cmems)
         first_latent = self.latent_compressor(latent)
@@ -35,10 +33,8 @@ class Tester:
         # Encode second
         e_mems, e_cmem = get_memories()
         srcs, _, src_masks, _, _ = second
-        srcs = srcs[0].unsqueeze(0)  # select first song of the batch
-        src_masks = src_masks[0].unsqueeze(0)  # add batch dimension of size 1
-        srcs = torch.LongTensor(srcs.long()).to(config["train"]["device"]).transpose(0, 2)
-        src_masks = torch.BoolTensor(src_masks).to(config["train"]["device"]).transpose(0, 2)
+        srcs = torch.LongTensor(srcs.long()).to(config["train"]["device"])[:1].transpose(0, 2)
+        src_masks = torch.BoolTensor(src_masks).to(config["train"]["device"])[:1].transpose(0, 2)
         for src, src_mask in zip(srcs, src_masks):
             latent, e_mems, e_cmems, e_attn_loss, sw = self.encoder(src, src_mask, e_mems, e_cmems)
         second_latent = self.latent_compressor(latent)
@@ -84,18 +80,11 @@ class Tester:
     def greedy_decode(self, latent, n_bars, desc):
         outs = []
         outs_limited = []
-        # n_batch, _, n_latents = latent.shape
         mems, cmems = get_memories()
-        latent = latent.unsqueeze(1)
 
-        for i in tqdm(range(n_bars), position=0, leave=True, desc=desc):
-            trg = np.full((4, 1, 1), config["tokens"]["sos"])
+        for _ in tqdm(range(n_bars), position=0, leave=True, desc=desc):
+            trg = np.full((4, 1, 1), config["tokens"]["sos"])  # track batch tok
             trg = torch.LongTensor(trg).to(config["train"]["device"])
-            # bar_one_hot = torch.zeros((n_batch, n_latents), dtype=torch.float32, device=trg.device)
-            # k = latent.shape[1]//n_bars
-            # bar_one_hot[:, (i*k):((i+1)*k)] = 1.
-            # bar_one_hot = bar_one_hot
-            # bar_latent = torch.cat((latent, bar_one_hot), dim=0)
             for _ in range(config["model"]["seq_len"] - 1):  # for each token of each bar
                 trg_mask = create_trg_mask(trg.cpu().numpy())
                 out, _, _, _, _, _ = self.decoder(trg, trg_mask, None, latent, mems, cmems)
@@ -105,17 +94,18 @@ class Tester:
             out, mems, cmems, _, _, _ = self.decoder(trg, trg_mask, None, latent, mems, cmems)
             out = torch.max(out, dim=-1).indices
             outs.append(copy.deepcopy(out))
-            for b in range(len(out)):
-                eos_indices = torch.nonzero(out[b] == config["tokens"]["eos"])
+            for t in range(len(out)):  # for each track
+                eos_indices = torch.nonzero(out[t] == config["tokens"]["eos"])
                 if len(eos_indices) == 0:
                     continue
-                eos_index = eos_indices[0][1]  # first element, column index
-                out[b][0][eos_index:] = config["tokens"]["pad"]  # TODO careful, select just first batch
-            outs_limited.append(out)
+                print(eos_indices)
+                eos_index = eos_indices[0][0]
+                out[t][eos_index:] = config["tokens"]["pad"]
+            outs_limited.append(copy.deepcopy(out))
         return outs, outs_limited
 
     def generate(self, note_manager):  # TODO CHECK THIS
-        latent = get_prior((1, 256)).to(config["train"]["device"])
+        latent = get_prior((1, config["model"]["d_model"])).to(config["train"]["device"])
         latent = self.latent_decompressor(latent)
         latent = latent.transpose(0, 1)
         outs, limited = self.greedy_decode(latent, config["train"]["generated_iterations"], "generate")  # TODO careful
@@ -126,21 +116,21 @@ class Tester:
         return note_manager.reconstruct_music(outs), note_manager.reconstruct_music(limited)
 
     def reconstruct(self, batch, note_manager):
-        srcs, trgs, src_masks, trg_masks, _ = batch
-        srcs = torch.LongTensor(srcs.long()).to(config["train"]["device"]).transpose(0, 2)
-        trgs = torch.LongTensor(trgs.long()).to(config["train"]["device"]).transpose(0, 2)
-        src_masks = torch.BoolTensor(src_masks).to(config["train"]["device"]).transpose(0, 2)
-        trg_masks = torch.BoolTensor(trg_masks).to(config["train"]["device"]).transpose(0, 2)
+        srcs, _, src_masks, _, _ = batch
+        srcs = torch.LongTensor(srcs.long()).to(config["train"]["device"])[:1].transpose(0, 2)  # out: bar, 4, batch, t
+        # trgs = torch.LongTensor(trgs.long()).to(config["train"]["device"])[1:].transpose(0, 2)
+        src_masks = torch.BoolTensor(src_masks).to(config["train"]["device"])[:1].transpose(0, 2)
+        # trg_masks = torch.BoolTensor(trg_masks).to(config["train"]["device"])[1:].transpose(0, 2)
+
         e_mems, e_cmems = get_memories()
         latent = None
         for src, src_mask in zip(srcs, src_masks):
             latent, e_mems, e_cmems, _, _ = self.encoder(src, src_mask, e_mems, e_cmems)
         latent = self.latent_compressor(latent)
-        # dec_latent = latent.reshape(config["train"]["batch_size"], config["model"]["n_latents"],
-        #                             config["model"]["d_model"])
         latent = self.latent_decompressor(latent)
-        latent = latent.transpose(0, 1)
-        outs, outs_limited = self.greedy_decode(latent, len(trgs), "reconstruct")  # TODO careful
+        latent = latent.transpose(0, 1)  # in batch, 4, t, d out: 4, batch, t, d
+
+        outs, outs_limited = self.greedy_decode(latent, len(srcs), "reconstruct")  # TODO careful
         # outs = []
         # for trg, src_mask, trg_mask in zip(trgs, src_masks, trg_masks):
         #     out, self_weight, src_weight, d_mems, d_cmems, d_attn_loss = self.decoder(trg, trg_mask, src_mask,

@@ -100,22 +100,46 @@ class Trainer:
             e_mems = e_mems.detach()
             e_cmems = e_cmems.detach()
 
-        latent = self.latent_compressor(latent)
+        latent = self.latent_compressor(latent)  # in: 3, 4, 200, 256, out: 3, 256
         self.latent = latent.detach().cpu().numpy()
-        latent = self.latent_decompressor(latent)
-        latent = latent.transpose(0, 1)
+        latent = self.latent_decompressor(latent)  # in 3, 256, out: 3, 4, 200, 256
+        latent = latent.transpose(0, 1)  # in: 3, 4, 200, 256 out: 4, 3, 200, 256
 
         ############
         # DECODING #
         ############
-        # latent = latent.unsqueeze(1)  # .repeat(1, 200, 1)  # TODO module
-        outs = []
         d_attn_losses = []
-        # TODO careful for teacher forcing
-        self.tf_prob = 1
-        # self.tf_prob = max(config["train"]["min_tf_prob"],
-        #                    config["train"]["max_tf_prob"] - self.step * config["train"]["tf_prob_step_reduction"])
 
+        # TODO simple scheduled sampling for transformer
+        if config["train"]["scheduled_sampling"] and self.step > config["train"]["after_steps_mix_sequences"]:
+            for _ in range(5):
+                tf_step = self.step - config["train"]["after_steps_mix_sequences"]
+
+                self.tf_prob = max(config["train"]["min_tf_prob"],
+                                   config["train"]["max_tf_prob"] - tf_step * config["train"]["tf_prob_step_reduction"])
+                # self.tf_prob = 0.5
+
+                d_mems, d_cmems = get_memories()
+                predicted = []
+                for trg, trg_mask, src_mask in zip(trgs, trg_masks, src_masks):
+                    out, d_mems, d_cmems, d_attn_loss, self_weight, src_weight = self.decoder(trg, trg_mask, src_mask,
+                                                                                                  latent, d_mems, d_cmems)
+                    d_attn_losses.append(d_attn_loss)
+                    dec_self_weights.append(self_weight.detach())
+                    dec_src_weights.append(src_weight.detach())
+                    predicted.append(torch.max(out, dim=-1).indices)
+
+                predicted = torch.stack(predicted)
+                sos = torch.full_like(predicted, config["tokens"]["sos"])[..., :1].to(predicted.device)
+                predicted = torch.cat((sos, predicted), dim=-1)[..., :-1]  # add sos at beginning and cut last token
+                # create mixed trg
+                mixed_prob = torch.rand(trgs.shape, dtype=torch.float32).to(trgs.device)
+                mixed_prob = mixed_prob < self.tf_prob
+
+                trgs = trgs.where(mixed_prob, predicted)  # TODO CHECK
+
+        # TODO classic transformer decoding
+        outs = []
         d_mems, d_cmems = get_memories()
         for trg, trg_mask, src_mask in zip(trgs, trg_masks, src_masks):
             out, d_mems, d_cmems, d_attn_loss, self_weight, src_weight = self.decoder(trg, trg_mask, src_mask, latent,
@@ -214,7 +238,7 @@ class Trainer:
                     p.requires_grad = True
 
                 for _ in range(config["train"]["critic_iterations"]):
-                    prior = get_prior((1, config["model"]["d_model"]))  # autograd is intern
+                    prior = get_prior((config["train"]["batch_size"], config["model"]["d_model"]))  # autograd is intern
                     D_real = self.discriminator(prior).reshape(-1)
 
                     e_mems, e_cmems = get_memories()
@@ -381,6 +405,10 @@ class Trainer:
                 print("doing evaluation")
             else:
                 print("NOT DOING evaluation")
+            if config["train"]["scheduled_sampling"]:
+                print("Using scheduled sampling")
+            else:
+                print("NOT using scheduled sampling")
 
         # Setup train
         self.encoder.train()
@@ -463,12 +491,17 @@ class Trainer:
                 if (self.step % config["train"]["after_steps_save_model"]) == 0:
                     full_path = self.save_path + os.sep + str(self.step)
                     os.makedirs(full_path)
-                    print("Saving last model in " + full_path + ", DO NOT INTERRUPT")
+                    print("NOT SAVING MODEL; SOLVE PROBLEM")
+                    # print("Saving last model in " + full_path + ", DO NOT INTERRUPT")
                     # torch.save(self.encoder, os.path.join(full_path, "encoder.pt"))  # TODO readd
                     # torch.save(self.latent_compressor, os.path.join(full_path,
                     #                                                 "latent_compressor.pt"))
+                    # torch.save(self.latent_decompressor, os.path.join(full_path,
+                    #                                                   "latent_decompressor.pt"))
                     # torch.save(self.decoder, os.path.join(full_path, "decoder.pt"))
-                    print("Model saved")
+                    # if config["train"]["aae"]:
+                    #     torch.save(self.discriminator, os.path.join(full_path, "discriminator.pt"))
+                    # print("Model saved")
 
                 ########
                 # TEST #

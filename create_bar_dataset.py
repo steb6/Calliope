@@ -106,6 +106,8 @@ class NoteRepresentationManager:
                     self.song_lengths.append(i + bars_left)
                     return track  # truncate song: no more space for bars
             # check note values
+            if notes[n][0] + notes[n][2] > bar_steps:  # clip duration to be in the bar
+                notes[n][2] = bar_steps - notes[n][0]
             if not notes[n][0] < config["tokens"]["time_n_values"]:  # check value of time
                 self.log.write(str(self.count) + ": Invalid time: " + str(notes[n][0]) + '\n')
                 n += 1
@@ -276,17 +278,19 @@ class NoteRepresentationManager:
                     tensor_song = tensor_song[1:, ...]
                 # divide song into sequence of bars and save them
                 while True:
-                    no_empty_bars = True
                     candidate = tensor_song[:config["data"]["bars"], ...]
                     if len(candidate) < config["data"]["bars"]:
                         break
-                    for bar in candidate:
-                        if (bar == 0).all():
-                            no_empty_bars = False
-                    if no_empty_bars:
+                    if (candidate[:, 0, :] == 0).all() or (candidate[:, 1, :] == 0).all() or \
+                            (candidate[:, 2, :] == 0).all() or (candidate[:, 3, :] == 0).all():
+                        tensor_song = tensor_song[1:]  # there was empty track, skip first bar and retry
+                        continue
+                    else:
                         with open(os.path.join(config["paths"]["dataset"], str(self.count) + '.pickle'), 'wb') as f:
                             candidate = np.swapaxes(candidate, 0, 1)
                             self.reconstruct_music(candidate).write_midi("test.mid")  # TODO remove test
+                            if self.count == 138:
+                                print("STOP")
                             pickle.dump(candidate, f)
                         self.count += 1
                         # if early stop, update bar only after a success
@@ -297,9 +301,7 @@ class NoteRepresentationManager:
                                 self.plot_lengths()
                                 progbar.close()
                                 return
-                        tensor_song = tensor_song[config["data"]["bars"]:, ...]
-                    else:
-                        break
+                        tensor_song = tensor_song[config["data"]["bars"]:, ...]  # success, skip bars
 
         self.plot_lengths()
         self.log.close()

@@ -28,7 +28,7 @@ class LatentCompressor(nn.Module):
         latent = latent.reshape(n_batch, d_model*4)  # out: 1 1024
 
         latent = self.compressor3(latent)  # out: 1 256
-        latent = self.norm3(latent)
+        # latent = self.norm3(latent)
 
         return latent
 
@@ -36,7 +36,6 @@ class LatentCompressor(nn.Module):
 class LatentDecompressor(nn.Module):
     def __init__(self, d_model=config["model"]["d_model"]):
         super(LatentDecompressor, self).__init__()
-        self.n_batch = config["train"]["batch_size"]
         self.seq_len = max_bar_length
         self.d_model = d_model
         self.decompressor1 = nn.Linear(d_model//8, d_model)
@@ -47,12 +46,14 @@ class LatentDecompressor(nn.Module):
         self.norm0 = nn.LayerNorm(d_model)
 
     def forward(self, latent):  # 1 1000
+        n_batch = latent.shape[0]
+
         latent = self.decompressor3(latent)  # out: 1 1024
-        latent = latent.reshape(self.n_batch, 4, self.d_model)  # out: 1 4 256
+        latent = latent.reshape(n_batch, 4, self.d_model)  # out: 1 4 256
         latent = self.norm2(latent)
 
         latent = self.decompressor2(latent)  # out:  # 1 4 6400
-        latent = latent.reshape(self.n_batch, 4, max_bar_length, self.d_model//8)  # out: 1 4 200 32
+        latent = latent.reshape(n_batch, 4, max_bar_length, self.d_model//8)  # out: 1 4 200 32
         latent = self.norm1(latent)
         latent = F.leaky_relu(latent)
 

@@ -135,7 +135,6 @@ class Encoder(nn.Module):
         self.layers = clones(layer, N)
         self.embed = nn.Embedding(vocab_size, d_model)
         self.N = N
-        self.norm = nn.LayerNorm(d_model)
 
     def forward(self, seq, mask, mems, cmems, pos_emb):
         attn_losses = torch.tensor(0., requires_grad=True, device=seq.device, dtype=torch.float32)
@@ -162,7 +161,7 @@ class Decoder(nn.Module):
         self.layers = clones(layer, N)
         self.embed = nn.Embedding(vocab_size, d_model)
         self.N = N
-        self.norm = nn.LayerNorm(d_model)
+
 
     def forward(self, trg, trg_mask, src_mask, latent, mems, cmems, pos_emb):
         attn_losses = torch.tensor(0., requires_grad=True, device=trg.device, dtype=torch.float32)
