@@ -11,13 +11,13 @@ n_bars = 1
 config = {
     "train": {
         "verbose": True,
-        "make_songs": False,  # True if remote else False,
+        "make_songs": True,  # True if remote else False,
         "log_images": False,
         "do_eval": False,
         "aae": False,
         "test_losses": False,
         "device": "cuda" if remote else "cuda",
-        "batch_size": 30 if remote else 8,  # 128 for 1 layer, 30 for 6 layer
+        "batch_size": 16 if remote else 4,  # 128 for 1 layer, 30 for 6 layer
         "test_size": 0.0001 if remote else 0.5,  # 0.00001
         "n_workers": 0,
         "n_epochs": 25000,
@@ -27,10 +27,10 @@ config = {
         "after_steps_make_songs": 1000 if remote else 500,
         "after_steps_log_images": 1000 if remote else 500,
         "warmup_steps": 4000,
-        "lr_min": 1e-3,
-        "lr_max": 1e-2,
+        "lr_min": 1e-4,
+        "lr_max": 1e-3,
         "decay_steps": 50000,
-        "minimum_lr": 5e-3,
+        "minimum_lr": 5e-5,  # USE ONLY THIS
         "generated_iterations": 1 if remote else 1,
         # "test_loss": False,
         "train_aae_after_steps": 0,
@@ -50,7 +50,7 @@ config = {
         "d_model": 256,
         "heads": 4,
         "ff_mul": 2,
-        "layers": 4 if remote else 1,  # 3 GB each
+        "layers": 6,  # 3 GB each
         "mem_len": max_bar_length,  # keep last 2 seq
         "cmem_len": max_bar_length,  # keep 4 compression
         "cmem_ratio": 4,
@@ -66,7 +66,7 @@ config = {
         "max_bars": 200,
         "use_velocity": False,
         "reconstruction_programs": [0, 0, 32, 40],
-        "early_stop": 300000 if remote else 100,  # set this to 0 to disable early stop
+        "early_stop": 300000 if remote else 10000,  # set this to 0 to disable early stop
         "resolution": 24,
         "tempo": 120,
         "velocities_total": (0, 127),  # using min max scaling, limits are inclusive

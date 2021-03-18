@@ -111,13 +111,13 @@ class CompressiveDecoder(nn.Module):
                 nn.init.xavier_uniform_(p)
 
     def forward(self, trg, trg_mask, src_mask, latent, mems, cmems):
-        d_out, d_mem, d_cmem, d_l, d_self_w, d_src_w, = self.drums_decoder(trg[0], trg_mask[0], ifn(src_mask, 0),
+        d_out, d_mem, d_cmem, d_l, d_self_w, d_src_w = self.drums_decoder(trg[0], trg_mask[0], ifn(src_mask, 0),
                                                                            latent[0], mems[0], cmems[0], self.pos_emb[0])
-        b_out, b_mem, b_cmem, b_l, b_self_w, b_src_w, = self.bass_decoder(trg[1], trg_mask[1], ifn(src_mask, 1),
+        b_out, b_mem, b_cmem, b_l, b_self_w, b_src_w = self.bass_decoder(trg[1], trg_mask[1], ifn(src_mask, 1),
                                                                           latent[1], mems[1], cmems[1], self.pos_emb[1])
-        g_out, g_mem, g_cmem, g_l, g_self_w, g_src_w, = self.guitar_decoder(trg[2], trg_mask[2], ifn(src_mask, 2),
+        g_out, g_mem, g_cmem, g_l, g_self_w, g_src_w = self.guitar_decoder(trg[2], trg_mask[2], ifn(src_mask, 2),
                                                                             latent[2], mems[2], cmems[2], self.pos_emb[2])
-        s_out, s_mem, s_cmem, s_l, s_self_w, s_src_w, = self.strings_decoder(trg[3], trg_mask[3], ifn(src_mask, 3),
+        s_out, s_mem, s_cmem, s_l, s_self_w, s_src_w = self.strings_decoder(trg[3], trg_mask[3], ifn(src_mask, 3),
                                                                              latent[3], mems[3], cmems[3], self.pos_emb[3])
         output = torch.stack([d_out, b_out, g_out, s_out], dim=0)
         output = self.generator(output)
@@ -291,10 +291,10 @@ class MultiHeadedAttention(nn.Module):
         self.dropout = nn.Dropout(p=dropout)
 
     def forward(self, query, key=None, value=None, mask=None, pos_emb=None):
-        if mask is not None:  # apply same mask to all heads
-            if mask.dim() == 2:
+        if mask is not None:
+            if mask.dim() == 2:  # transform linear mask to square mask
                 mask = mask[:, :, None] * mask[:, None, :]
-            mask = mask.unsqueeze(1)
+            mask = mask.unsqueeze(1)  # apply same mask to all heads
         n_batches = query.size(0)
         query, key, value = [l(x).view(n_batches, -1, self.h, self.d_out).transpose(1, 2)
                              for l, x in zip(self.linears, (query, key, value))]

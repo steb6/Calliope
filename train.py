@@ -100,9 +100,9 @@ class Trainer:
             e_mems = e_mems.detach()
             e_cmems = e_cmems.detach()
 
-        # latent = self.latent_compressor(latent)
+        latent = self.latent_compressor(latent)
         self.latent = latent.detach().cpu().numpy()
-        # latent = self.latent_decompressor(latent)
+        latent = self.latent_decompressor(latent)
         latent = latent.transpose(0, 1)
 
         ############
@@ -343,12 +343,12 @@ class Trainer:
         self.logger = Logger()
         wandb.login()
         wandb.init(project="MusAE", config=config, name="r_" + timestamp if remote else "l_" + timestamp)
-        wandb.watch(self.encoder, log_freq=100, log="all")  # TODO remove
-        wandb.watch(self.latent_compressor, log_freq=100, log="all")  # TODO remove
-        wandb.watch(self.latent_decompressor, log_freq=100, log="all")  # TODO remove
-        wandb.watch(self.decoder, log_freq=100, log="all")  # TODO remove
+        wandb.watch(self.encoder, log_freq=1000, log="all")  # TODO remove
+        wandb.watch(self.latent_compressor, log_freq=1000, log="all")  # TODO remove
+        wandb.watch(self.latent_decompressor, log_freq=1000, log="all")  # TODO remove
+        wandb.watch(self.decoder, log_freq=1000, log="all")  # TODO remove
         if config["train"]["aae"]:
-            wandb.watch(self.discriminator, log_freq=100, log="all")  # TODO remove
+            wandb.watch(self.discriminator, log_freq=1000, log="all")  # TODO remove
 
         # Print info about training
         time.sleep(1.)  # sleep for one second to let the machine connect to wandb
