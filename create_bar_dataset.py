@@ -186,6 +186,7 @@ class NoteRepresentationManager:
             time_cursor = 0
             track = muspy.Track(is_drum=(i == 0), program=config["data"]["reconstruction_programs"][i])
             for bar in instrument:
+                bar_time = 0
                 # track.notes.append(muspy.Note(time=time, pitch=60, duration=12, velocity=127))  # bar sound
                 while len(bar) > (4 if use_velocity else 3):
                     if self.it_is_a_note(bar[0], bar[1], bar[2], (bar[3] if use_velocity else 0)):
@@ -194,12 +195,15 @@ class NoteRepresentationManager:
                             velocity = min_max_scaling(bar[3] - config["tokens"]["velocity_first"],
                                                        config["data"]["velocities_compact"],
                                                        config["data"]["velocities_total"])
-                        note = muspy.Note(bar[0] + time_cursor - config["tokens"]["time_first"],
-                                          bar[1] - config["tokens"]["pitch_first"],
-                                          bar[2] - config["tokens"]["duration_first"],
-                                          velocity
-                                          )
-                        track.append(note)
+                        note_time = bar[0] - config["tokens"]["time_first"]
+                        if note_time >= bar_time:
+                            note = muspy.Note(bar[0] + time_cursor - config["tokens"]["time_first"],
+                                              bar[1] - config["tokens"]["pitch_first"],
+                                              bar[2] - config["tokens"]["duration_first"],
+                                              velocity
+                                              )
+                            track.append(note)
+                            bar_time = note_time
                         bar = bar[(4 if use_velocity else 3):]
                     else:
                         bar = bar[1:]
@@ -288,7 +292,7 @@ class NoteRepresentationManager:
                     else:
                         with open(os.path.join(config["paths"]["dataset"], str(self.count) + '.pickle'), 'wb') as f:
                             candidate = np.swapaxes(candidate, 0, 1)
-                            self.reconstruct_music(candidate).write_midi("test.mid")  # TODO remove test
+                            # self.reconstruct_music(candidate).write_midi("test.mid")  # TODO remove test
                             if self.count == 138:
                                 print("STOP")
                             pickle.dump(candidate, f)

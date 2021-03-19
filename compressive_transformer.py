@@ -33,7 +33,7 @@ class CompressiveEncoder(nn.Module):
                                                     f' but it is ' f'{int(cmem_len)}'
 
         self.pos_emb = nn.Parameter(
-            torch.zeros(4, heads, seq_len * 2 + mem_len + cmem_len, d_model // heads, device=device,
+            torch.zeros(4, heads, seq_len + mem_len + cmem_len, d_model // heads, device=device,
                         requires_grad=True))
         c = copy.deepcopy
 
@@ -55,10 +55,10 @@ class CompressiveEncoder(nn.Module):
                 nn.init.xavier_uniform_(p)
 
     def forward(self, seq, mask, mems, cmems):
-        d_z, d_mem, d_cmem, d_l, daw = self.drums_encoder(seq[0], mask[0], mems[0], cmems[0], self.pos_emb[0])
-        b_z, b_mem, b_cmem, b_l, baw = self.bass_encoder(seq[1], mask[1], mems[1], cmems[1], self.pos_emb[1])
-        g_z, g_mem, g_cmem, g_l, gaw = self.guitar_encoder(seq[2], mask[2], mems[2], cmems[2], self.pos_emb[2])
-        s_z, s_mem, s_cmem, s_l, saw = self.strings_encoder(seq[3], mask[3], mems[3], cmems[3], self.pos_emb[3])
+        d_z, d_mem, d_cmem, d_l, daw = self.drums_encoder(seq[0], ifn(mask, 0), mems[0], cmems[0], self.pos_emb[0])
+        b_z, b_mem, b_cmem, b_l, baw = self.bass_encoder(seq[1], ifn(mask, 1), mems[1], cmems[1], self.pos_emb[1])
+        g_z, g_mem, g_cmem, g_l, gaw = self.guitar_encoder(seq[2], ifn(mask, 2), mems[2], cmems[2], self.pos_emb[2])
+        s_z, s_mem, s_cmem, s_l, saw = self.strings_encoder(seq[3], ifn(mask, 3), mems[3], cmems[3], self.pos_emb[3])
         mems = torch.stack([d_mem, b_mem, g_mem, s_mem])
         cmems = torch.stack([d_cmem, b_cmem, g_cmem, s_cmem])
         latents = torch.stack([d_z, b_z, g_z, s_z], dim=1)
@@ -111,13 +111,13 @@ class CompressiveDecoder(nn.Module):
                 nn.init.xavier_uniform_(p)
 
     def forward(self, trg, trg_mask, src_mask, latent, mems, cmems):
-        d_out, d_mem, d_cmem, d_l, d_self_w, d_src_w = self.drums_decoder(trg[0], trg_mask[0], ifn(src_mask, 0),
+        d_out, d_mem, d_cmem, d_l, d_self_w, d_src_w = self.drums_decoder(trg[0], ifn(trg_mask, 0), ifn(src_mask, 0),
                                                                            latent[0], mems[0], cmems[0], self.pos_emb[0])
-        b_out, b_mem, b_cmem, b_l, b_self_w, b_src_w = self.bass_decoder(trg[1], trg_mask[1], ifn(src_mask, 1),
+        b_out, b_mem, b_cmem, b_l, b_self_w, b_src_w = self.bass_decoder(trg[1], ifn(trg_mask, 1), ifn(src_mask, 1),
                                                                           latent[1], mems[1], cmems[1], self.pos_emb[1])
-        g_out, g_mem, g_cmem, g_l, g_self_w, g_src_w = self.guitar_decoder(trg[2], trg_mask[2], ifn(src_mask, 2),
+        g_out, g_mem, g_cmem, g_l, g_self_w, g_src_w = self.guitar_decoder(trg[2], ifn(trg_mask, 2), ifn(src_mask, 2),
                                                                             latent[2], mems[2], cmems[2], self.pos_emb[2])
-        s_out, s_mem, s_cmem, s_l, s_self_w, s_src_w = self.strings_decoder(trg[3], trg_mask[3], ifn(src_mask, 3),
+        s_out, s_mem, s_cmem, s_l, s_self_w, s_src_w = self.strings_decoder(trg[3], ifn(trg_mask, 3), ifn(src_mask, 3),
                                                                              latent[3], mems[3], cmems[3], self.pos_emb[3])
         output = torch.stack([d_out, b_out, g_out, s_out], dim=0)
         output = self.generator(output)
@@ -135,10 +135,13 @@ class Encoder(nn.Module):
         self.layers = clones(layer, N)
         self.embed = nn.Embedding(vocab_size, d_model)
         self.N = N
+        self.pos = PositionalEncoding(d_model)
 
     def forward(self, seq, mask, mems, cmems, pos_emb):
         attn_losses = torch.tensor(0., requires_grad=True, device=seq.device, dtype=torch.float32)
         seq = self.embed(seq)
+        seq = self.pos(seq)  # TODO REMOVE
+        pos_emb = None  # TODO REMOVE
         new_mems = []
         new_cmems = []
         self_weights = []
@@ -161,11 +164,13 @@ class Decoder(nn.Module):
         self.layers = clones(layer, N)
         self.embed = nn.Embedding(vocab_size, d_model)
         self.N = N
-
+        self.pos = PositionalEncoding(d_model)
 
     def forward(self, trg, trg_mask, src_mask, latent, mems, cmems, pos_emb):
         attn_losses = torch.tensor(0., requires_grad=True, device=trg.device, dtype=torch.float32)
         trg = self.embed(trg)
+        trg = self.pos(trg)  # TODO REMOVE
+        pos_emb = None  # TODO REMOVE
         self_weights = []
         src_weights = []
         new_mems = []
@@ -403,6 +408,7 @@ def full_attn(q, k, v, mask=None, dropout=None, pos_emb=None):
         dots = dots + pos_dots
 
     if mask is not None:
+        mask = mask[:, :, :dots.shape[2], :]  # during evaluation, must adapt mask to dots size
         dots = dots.masked_fill(mask == 0, -1e9)  # same mask for all heads
     attn = dots.softmax(dim=-1)
     if dropout is not None:

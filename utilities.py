@@ -38,6 +38,11 @@ def create_trg_mask(trg):
     for i in range(trg.shape[0]):
         for b in range(trg.shape[1]):
             line_mask = trg[i][b] != config["tokens"]["pad"]
+
+            eos_index = np.argmax(trg[i][b] == config["tokens"]["sos"])
+            if eos_index != 0 and eos_index < len(line_mask) - 1:
+                line_mask[(eos_index+1):] = config["tokens"]["pad"]
+
             pad_mask = np.matmul(line_mask[:, np.newaxis], line_mask[np.newaxis, :])
             subsequent_mask = np.expand_dims(np.tril(np.ones((trg.shape[-1], trg.shape[-1]))), (0, 1))
             subsequent_mask = subsequent_mask.astype(np.bool)

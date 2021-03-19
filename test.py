@@ -10,6 +10,7 @@ from create_bar_dataset import NoteRepresentationManager
 from utilities import create_trg_mask
 from config import remote
 import copy
+from loss_computer import compute_accuracy
 
 
 class Tester:
@@ -77,29 +78,51 @@ class Tester:
 
         return one, full, limited, two
 
-    def greedy_decode(self, latent, n_bars, desc):
+    @staticmethod
+    def ifn(elem, i):
+        return None if elem is None else elem[i]
+
+    def greedy_decode(self, latent, n_bars, desc, trg_masks=None, src_masks=None):
         outs = []
         outs_limited = []
         mems, cmems = get_memories()
 
-        for _ in tqdm(range(n_bars), position=0, leave=True, desc=desc):
+        for i in tqdm(range(n_bars), position=0, leave=True, desc=desc):
             trg = np.full((4, 1, 1), config["tokens"]["sos"])  # track batch tok
             trg = torch.LongTensor(trg).to(config["train"]["device"])
-            for _ in range(config["model"]["seq_len"] - 1):  # for each token of each bar
-                trg_mask = create_trg_mask(trg.cpu().numpy())
-                out, _, _, _, _, _ = self.decoder(trg, trg_mask, None, latent, mems, cmems)
+            for j in range(config["model"]["seq_len"] - 1):  # for each token of each bar
+                # TODO remove
+                if trg_masks is None:
+                    trg_mask = create_trg_mask(trg.cpu().numpy())
+                else:
+                    trg_mask = trg_masks[i, :, :, :(j+1), :(j+1)]
+                if src_masks is None:
+                    src_mask = None
+                else:
+                    src_mask = src_masks[i]
+                # TODO remove
+                out, _, _, _, _, _ = self.decoder(trg, trg_mask, src_mask, latent, mems, cmems)
                 out = torch.max(out, dim=-1).indices
                 trg = torch.cat((trg, out[..., -1:]), dim=-1)
-            trg_mask = create_trg_mask(trg.cpu().numpy())
-            out, mems, cmems, _, _, _ = self.decoder(trg, trg_mask, None, latent, mems, cmems)
+
+            # TODO remove
+            if trg_masks is None:
+                trg_mask = create_trg_mask(trg.cpu().numpy())
+            else:
+                trg_mask = trg_masks[i]
+            if src_masks is not None:
+                src_mask = src_masks[i]
+            else:
+                src_mask = None
+            # TODO remove
+            out, mems, cmems, _, _, _ = self.decoder(trg, trg_mask, src_mask, latent, mems, cmems)
             out = torch.max(out, dim=-1).indices
             outs.append(copy.deepcopy(out))
             for t in range(len(out)):  # for each track
                 eos_indices = torch.nonzero(out[t] == config["tokens"]["eos"])
                 if len(eos_indices) == 0:
                     continue
-                print(eos_indices)
-                eos_index = eos_indices[0][0]
+                eos_index = eos_indices[0][1]  # first occurrence, column index
                 out[t][eos_index:] = config["tokens"]["pad"]
             outs_limited.append(copy.deepcopy(out))
         return outs, outs_limited
@@ -116,11 +139,11 @@ class Tester:
         return note_manager.reconstruct_music(outs), note_manager.reconstruct_music(limited)
 
     def reconstruct(self, batch, note_manager):
-        srcs, _, src_masks, _, _ = batch
+        srcs, _, src_masks, trg_masks, _ = batch
         srcs = torch.LongTensor(srcs.long()).to(config["train"]["device"])[:1].transpose(0, 2)  # out: bar, 4, batch, t
-        # trgs = torch.LongTensor(trgs.long()).to(config["train"]["device"])[1:].transpose(0, 2)
+        # trgs = torch.LongTensor(trgs.long()).to(config["train"]["device"])[:1].transpose(0, 2)
         src_masks = torch.BoolTensor(src_masks).to(config["train"]["device"])[:1].transpose(0, 2)
-        # trg_masks = torch.BoolTensor(trg_masks).to(config["train"]["device"])[1:].transpose(0, 2)
+        trg_masks = torch.BoolTensor(trg_masks).to(config["train"]["device"])[:1].transpose(0, 2)
 
         e_mems, e_cmems = get_memories()
         latent = None
@@ -130,7 +153,8 @@ class Tester:
         latent = self.latent_decompressor(latent)
         latent = latent.transpose(0, 1)  # in batch, 4, t, d out: 4, batch, t, d
 
-        outs, outs_limited = self.greedy_decode(latent, len(srcs), "reconstruct")  # TODO careful
+        outs, outs_limited = self.greedy_decode(latent, len(srcs), "reconstruct", trg_masks=trg_masks,
+                                                src_masks=src_masks)  # TODO careful
         # outs = []
         # for trg, src_mask, trg_mask in zip(trgs, src_masks, trg_masks):
         #     out, self_weight, src_weight, d_mems, d_cmems, d_attn_loss = self.decoder(trg, trg_mask, src_mask,
@@ -141,6 +165,9 @@ class Tester:
 
         outs = torch.stack(outs)
         outs_limited = torch.stack(outs_limited)
+
+        accuracy = compute_accuracy(outs, srcs, config["tokens"]["pad"]).item()*100
+        print("Reconstruction accuracy:", accuracy, "%")
 
         outs = outs.transpose(0, 2)[0].cpu().numpy()  # invert bars and batch and select first batch
         srcs = srcs.transpose(0, 2)[0].cpu().numpy()

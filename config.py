@@ -10,7 +10,7 @@ n_bars = 1
 
 config = {
     "train": {
-        "scheduled_sampling": False,
+        "scheduled_sampling": True,
         "verbose": True,
         "make_songs": True,  # True if remote else False,
         "log_images": False,
@@ -25,7 +25,7 @@ config = {
         "label_smoothing": 0.1,
         "steps_before_eval": 1000 if remote else 500,  # if >= early_stopping, happens at each epoch
         "after_steps_save_model": 1000 if remote else 500,
-        "after_steps_make_songs": 1000 if remote else 500,
+        "after_steps_make_songs": 1000 if remote else 250,
         "after_steps_log_images": 1000 if remote else 500,
         # LR SCHEDULE
         "warmup_steps": 4000,
@@ -45,7 +45,7 @@ config = {
         "interpolation_timesteps_length": 1,  # number of bar for each timesteps
         "top_k_mixed_embeddings": 5,
         # TF SCHEDULE
-        "after_steps_mix_sequences": 10000,
+        "after_steps_mix_sequences": 0,
         "min_tf_prob": 0.1,
         "max_tf_prob": 1.,
         "tf_prob_step_reduction": 1e-4 if remote else 1e-3  # 5e-4 seems good

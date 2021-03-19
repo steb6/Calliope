@@ -112,30 +112,29 @@ class Trainer:
 
         # TODO simple scheduled sampling for transformer
         if config["train"]["scheduled_sampling"] and self.step > config["train"]["after_steps_mix_sequences"]:
-            for _ in range(5):
-                tf_step = self.step - config["train"]["after_steps_mix_sequences"]
-
-                self.tf_prob = max(config["train"]["min_tf_prob"],
-                                   config["train"]["max_tf_prob"] - tf_step * config["train"]["tf_prob_step_reduction"])
-                # self.tf_prob = 0.5
+            for _ in range(1):  # K
+                # tf_step = self.step - config["train"]["after_steps_mix_sequences"]
+                # self.tf_prob = max(config["train"]["min_tf_prob"],
+                #                    config["train"]["max_tf_prob"] - tf_step * config["train"]["tf_prob_step_reduction"])
+                self.tf_prob = 0.5
 
                 d_mems, d_cmems = get_memories()
                 predicted = []
                 for trg, trg_mask, src_mask in zip(trgs, trg_masks, src_masks):
                     out, d_mems, d_cmems, d_attn_loss, self_weight, src_weight = self.decoder(trg, trg_mask, src_mask,
-                                                                                                  latent, d_mems, d_cmems)
+                                                                                              latent, d_mems, d_cmems)
                     d_attn_losses.append(d_attn_loss)
                     dec_self_weights.append(self_weight.detach())
                     dec_src_weights.append(src_weight.detach())
                     predicted.append(torch.max(out, dim=-1).indices)
 
+                # add sos at beginning and cut last token
                 predicted = torch.stack(predicted)
                 sos = torch.full_like(predicted, config["tokens"]["sos"])[..., :1].to(predicted.device)
-                predicted = torch.cat((sos, predicted), dim=-1)[..., :-1]  # add sos at beginning and cut last token
+                predicted = torch.cat((sos, predicted), dim=-1)[..., :-1]
                 # create mixed trg
                 mixed_prob = torch.rand(trgs.shape, dtype=torch.float32).to(trgs.device)
                 mixed_prob = mixed_prob < self.tf_prob
-
                 trgs = trgs.where(mixed_prob, predicted)  # TODO CHECK
 
         # TODO classic transformer decoding
@@ -510,6 +509,7 @@ class Trainer:
                     print("Making songs")
                     self.encoder.eval()
                     self.latent_compressor.eval()
+                    self.latent_decompressor.eval()
                     self.decoder.eval()
 
                     self.tester = Tester(self.encoder, self.latent_compressor, self.latent_decompressor, self.decoder)
@@ -548,6 +548,7 @@ class Trainer:
                     # end test
                     self.encoder.train()
                     self.latent_compressor.train()
+                    self.latent_decompressor.train()
                     self.decoder.train()
 
                 self.step += 1
