@@ -15,6 +15,11 @@ class Logger:
         pass
 
     @staticmethod
+    def log_reconstruction_accuracy(accuracy):
+        log = {"stuff/reconstruction accuracy": accuracy}
+        wandb.log(log)
+
+    @staticmethod
     def log_losses(losses, train):
         mode = "train/" if train else "eval/"
         log = {mode + "loss": losses[0],

@@ -176,7 +176,7 @@ class Tester:
         original = note_manager.reconstruct_music(srcs)
         reconstructed = note_manager.reconstruct_music(outs)
         limited = note_manager.reconstruct_music(outs_limited)
-        return original, reconstructed, limited
+        return original, reconstructed, limited, accuracy
 
 
 if __name__ == "__main__":

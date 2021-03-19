@@ -12,7 +12,7 @@ config = {
     "train": {
         "scheduled_sampling": True,
         "verbose": True,
-        "make_songs": True,  # True if remote else False,
+        "make_songs": False,  # True if remote else False,
         "log_images": False,
         "do_eval": False,
         "aae": False,

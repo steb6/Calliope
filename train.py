@@ -519,12 +519,13 @@ class Trainer:
                     test = batch  # TODO remove
                     to_reconstruct = test
                     with torch.no_grad():
-                        original, reconstructed, limited = self.tester.reconstruct(to_reconstruct, note_manager)
+                        original, reconstructed, limited, acc = self.tester.reconstruct(to_reconstruct, note_manager)
                     prefix = "epoch_" + str(self.epoch) + "_mb_" + str(song_it)
                     self.logger.log_songs(os.path.join(wandb.run.dir, prefix),
                                           [original, reconstructed, limited],
                                           ["original", "reconstructed", "limited"],
                                           "validation reconstruction example")
+                    self.logger.log_reconstruction_accuracy(acc)
 
                     if config["train"]["aae"]:
                         # GENERATION
