@@ -13,10 +13,12 @@ sns.set_theme()
 class Logger:
     def __init__(self):
         pass
+        self.reconstructions = []
 
-    @staticmethod
-    def log_reconstruction_accuracy(accuracy):
+    def log_reconstruction_accuracy(self, accuracy):
+        self.reconstructions.append(accuracy)
         log = {"stuff/reconstruction accuracy": accuracy}
+        print(self.reconstructions)
         wandb.log(log)
 
     @staticmethod

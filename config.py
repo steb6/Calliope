@@ -10,9 +10,11 @@ n_bars = 1
 
 config = {
     "train": {
+        # MODALITIES
         "scheduled_sampling": True,
+        "compress_latents": True,
         "verbose": True,
-        "make_songs": False,  # True if remote else False,
+        "make_songs": True,  # True if remote else False,
         "log_images": False,
         "do_eval": False,
         "aae": False,
@@ -22,27 +24,29 @@ config = {
         "test_size": 0.0001 if remote else 0.5,  # 0.00001
         "n_workers": 0,
         "n_epochs": 25000,
+        # LOGS AND GENERATIONS
         "label_smoothing": 0.1,
         "steps_before_eval": 1000 if remote else 500,  # if >= early_stopping, happens at each epoch
         "after_steps_save_model": 1000 if remote else 500,
         "after_steps_make_songs": 1000 if remote else 250,
         "after_steps_log_images": 1000 if remote else 500,
+        "generated_iterations": 1 if remote else 1,
+        "interpolation_timesteps": 3,  # intermediate timesteps excluding first and second (with 3: 0 (1 2 3) 4)
+        "interpolation_timesteps_length": 1,  # number of bar for each timesteps
+        # "test_loss": False,
         # LR SCHEDULE
         "warmup_steps": 4000,
         "lr_min": 1e-4,
         "lr_max": 1e-3,
         "decay_steps": 50000,
-        "minimum_lr": 5e-5,  # USE ONLY THIS
-        "lr": 5e-5,
-        "generated_iterations": 1 if remote else 1,
-        # "test_loss": False,
+        "minimum_lr": 1e-4,  # USE ONLY THIS  # 5e-5 or 1e-5
+        "lr": 1e-4,
+        # AAE PART
         "train_aae_after_steps": 0,
         "increase_beta_every": 2000 if remote else 200,
         "max_beta": 0.3 if remote else 1,
         "lambda": 10,
         "critic_iterations": 5,
-        "interpolation_timesteps": 3,  # intermediate timesteps excluding first and second (with 3: 0 (1 2 3) 4)
-        "interpolation_timesteps_length": 1,  # number of bar for each timesteps
         "top_k_mixed_embeddings": 5,
         # TF SCHEDULE
         "after_steps_mix_sequences": 0,
@@ -55,7 +59,7 @@ config = {
         "d_model": 256,
         "heads": 4,
         "ff_mul": 2,
-        "layers": 1,  # 3 GB each
+        "layers": 4,  # 3 GB each
         "mem_len": max_bar_length,  # keep last 2 seq
         "cmem_len": max_bar_length,  # keep 4 compression
         "cmem_ratio": 4,
@@ -71,7 +75,7 @@ config = {
         "max_bars": 200,
         "use_velocity": False,
         "reconstruction_programs": [0, 0, 32, 40],
-        "early_stop": 300000 if remote else 100,  # set this to 0 to disable early stop
+        "early_stop": 300000 if remote else 100000,  # set this to 0 to disable early stop
         "resolution": 24,
         "tempo": 120,
         "velocities_total": (0, 127),  # using min max scaling, limits are inclusive

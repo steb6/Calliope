@@ -100,9 +100,17 @@ class Trainer:
             e_mems = e_mems.detach()
             e_cmems = e_cmems.detach()
 
-        latent = self.latent_compressor(latent)  # in: 3, 4, 200, 256, out: 3, 256
+        ############
+        # COMPRESS #
+        ############
+        if config["train"]["compress_latents"]:
+            latent = self.latent_compressor(latent)  # in: 3, 4, 200, 256, out: 3, 256
+
         self.latent = latent.detach().cpu().numpy()
-        latent = self.latent_decompressor(latent)  # in 3, 256, out: 3, 4, 200, 256
+
+        if config["train"]["compress_latents"]:
+            latent = self.latent_decompressor(latent)  # in 3, 256, out: 3, 4, 200, 256
+
         latent = latent.transpose(0, 1)  # in: 3, 4, 200, 256 out: 4, 3, 200, 256
 
         ############
@@ -408,6 +416,10 @@ class Trainer:
                 print("Using scheduled sampling")
             else:
                 print("NOT using scheduled sampling")
+            if config["train"]["compress_latents"]:
+                print("Compressing latents")
+            else:
+                print("NOT compressing latents")
 
         # Setup train
         self.encoder.train()
@@ -439,6 +451,8 @@ class Trainer:
                                       self.beta if config["train"]["aae"] else None,
                                       get_prior(self.latent.shape) if config["train"]["aae"] else None,
                                       self.tf_prob)
+                if self.step == 0:
+                    print("Latent shape is:", self.latent.shape)
                 train_progress.update()
 
                 ########

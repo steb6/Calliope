@@ -293,8 +293,6 @@ class NoteRepresentationManager:
                         with open(os.path.join(config["paths"]["dataset"], str(self.count) + '.pickle'), 'wb') as f:
                             candidate = np.swapaxes(candidate, 0, 1)
                             # self.reconstruct_music(candidate).write_midi("test.mid")  # TODO remove test
-                            if self.count == 138:
-                                print("STOP")
                             pickle.dump(candidate, f)
                         self.count += 1
                         # if early stop, update bar only after a success

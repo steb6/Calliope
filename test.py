@@ -149,12 +149,15 @@ class Tester:
         latent = None
         for src, src_mask in zip(srcs, src_masks):
             latent, e_mems, e_cmems, _, _ = self.encoder(src, src_mask, e_mems, e_cmems)
-        latent = self.latent_compressor(latent)
-        latent = self.latent_decompressor(latent)
+
+        if config["train"]["compress_latents"]:
+            latent = self.latent_compressor(latent)
+            latent = self.latent_decompressor(latent)
+
         latent = latent.transpose(0, 1)  # in batch, 4, t, d out: 4, batch, t, d
 
-        outs, outs_limited = self.greedy_decode(latent, len(srcs), "reconstruct", trg_masks=trg_masks,
-                                                src_masks=src_masks)  # TODO careful
+        outs, outs_limited = self.greedy_decode(latent, len(srcs), "reconstruct",
+                                                trg_masks=trg_masks, src_masks=src_masks)  # TODO careful
         # outs = []
         # for trg, src_mask, trg_mask in zip(trgs, src_masks, trg_masks):
         #     out, self_weight, src_weight, d_mems, d_cmems, d_attn_loss = self.decoder(trg, trg_mask, src_mask,

@@ -32,11 +32,6 @@ class CompressiveEncoder(nn.Module):
         assert cmem_len >= (mem_len // cmem_ratio), f'len of cmem should be at least ' f'{int(mem_len // cmem_ratio)}' \
                                                     f' but it is ' f'{int(cmem_len)}'
 
-        # self.pos_emb = nn.Parameter(
-        #     torch.zeros(4, heads, seq_len + mem_len + cmem_len, d_model // heads, device=device,
-        #                 requires_grad=True))
-        self.pos_emb = nn.Parameter(
-            torch.zeros(4, heads, seq_len, d_model // heads, device=device, requires_grad=True))
         c = copy.deepcopy
 
         # self_mem_attn = Residual(PreNorm(d_model, MyMemoryAttention(heads, d_model, seq_len,
@@ -44,6 +39,7 @@ class CompressiveEncoder(nn.Module):
         #                                                             attn_dropout=attn_layer_dropout,
         #                                                             reconstruction_attn_dropout=recon_attn_dropout)))
         self_mem_attn = RelMultiHeadedAttention(heads, d_model, dropout=0.1)
+        # self_mem_attn = MultiHeadedAttention(heads, d_model, dropout=0.1)
 
         ff = FeedForward(d_model, ff_mul, dropout=ff_dropout)
 
@@ -57,10 +53,10 @@ class CompressiveEncoder(nn.Module):
                 nn.init.xavier_uniform_(p)
 
     def forward(self, seq, mask, mems, cmems):
-        d_z, d_mem, d_cmem, d_l, daw = self.drums_encoder(seq[0], ifn(mask, 0), mems[0], cmems[0], self.pos_emb[0])
-        b_z, b_mem, b_cmem, b_l, baw = self.bass_encoder(seq[1], ifn(mask, 1), mems[1], cmems[1], self.pos_emb[1])
-        g_z, g_mem, g_cmem, g_l, gaw = self.guitar_encoder(seq[2], ifn(mask, 2), mems[2], cmems[2], self.pos_emb[2])
-        s_z, s_mem, s_cmem, s_l, saw = self.strings_encoder(seq[3], ifn(mask, 3), mems[3], cmems[3], self.pos_emb[3])
+        d_z, d_mem, d_cmem, d_l, daw = self.drums_encoder(seq[0], ifn(mask, 0), mems[0], cmems[0])
+        b_z, b_mem, b_cmem, b_l, baw = self.bass_encoder(seq[1], ifn(mask, 1), mems[1], cmems[1])
+        g_z, g_mem, g_cmem, g_l, gaw = self.guitar_encoder(seq[2], ifn(mask, 2), mems[2], cmems[2])
+        s_z, s_mem, s_cmem, s_l, saw = self.strings_encoder(seq[3], ifn(mask, 3), mems[3], cmems[3])
         mems = torch.stack([d_mem, b_mem, g_mem, s_mem])
         cmems = torch.stack([d_cmem, b_cmem, g_cmem, s_cmem])
         latents = torch.stack([d_z, b_z, g_z, s_z], dim=1)
@@ -89,8 +85,7 @@ class CompressiveDecoder(nn.Module):
         assert mem_len >= seq_len, 'length of memory should be at least the sequence length'
         assert cmem_len >= (mem_len // cmem_ratio), f'len of cmem should be at least ' f'{int(mem_len // cmem_ratio)}' \
                                                     f' but it is ' f'{int(cmem_len)}'
-        # self.pos_emb = nn.Parameter(torch.zeros(4, heads, seq_len + mem_len + cmem_len, d_model // heads, device=device,
-        #                                         requires_grad=True))
+
         self.pos_emb = nn.Parameter(torch.zeros(4, heads, seq_len, d_model // heads, device=device,
                                                 requires_grad=True))
         c = copy.deepcopy
@@ -99,6 +94,7 @@ class CompressiveDecoder(nn.Module):
         #                                                             attn_dropout=attn_layer_dropout,
         #                                                             reconstruction_attn_dropout=recon_attn_dropout)))
         self_mem_attn = RelMultiHeadedAttention(heads, d_model, dropout=0.1)
+        # self_mem_attn = MultiHeadedAttention(heads, d_model, dropout=0.1)
 
         src_attn = MultiHeadedAttention(heads, d_model, dropout=0.1)
         ff = FeedForward(d_model, ff_mul, dropout=ff_dropout)
@@ -116,13 +112,13 @@ class CompressiveDecoder(nn.Module):
 
     def forward(self, trg, trg_mask, src_mask, latent, mems, cmems):
         d_out, d_mem, d_cmem, d_l, d_self_w, d_src_w = self.drums_decoder(trg[0], ifn(trg_mask, 0), ifn(src_mask, 0),
-                                                                           latent[0], mems[0], cmems[0], self.pos_emb[0])
+                                                                          latent[0], mems[0], cmems[0])
         b_out, b_mem, b_cmem, b_l, b_self_w, b_src_w = self.bass_decoder(trg[1], ifn(trg_mask, 1), ifn(src_mask, 1),
-                                                                          latent[1], mems[1], cmems[1], self.pos_emb[1])
+                                                                         latent[1], mems[1], cmems[1])
         g_out, g_mem, g_cmem, g_l, g_self_w, g_src_w = self.guitar_decoder(trg[2], ifn(trg_mask, 2), ifn(src_mask, 2),
-                                                                            latent[2], mems[2], cmems[2], self.pos_emb[2])
+                                                                           latent[2], mems[2], cmems[2])
         s_out, s_mem, s_cmem, s_l, s_self_w, s_src_w = self.strings_decoder(trg[3], ifn(trg_mask, 3), ifn(src_mask, 3),
-                                                                             latent[3], mems[3], cmems[3], self.pos_emb[3])
+                                                                            latent[3], mems[3], cmems[3])
         output = torch.stack([d_out, b_out, g_out, s_out], dim=0)
         output = self.generator(output)
         self_weights = torch.stack([d_self_w, b_self_w, g_self_w, s_self_w], dim=0)
@@ -140,25 +136,28 @@ class Encoder(nn.Module):
         self.embed = nn.Embedding(vocab_size, d_model)
         self.N = N
 
+        max_klen = config["model"]["seq_len"]  # TODO increase it when adding memory
         n_head = config["model"]["heads"]
         d_head = config["model"]["d_model"] // config["model"]["heads"]
-        self.r_emb = nn.Parameter(torch.Tensor(N, 200, n_head, d_head))
-        self.r_w_bias = nn.Parameter(torch.Tensor(N, 200, d_head))
-        self.r_bias = nn.Parameter(torch.Tensor(N, 200, n_head))
+        self.r_emb = nn.Parameter(torch.Tensor(N, n_head, max_klen, d_head))
+        self.r_w_bias = nn.Parameter(torch.Tensor(N, n_head, d_head))
+        self.r_bias = nn.Parameter(torch.Tensor(N, n_head, max_klen))
 
-    def forward(self, seq, mask, mems, cmems, pos_emb):
+        self.pos = PositionalEncoding(d_model)
+
+    def forward(self, seq, mask, mems, cmems):
         attn_losses = torch.tensor(0., requires_grad=True, device=seq.device, dtype=torch.float32)
         seq = self.embed(seq)
-        # seq = self.pos(seq)  # TODO REMOVE
-        # pos_emb = None  # TODO REMOVE
+
+        # seq = self.pos(seq)
 
         new_mems = []
         new_cmems = []
         self_weights = []
         i = 0
         for layer, mem, cmem in zip(self.layers, mems, cmems):
-            seq, new_mem, new_cmem, attn_loss, attn = layer(seq, (mem, cmem), mask, pos_emb,
-                                                            self.r_emb[i], self.r_w_bias[i], self.r_bias[i])  # pos_emb
+            seq, new_mem, new_cmem, attn_loss, attn = layer(seq, (mem, cmem), mask,
+                                                            self.r_emb[i], self.r_w_bias[i], self.r_bias[i])
             self_weights.append(attn)
             new_mems.append(new_mem)
             new_cmems.append(new_cmem)
@@ -178,17 +177,20 @@ class Decoder(nn.Module):
         self.embed = nn.Embedding(vocab_size, d_model)
         self.N = N
 
+        max_klen = config["model"]["seq_len"]  # TODO increase it when adding memory
         n_head = config["model"]["heads"]
         d_head = config["model"]["d_model"] // config["model"]["heads"]
-        self.r_emb = nn.Parameter(torch.Tensor(N, 200, n_head, d_head))
-        self.r_w_bias = nn.Parameter(torch.Tensor(N, 200, d_head))
-        self.r_bias = nn.Parameter(torch.Tensor(N, 200, n_head))
+        self.r_emb = nn.Parameter(torch.Tensor(N, n_head, max_klen, d_head))
+        self.r_w_bias = nn.Parameter(torch.Tensor(N, n_head, d_head))
+        self.r_bias = nn.Parameter(torch.Tensor(N, n_head, max_klen))
 
-    def forward(self, trg, trg_mask, src_mask, latent, mems, cmems, pos_emb):
+        self.pos = PositionalEncoding(d_model)
+
+    def forward(self, trg, trg_mask, src_mask, latent, mems, cmems):
         attn_losses = torch.tensor(0., requires_grad=True, device=trg.device, dtype=torch.float32)
         trg = self.embed(trg)
-        # trg = self.pos(trg)  # TODO REMOVE
-        # pos_emb = None  # TODO REMOVE
+
+        # trg = self.pos(trg)
 
         self_weights = []
         src_weights = []
@@ -197,7 +199,7 @@ class Decoder(nn.Module):
         i = 0
         for layer, mem, cmem in zip(self.layers, mems, cmems):
             trg, new_mem, new_cmem, attn_loss, self_weight, src_weight = layer(trg, trg_mask, src_mask,
-                                                                               latent, (mem, cmem), pos_emb,
+                                                                               latent, (mem, cmem),
                                                                                self.r_emb[i], self.r_w_bias[i],
                                                                                self.r_bias[i])
             self_weights.append(self_weight)
@@ -222,14 +224,13 @@ class EncoderLayer(nn.Module):
         self.norm1 = nn.LayerNorm(config["model"]["d_model"])
         self.norm2 = nn.LayerNorm(config["model"]["d_model"])
 
-    def forward(self, x, memories, input_mask, pos_emb_old, pos_emb, r_w_bias, r_r_bias):
-        # x, m, cm, attn_loss, self_weights = self.mem_attn(x, memories=memories, input_mask=input_mask, pos_emb=pos_emb)
+    def forward(self, x, memories, input_mask, pos_emb, r_w_bias, r_bias):
         out, self_weights = self.mem_attn(x, key=x, value=x, mask=input_mask, r_emb=pos_emb, r_w_bias=r_w_bias,
-                                          r_bias=r_r_bias)
+                                          r_bias=r_bias)
+        # out, self_weights = self.mem_attn(x, key=x, value=x, mask=input_mask)
         x = self.norm1(x + out)
         out = self.feed_forward(x)
         x = self.norm2(x + out)
-        # return x, m, cm, attn_loss, self_weights
         return x, torch.zeros_like(x).to(x.device), torch.zeros_like(x).to(x.device), 0, self_weights
 
 
@@ -243,16 +244,15 @@ class DecoderLayer(nn.Module):
         self.norm2 = nn.LayerNorm(config["model"]["d_model"])
         self.norm3 = nn.LayerNorm(config["model"]["d_model"])
 
-    def forward(self, x, trg_mask, src_mask, latent, memories, pos_emb_old, pos_emb, r_w_bias, r_r_bias):
-        # out, self_weights = self.self_mem_attn(x, key=x, value=x, mask=trg_mask, pos_emb=pos_emb)
-        out, self_weights = self.self_mem_attn(x, key=x, value=x, mask=trg_mask, r_emb=pos_emb, r_w_bias=r_w_bias,
-                                          r_bias=r_r_bias)
+    def forward(self, x, trg_mask, src_mask, latent, memories, pos_emb, r_w_bias, r_bias):
+        out, self_weights = self.self_mem_attn(x, key=x, value=x, mask=trg_mask,
+                                               r_emb=pos_emb, r_w_bias=r_w_bias, r_bias=r_bias)
+        # out, self_weights = self.self_mem_attn(x, key=x, value=x, mask=trg_mask)
         x = self.norm1(x + out)
         out, src_weights = self.src_attn(x, key=latent, value=latent, mask=src_mask)
         x = self.norm2(x + out)
         out = self.feed_forward(x)
         x = self.norm3(x + out)
-        # return x, m, cm, attn_loss, self_weights, src_weights
         return x, torch.zeros_like(x).to(x.device), torch.zeros_like(x).to(x.device), 0, self_weights, src_weights
 
 
@@ -311,6 +311,10 @@ class MyMemoryAttention(nn.Module):
 
 
 class RelMultiHeadedAttention(nn.Module):
+    """
+    https://github.com/kimiyoung/transformer-xl/blob/44781ed21dbaec88b280f74d9ae2877f52b492a5/pytorch/mem_transformer.py#L293
+    """
+
     def __init__(self, h, d_model, dropout=0.1):
         super(RelMultiHeadedAttention, self).__init__()
         assert d_model % h == 0
@@ -318,25 +322,38 @@ class RelMultiHeadedAttention(nn.Module):
         self.h = h
         self.linears = (clones(nn.Linear(d_model, d_model, bias=False), 4))  # TODO bias or not?
         self.dropout = nn.Dropout(p=dropout)
-        self.scale = 1 / (h**0.5)
+        self.scale = 1 / (h ** 0.5)
 
     def forward(self, query, key=None, value=None, mask=None, r_emb=None, r_w_bias=None, r_bias=None):
+        """
+        :param query: batch_size x q_len x d_model
+        :param key: batch_size x k_len x d_model
+        :param value: batch_size x v_len x d_model
+        :param mask: batch_size x q_len ( x v_len)
+        :param r_emb: n_head x max_klen x d_head
+        :param r_w_bias: n_head x d_head
+        :param r_bias: n_head x max_klen
+        :return: batch_size x q_len x d_model
+        """
         n_batches = query.size(0)
+        k_len = query.shape[1]
+
+        # batch_size x n_head x seq_len x d_head
         query, key, value = [l(x).view(n_batches, -1, self.h, self.d_out).transpose(1, 2)
                              for l, x in zip(self.linears, (query, key, value))]
 
-        r_query = query + r_w_bias[None]
+        r_emb = r_emb[:, -k_len:, :]  # TODO try this (first or last?)
+        r_bias = r_bias[:, -k_len:]  # TODO try this (first or last?)
 
-        # AC = torch.einsum('ibnd,jbnd->ijbn', (r_query, key))
-        AC = torch.einsum('bnid,bnjd->bnij', (r_query, key))
+        r_query = query + r_w_bias[None, :, None, :]
 
-        # B_ = torch.einsum('ibnd,jnd->ijbn', (w_head_q, r_emb))
-        B_ = torch.einsum('bnid,jnd->bnij', (query, r_emb))  # r_emb_pe must be 3 4 200
+        AC = torch.einsum('bnid,bnjd->bnij', r_query, key)
 
-        r_bias = r_bias.transpose(0, 1)
+        B_ = torch.einsum('bnid,njd->bnij', query, r_emb)  # r_emb_pe must be 3 4 200
+
         D_ = r_bias[None, :, None]
 
-        BD = shift(B_ + D_)
+        BD = shift(B_ + D_)  # TODO place original shift
 
         attn_score = AC + BD
         attn_score.mul_(self.scale)
@@ -345,13 +362,12 @@ class RelMultiHeadedAttention(nn.Module):
             if mask.dim() == 2:  # transform linear mask to square mask
                 mask = mask[:, :, None] * mask[:, None, :]
             mask = mask.unsqueeze(1)  # apply same mask to all heads
-            attn_score.masked_fill(mask, -float('inf'))
+            attn_score = attn_score.masked_fill(~mask, -1e9)  # TODO empty row becomes 0.005 is it good?
 
         attn_prob = F.softmax(attn_score, dim=-1)
-        # attn_prob = self.dropatt(attn_prob)
+        attn_prob = self.dropout(attn_prob)
 
-        # attn_vec = torch.einsum('ijbn,jbnd->ibnd', (attn_prob, w_head_v))
-        attn_vec = torch.einsum('bnij,bnjd->bnid', (attn_prob, value))
+        attn_vec = torch.einsum('bnij,bnjd->bnid', attn_prob, value)
 
         attn_vec = attn_vec.transpose(1, 2).contiguous().view(n_batches, -1, self.h * self.d_out)
 
@@ -558,6 +574,7 @@ class SublayerConnection(nn.Module):
     A residual connection followed by a layer norm.
     Note for code simplicity the norm is first as opposed to last.
     """
+
     def __init__(self, size, dropout):
         super(SublayerConnection, self).__init__()
         self.norm = nn.LayerNorm(size)
@@ -582,6 +599,6 @@ class PositionalEmbedding(nn.Module):
         pos_emb = torch.cat([sinusoid_inp.sin(), sinusoid_inp.cos()], dim=-1)
 
         if bsz is not None:
-            return pos_emb[:,None,:].expand(-1, bsz, -1)
+            return pos_emb[:, None, :].expand(-1, bsz, -1)
         else:
-            return pos_emb[:,None,:]
+            return pos_emb[:, None, :]
