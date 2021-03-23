@@ -11,12 +11,13 @@ n_bars = 1
 config = {
     "train": {
         # MODALITIES
+        "use_src_mask": False,
         "scheduled_sampling": True,
-        "compress_latents": True,
+        "compress_latents": False,
         "verbose": True,
         "make_songs": True,  # True if remote else False,
         "log_images": False,
-        "do_eval": False,
+        "do_eval": True,
         "aae": False,
         "test_losses": False,
         "device": "cuda" if remote else "cuda",
@@ -43,8 +44,8 @@ config = {
         "lr": 1e-4,
         # AAE PART
         "train_aae_after_steps": 0,
-        "increase_beta_every": 2000 if remote else 200,
-        "max_beta": 0.3 if remote else 1,
+        "increase_beta_every": 4000 if remote else 200,  # was 2000
+        "max_beta": 1 if remote else 1,
         "lambda": 10,
         "critic_iterations": 5,
         "top_k_mixed_embeddings": 5,
@@ -59,7 +60,7 @@ config = {
         "d_model": 256,
         "heads": 4,
         "ff_mul": 2,
-        "layers": 4,  # 3 GB each
+        "layers": 6 if remote else 2,  # 3 GB each
         "mem_len": max_bar_length,  # keep last 2 seq
         "cmem_len": max_bar_length,  # keep 4 compression
         "cmem_ratio": 4,

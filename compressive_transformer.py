@@ -52,17 +52,19 @@ class CompressiveEncoder(nn.Module):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
-    def forward(self, seq, mask, mems, cmems):
-        d_z, d_mem, d_cmem, d_l, daw = self.drums_encoder(seq[0], ifn(mask, 0), mems[0], cmems[0])
-        b_z, b_mem, b_cmem, b_l, baw = self.bass_encoder(seq[1], ifn(mask, 1), mems[1], cmems[1])
-        g_z, g_mem, g_cmem, g_l, gaw = self.guitar_encoder(seq[2], ifn(mask, 2), mems[2], cmems[2])
-        s_z, s_mem, s_cmem, s_l, saw = self.strings_encoder(seq[3], ifn(mask, 3), mems[3], cmems[3])
-        mems = torch.stack([d_mem, b_mem, g_mem, s_mem])
-        cmems = torch.stack([d_cmem, b_cmem, g_cmem, s_cmem])
+    def forward(self, seq, mask, cmems, mems):
+        d_z, d_cmem, d_mem, d_l, daw = self.drums_encoder(seq[0], ifn(mask, 0), ifn(cmems, 0), ifn(mems, 0))
+        b_z, b_cmem, b_mem, b_l, baw = self.bass_encoder(seq[1], ifn(mask, 1), ifn(cmems, 1), ifn(mems, 1))
+        g_z, g_cmem, g_mem, g_l, gaw = self.guitar_encoder(seq[2], ifn(mask, 2), ifn(cmems, 2), ifn(mems, 2))
+        s_z, s_cmem, s_mem, s_l, saw = self.strings_encoder(seq[3], ifn(mask, 3), ifn(cmems, 3), ifn(mems, 3))
+        # mems = torch.stack([d_mem, b_mem, g_mem, s_mem])
+        # cmems = torch.stack([d_cmem, b_cmem, g_cmem, s_cmem])
+        mems = list([d_mem, b_mem, g_mem, s_mem])
+        cmems = list([d_cmem, b_cmem, g_cmem, s_cmem])
         latents = torch.stack([d_z, b_z, g_z, s_z], dim=1)
         aux_loss = torch.stack((d_l, b_l, g_l, s_l)).mean()
         aws = torch.stack([daw, baw, gaw, saw], dim=0)
-        return latents, mems, cmems, aux_loss, aws
+        return latents, cmems, mems, aux_loss, aws
 
 
 class CompressiveDecoder(nn.Module):
@@ -110,23 +112,25 @@ class CompressiveDecoder(nn.Module):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
-    def forward(self, trg, trg_mask, src_mask, latent, mems, cmems):
-        d_out, d_mem, d_cmem, d_l, d_self_w, d_src_w = self.drums_decoder(trg[0], ifn(trg_mask, 0), ifn(src_mask, 0),
-                                                                          latent[0], mems[0], cmems[0])
-        b_out, b_mem, b_cmem, b_l, b_self_w, b_src_w = self.bass_decoder(trg[1], ifn(trg_mask, 1), ifn(src_mask, 1),
-                                                                         latent[1], mems[1], cmems[1])
-        g_out, g_mem, g_cmem, g_l, g_self_w, g_src_w = self.guitar_decoder(trg[2], ifn(trg_mask, 2), ifn(src_mask, 2),
-                                                                           latent[2], mems[2], cmems[2])
-        s_out, s_mem, s_cmem, s_l, s_self_w, s_src_w = self.strings_decoder(trg[3], ifn(trg_mask, 3), ifn(src_mask, 3),
-                                                                            latent[3], mems[3], cmems[3])
+    def forward(self, trg, trg_mask, src_mask, latent, cmems, mems):
+        d_out, d_cmem, d_mem, d_l, d_self_w, d_src_w = self.drums_decoder(trg[0], ifn(trg_mask, 0), ifn(src_mask, 0),
+                                                                          latent[0], cmems[0], mems[0])
+        b_out, b_cmem, b_mem, b_l, b_self_w, b_src_w = self.bass_decoder(trg[1], ifn(trg_mask, 1), ifn(src_mask, 1),
+                                                                         latent[1], cmems[1], mems[1])
+        g_out, g_cmem, g_mem, g_l, g_self_w, g_src_w = self.guitar_decoder(trg[2], ifn(trg_mask, 2), ifn(src_mask, 2),
+                                                                           latent[2], cmems[2], mems[2])
+        s_out, s_cmem, s_mem, s_l, s_self_w, s_src_w = self.strings_decoder(trg[3], ifn(trg_mask, 3), ifn(src_mask, 3),
+                                                                            latent[3], cmems[3], mems[3])
         output = torch.stack([d_out, b_out, g_out, s_out], dim=0)
         output = self.generator(output)
         self_weights = torch.stack([d_self_w, b_self_w, g_self_w, s_self_w], dim=0)
         src_weights = torch.stack([d_src_w, b_src_w, g_src_w, s_src_w])
-        mems = torch.stack([d_mem, b_mem, g_mem, s_mem])
-        cmems = torch.stack([d_cmem, b_cmem, g_cmem, s_cmem])
+        # mems = torch.stack([d_mem, b_mem, g_mem, s_mem])
+        # cmems = torch.stack([d_cmem, b_cmem, g_cmem, s_cmem])
+        mems = list([d_mem, b_mem, g_mem, s_mem])
+        cmems = list([d_cmem, b_cmem, g_cmem, s_cmem])
         aux_loss = torch.stack((d_l, b_l, g_l, s_l)).mean()
-        return output, mems, cmems, aux_loss, self_weights, src_weights
+        return output, cmems, mems, aux_loss, self_weights, src_weights
 
 
 class Encoder(nn.Module):
@@ -137,6 +141,7 @@ class Encoder(nn.Module):
         self.N = N
 
         max_klen = config["model"]["seq_len"]  # TODO increase it when adding memory
+        max_klen += config["model"]["mem_len"] + config["model"]["cmem_len"]
         n_head = config["model"]["heads"]
         d_head = config["model"]["d_model"] // config["model"]["heads"]
         self.r_emb = nn.Parameter(torch.Tensor(N, n_head, max_klen, d_head))
@@ -145,7 +150,7 @@ class Encoder(nn.Module):
 
         self.pos = PositionalEncoding(d_model)
 
-    def forward(self, seq, mask, mems, cmems):
+    def forward(self, seq, mask, cmems, mems):
         attn_losses = torch.tensor(0., requires_grad=True, device=seq.device, dtype=torch.float32)
         seq = self.embed(seq)
 
@@ -155,8 +160,8 @@ class Encoder(nn.Module):
         new_cmems = []
         self_weights = []
         i = 0
-        for layer, mem, cmem in zip(self.layers, mems, cmems):
-            seq, new_mem, new_cmem, attn_loss, attn = layer(seq, (mem, cmem), mask,
+        for layer, cmem, mem in zip(self.layers, cmems, mems):
+            seq, new_cmem, new_mem, attn_loss, attn = layer(seq, (cmem, mem), mask,
                                                             self.r_emb[i], self.r_w_bias[i], self.r_bias[i])
             self_weights.append(attn)
             new_mems.append(new_mem)
@@ -164,10 +169,10 @@ class Encoder(nn.Module):
             attn_losses = attn_losses + attn_loss
             i += 1
         self_weights = torch.stack(self_weights, dim=0)
-        new_mems = torch.stack(new_mems)
-        new_cmems = torch.stack(new_cmems)
+        # new_mems = torch.stack(new_mems)
+        # new_cmems = torch.stack(new_cmems)
         attn_loss = attn_losses / self.N  # normalize w.r.t number of layers
-        return seq, new_mems, new_cmems, attn_loss, self_weights
+        return seq, new_cmems, new_mems, attn_loss, self_weights
 
 
 class Decoder(nn.Module):
@@ -178,6 +183,7 @@ class Decoder(nn.Module):
         self.N = N
 
         max_klen = config["model"]["seq_len"]  # TODO increase it when adding memory
+        max_klen += config["model"]["mem_len"] + config["model"]["cmem_len"]
         n_head = config["model"]["heads"]
         d_head = config["model"]["d_model"] // config["model"]["heads"]
         self.r_emb = nn.Parameter(torch.Tensor(N, n_head, max_klen, d_head))
@@ -186,7 +192,7 @@ class Decoder(nn.Module):
 
         self.pos = PositionalEncoding(d_model)
 
-    def forward(self, trg, trg_mask, src_mask, latent, mems, cmems):
+    def forward(self, trg, trg_mask, src_mask, latent, cmems, mems):
         attn_losses = torch.tensor(0., requires_grad=True, device=trg.device, dtype=torch.float32)
         trg = self.embed(trg)
 
@@ -197,9 +203,9 @@ class Decoder(nn.Module):
         new_mems = []
         new_cmems = []
         i = 0
-        for layer, mem, cmem in zip(self.layers, mems, cmems):
-            trg, new_mem, new_cmem, attn_loss, self_weight, src_weight = layer(trg, trg_mask, src_mask,
-                                                                               latent, (mem, cmem),
+        for layer, cmem, mem in zip(self.layers, cmems, mems):
+            trg, new_cmem, new_mem, attn_loss, self_weight, src_weight = layer(trg, trg_mask, src_mask,
+                                                                               latent, (cmem, mem),
                                                                                self.r_emb[i], self.r_w_bias[i],
                                                                                self.r_bias[i])
             self_weights.append(self_weight)
@@ -210,10 +216,10 @@ class Decoder(nn.Module):
             i += 1
         src_weights = torch.stack(src_weights, dim=0)
         self_weights = torch.stack(self_weights, dim=0)
-        new_mems = torch.stack(new_mems)
-        new_cmems = torch.stack(new_cmems)
+        # new_mems = torch.stack(new_mems)
+        # new_cmems = torch.stack(new_cmems)
         attn_losses = attn_losses / self.N
-        return trg, new_mems, new_cmems, attn_losses, self_weights, src_weights
+        return trg, new_cmems, new_mems, attn_losses, self_weights, src_weights
 
 
 class EncoderLayer(nn.Module):
@@ -225,13 +231,14 @@ class EncoderLayer(nn.Module):
         self.norm2 = nn.LayerNorm(config["model"]["d_model"])
 
     def forward(self, x, memories, input_mask, pos_emb, r_w_bias, r_bias):
-        out, self_weights = self.mem_attn(x, key=x, value=x, mask=input_mask, r_emb=pos_emb, r_w_bias=r_w_bias,
-                                          r_bias=r_bias)
+        out, self_weights, cm, m, ar_loss = self.mem_attn(x, key=x, value=x, mask=input_mask, memories=memories,
+                                                          r_emb=pos_emb, r_w_bias=r_w_bias, r_bias=r_bias)
         # out, self_weights = self.mem_attn(x, key=x, value=x, mask=input_mask)
         x = self.norm1(x + out)
         out = self.feed_forward(x)
         x = self.norm2(x + out)
-        return x, torch.zeros_like(x).to(x.device), torch.zeros_like(x).to(x.device), 0, self_weights
+        # return x, cm, m, ar_loss, self_weights
+        return x, [], [], torch.full_like(x, 1, device=x.device), self_weights
 
 
 class DecoderLayer(nn.Module):
@@ -245,15 +252,16 @@ class DecoderLayer(nn.Module):
         self.norm3 = nn.LayerNorm(config["model"]["d_model"])
 
     def forward(self, x, trg_mask, src_mask, latent, memories, pos_emb, r_w_bias, r_bias):
-        out, self_weights = self.self_mem_attn(x, key=x, value=x, mask=trg_mask,
-                                               r_emb=pos_emb, r_w_bias=r_w_bias, r_bias=r_bias)
+        out, self_weights, cm, m, ar_loss = self.self_mem_attn(x, key=x, value=x, mask=trg_mask, memories=memories,
+                                                               r_emb=pos_emb, r_w_bias=r_w_bias, r_bias=r_bias)
         # out, self_weights = self.self_mem_attn(x, key=x, value=x, mask=trg_mask)
         x = self.norm1(x + out)
         out, src_weights = self.src_attn(x, key=latent, value=latent, mask=src_mask)
         x = self.norm2(x + out)
         out = self.feed_forward(x)
         x = self.norm3(x + out)
-        return x, torch.zeros_like(x).to(x.device), torch.zeros_like(x).to(x.device), 0, self_weights, src_weights
+        # return x, cm, m, ar_loss, self_weights, src_weights
+        return x, [], [], torch.full_like(x, 1, device=x.device), self_weights, src_weights
 
 
 class MyMemoryAttention(nn.Module):
@@ -323,8 +331,13 @@ class RelMultiHeadedAttention(nn.Module):
         self.linears = (clones(nn.Linear(d_model, d_model, bias=False), 4))  # TODO bias or not?
         self.dropout = nn.Dropout(p=dropout)
         self.scale = 1 / (h ** 0.5)
+        self.compress_mem_fn = ConvCompress(d_model, config["model"]["cmem_ratio"])
+        self.seq_len = config["model"]["seq_len"]
+        self.mem_len = config["model"]["mem_len"]
+        self.cmem_len = config["model"]["cmem_len"]
+        self.reconstruction_attn_dropout = nn.Dropout(config["model"]["reconstruction_attn_dropout"])
 
-    def forward(self, query, key=None, value=None, mask=None, r_emb=None, r_w_bias=None, r_bias=None):
+    def forward(self, query, key=None, value=None, mask=None, memories=None, r_emb=None, r_w_bias=None, r_bias=None):
         """
         :param query: batch_size x q_len x d_model
         :param key: batch_size x k_len x d_model
@@ -336,44 +349,84 @@ class RelMultiHeadedAttention(nn.Module):
         :return: batch_size x q_len x d_model
         """
         n_batches = query.size(0)
-        k_len = query.shape[1]
+
+        if memories is not None:
+            cmem, mem = memories
+            key = torch.cat([cmem, mem, key], dim=1)
+            value = torch.cat([cmem, mem, value], dim=1)
+
+        k_len = key.size(1)
 
         # batch_size x n_head x seq_len x d_head
-        query, key, value = [l(x).view(n_batches, -1, self.h, self.d_out).transpose(1, 2)
-                             for l, x in zip(self.linears, (query, key, value))]
+        q, k, v = [l(x).view(n_batches, -1, self.h, self.d_out).transpose(1, 2)
+                   for l, x in zip(self.linears, (query, key, value))]
 
         r_emb = r_emb[:, -k_len:, :]  # TODO try this (first or last?)
         r_bias = r_bias[:, -k_len:]  # TODO try this (first or last?)
 
-        r_query = query + r_w_bias[None, :, None, :]
+        r_query = q + r_w_bias[None, :, None, :]
 
-        AC = torch.einsum('bnid,bnjd->bnij', r_query, key)
-
-        B_ = torch.einsum('bnid,njd->bnij', query, r_emb)  # r_emb_pe must be 3 4 200
-
+        AC = torch.einsum('bnid,bnjd->bnij', r_query, k)
+        B_ = torch.einsum('bnid,njd->bnij', q, r_emb)  # r_emb_pe must be 3 4 200
         D_ = r_bias[None, :, None]
-
         BD = shift(B_ + D_)  # TODO place original shift
 
         attn_score = AC + BD
         attn_score.mul_(self.scale)
 
-        if mask is not None:
+        if mask is not None:  # TODO expand mask
             if mask.dim() == 2:  # transform linear mask to square mask
                 mask = mask[:, :, None] * mask[:, None, :]
             mask = mask.unsqueeze(1)  # apply same mask to all heads
+            pad_shape = (mask.shape[0], mask.shape[1], mask.shape[2], k_len - query.size(1))
+            pad_mask = torch.full(pad_shape, True, dtype=mask.dtype, device=mask.device)
+            mask = torch.cat([mask, pad_mask], dim=-1)
             attn_score = attn_score.masked_fill(~mask, -1e9)  # TODO empty row becomes 0.005 is it good?
 
         attn_prob = F.softmax(attn_score, dim=-1)
         attn_prob = self.dropout(attn_prob)
 
-        attn_vec = torch.einsum('bnij,bnjd->bnid', attn_prob, value)
-
+        attn_vec = torch.einsum('bnij,bnjd->bnid', attn_prob, v)
         attn_vec = attn_vec.transpose(1, 2).contiguous().view(n_batches, -1, self.h * self.d_out)
 
         attn_out = self.linears[-1](attn_vec)
 
-        return attn_out, attn_prob
+        # memories part
+        ar_loss = torch.zeros(1, requires_grad=True, dtype=q.dtype, device=q.device)
+        m = torch.empty(0, dtype=q.dtype, device=q.device)
+        cm = torch.empty(0, dtype=q.dtype, device=q.device)
+
+        if memories is not None:
+            old_mem = None
+            if mem.size(0) != 0:
+                old_mem = mem[:, :self.seq_len, :]
+                new_cm = self.compress_mem_fn(old_mem)
+                m = torch.cat([mem, query], dim=1)[:, -self.mem_len:, :]
+                cm = torch.cat([cmem, new_cm], dim=1)[:, -self.cmem_len:, :]
+            else:
+                m = query
+                cm = cmem
+
+            # Attention reconstruction
+            if old_mem is not None:
+                h_copy = query.detach().clone()
+                old_mem = torch.detach(old_mem)
+                Q = torch.detach(self.linears[0].weight.data)
+                K = torch.detach(self.linears[1].weight.data)
+                V = torch.detach(self.linears[2].weight.data)
+
+                def attn(hh, mm):
+                    n_batches = hh.shape[0]
+                    hQ = torch.matmul(hh, Q).view(n_batches, -1, self.h, self.d_out).transpose(1, 2)
+                    mK = torch.matmul(mm, K).view(n_batches, -1, self.h, self.d_out).transpose(1, 2)
+                    mV = torch.matmul(mm, V).view(n_batches, -1, self.h, self.d_out).transpose(1, 2)
+                    attention, _ = full_attn(hQ, mK, mV, dropout=self.reconstruction_attn_dropout)
+                    return attention
+
+                new_cm = self.compress_mem_fn(old_mem)
+                ar_loss = F.mse_loss(attn(h_copy, old_mem), attn(h_copy, new_cm))
+
+        return attn_out, attn_prob, cm, m, ar_loss
 
 
 class MultiHeadedAttention(nn.Module):
@@ -521,11 +574,11 @@ def shift(x):
     0, b, c =>  b, c, 0
     d, e, f     d, e, f
     """
-    *_, i, j = x.shape
+    *_, i, j = x.shape  # i=4, j=12
     zero_pad = torch.zeros((*_, i, i), **to(x))
-    x = torch.cat([x, zero_pad], -1)
-    l = i + j - 1
-    x = x.view(*_, -1)
+    x = torch.cat([x, zero_pad], -1)  # i=4, j=26
+    l = i + j - 1  # 20
+    x = x.view(*_, -1)  #
     zero_pad = torch.zeros(*_, -x.size(-1) % l, **to(x))
     shifted = torch.cat([x, zero_pad], -1).view(*_, -1, l)
     return shifted[..., :i, i - 1:]

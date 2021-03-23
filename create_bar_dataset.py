@@ -177,7 +177,7 @@ class NoteRepresentationManager:
 
     def reconstruct_music(self, s):
         """
-        :param s: Tensor song to reconstruct
+        :param s: n_track x n_bar x n_token
         :return: Muspy song
         """
         use_velocity = config["data"]["use_velocity"]

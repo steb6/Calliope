@@ -22,6 +22,8 @@ from utilities import get_prior
 from test import Tester
 import random
 
+# scaler = torch.cuda.amp.GradScaler()
+
 
 class Trainer:
     def __init__(self):
@@ -92,13 +94,14 @@ class Trainer:
         ############
         # ENCODING #
         ############
-        e_mems, e_cmems = get_memories()
+        # with torch.cuda.amp.autocast():
+        e_cmems, e_mems = get_memories()
         for src, src_mask in zip(srcs, src_masks):
-            latent, e_mems, e_cmems, e_attn_loss, sw = self.encoder(src, src_mask, e_mems, e_cmems)
+            latent, e_cmems, e_mems, e_attn_loss, sw = self.encoder(src, src_mask, e_cmems, e_mems)
             enc_self_weights.append(sw)
             e_attn_losses.append(e_attn_loss)
-            e_mems = e_mems.detach()
-            e_cmems = e_cmems.detach()
+            # e_mems = e_mems.detach()
+            # e_cmems = e_cmems.detach()
 
         ############
         # COMPRESS #
@@ -126,11 +129,14 @@ class Trainer:
                 #                    config["train"]["max_tf_prob"] - tf_step * config["train"]["tf_prob_step_reduction"])
                 self.tf_prob = 0.5
 
-                d_mems, d_cmems = get_memories()
+                d_cmems, d_mems = get_memories()
                 predicted = []
                 for trg, trg_mask, src_mask in zip(trgs, trg_masks, src_masks):
-                    out, d_mems, d_cmems, d_attn_loss, self_weight, src_weight = self.decoder(trg, trg_mask, src_mask,
-                                                                                              latent, d_mems, d_cmems)
+                    src_mask = None if not config["train"]["use_src_mask"] else src_mask
+                    out, d_cmems, d_mems, d_attn_loss, self_weight, src_weight = self.decoder(trg, trg_mask,
+                                                                                              src_mask,
+                                                                                              latent, d_cmems,
+                                                                                              d_mems)
                     d_attn_losses.append(d_attn_loss)
                     dec_self_weights.append(self_weight.detach())
                     dec_src_weights.append(src_weight.detach())
@@ -149,36 +155,14 @@ class Trainer:
         outs = []
         d_mems, d_cmems = get_memories()
         for trg, trg_mask, src_mask in zip(trgs, trg_masks, src_masks):
-            out, d_mems, d_cmems, d_attn_loss, self_weight, src_weight = self.decoder(trg, trg_mask, src_mask, latent,
-                                                                                      d_mems, d_cmems)
+            src_mask = None if not config["train"]["use_src_mask"] else src_mask
+            out, d_cmems, d_mems, d_attn_loss, self_weight, src_weight = self.decoder(trg, trg_mask, src_mask,
+                                                                                      latent,
+                                                                                      d_cmems, d_mems)
             d_attn_losses.append(d_attn_loss)
             dec_self_weights.append(self_weight.detach())
             dec_src_weights.append(src_weight.detach())
             outs.append(out)
-
-        # for i in range(len(srcs)):
-        #     # Create SOS tokens
-        #     trg = np.full((4, 1, 1), config["tokens"]["sos"])
-        #     trg = torch.LongTensor(trg).to(config["train"]["device"])
-        #     # Get trg_mask for the bar
-        #     trg_mask = trg_masks[i]
-        #     # Loop till almost end  # TODO if all pad, then skip
-        #     for j in range(config["model"]["seq_len"] - 1):  # for each token of each bar
-        #         if random.random() < self.tf_prob:
-        #             trg = torch.cat((trg, trgs[i, ..., j+1:j+2]), dim=-1)  # teacher forcing, add element j+1
-        #         else:
-        #             # trg_mask = create_trg_mask(trg.cpu().numpy())  # TODO REMOVE
-        #             out, _, _, _, _, _ = self.decoder(trg, trg_mask[..., :(j+1), :(j+1)], src_masks[0], latent, d_mems, d_cmems)
-        #             out = torch.max(out, dim=-1).indices
-        #             trg = torch.cat((trg, out[..., -1:]), dim=-1)
-        #     # trg_mask = create_trg_mask(trg.cpu().numpy())  # TODO REMOVE
-        #     out, d_mems, d_cmems, d_attn_loss, self_weight, src_weight = self.decoder(trg, trg_mask, src_masks[0],
-        #                                                                               latent,
-        #                                                                               d_mems, d_cmems)
-        #     d_attn_losses.append(d_attn_loss)
-        #     dec_self_weights.append(self_weight.detach())
-        #     dec_src_weights.append(src_weight.detach())
-        #     outs.append(out)
 
         # Format results
         outs = torch.stack(outs, dim=0)
@@ -208,20 +192,28 @@ class Trainer:
         # UPDATE GENERATOR #
         ####################
         if self.encoder.training:
-
             self.encoder.zero_grad()
             self.latent_compressor.zero_grad()
             self.decoder.zero_grad()
 
             optimizing_losses = loss + e_attn_losses + d_attn_losses
+
+            # TODO ESPERIMENT
+            # scaler.scale(optimizing_losses).backward()
             optimizing_losses.backward()
 
             torch.nn.utils.clip_grad_norm_(self.encoder.parameters(), 0.1)
             torch.nn.utils.clip_grad_norm_(self.latent_compressor.parameters(), 0.1)
             torch.nn.utils.clip_grad_norm_(self.decoder.parameters(), 0.1)
 
+            # TODO experiment
+            # scaler.step(self.encoder_optimizer)
+            # scaler.step(self.decoder_optimizer)
             self.encoder_optimizer.step()
             self.decoder_optimizer.step()
+
+            # TODO experiment
+            # scaler.update()
 
         if config["train"]["aae"] and self.encoder.training:  # TODO adjust for evaluation
 
@@ -248,11 +240,11 @@ class Trainer:
                     prior = get_prior((config["train"]["batch_size"], config["model"]["d_model"]))  # autograd is intern
                     D_real = self.discriminator(prior).reshape(-1)
 
-                    e_mems, e_cmems = get_memories()
+                    e_cmems, e_mems = get_memories()
                     for src, src_mask in zip(srcs, src_masks):
-                        latent, e_mems, e_cmems, _, _ = self.encoder(src, src_mask, e_mems, e_cmems)
-                        e_mems = e_mems.detach()
-                        e_cmems = e_cmems.detach()
+                        latent, e_cmems, e_mems, _, _ = self.encoder(src, src_mask, e_cmems, e_mems)
+                        # e_mems = e_mems.detach()
+                        # e_cmems = e_cmems.detach()
                     latent = self.latent_compressor(latent)
                     D_fake = self.discriminator(latent).reshape(-1)
 
@@ -281,11 +273,11 @@ class Trainer:
                     p.requires_grad = False  # to avoid computation
 
                 e_attn_losses = []  # TODO experiment
-                e_mems, e_cmems = get_memories()
+                e_cmems, e_mems = get_memories()
                 for src, src_mask in zip(srcs, src_masks):
-                    latent, e_mems, e_cmems, e_attn_loss, _ = self.encoder(src, src_mask, e_mems, e_cmems)
-                    e_mems = e_mems.detach()
-                    e_cmems = e_cmems.detach()
+                    latent, e_cmems, e_mems, e_attn_loss, _ = self.encoder(src, src_mask, e_cmems, e_mems)
+                    # e_mems = e_mems.detach()
+                    # e_cmems = e_cmems.detach()
                     e_attn_losses.append(e_attn_loss)  # TODO experiment
                 latent = self.latent_compressor(latent)
 
@@ -332,17 +324,23 @@ class Trainer:
                                                config["model"]["discriminator_dropout"]).to(config["train"]["device"])
 
         # Create optimizers
-        self.encoder_optimizer = CTOpt(torch.optim.Adam([{"params": self.encoder.parameters()},
-                                                         {"params": self.latent_compressor.parameters()}], lr=0),
-                                       config["train"]["warmup_steps"],
-                                       (config["train"]["lr_min"], config["train"]["lr_max"]),
-                                       config["train"]["decay_steps"], config["train"]["minimum_lr"]
-                                       )
-        self.decoder_optimizer = CTOpt(torch.optim.Adam([{"params": self.latent_decompressor.parameters()},
-                                                         {"params": self.decoder.parameters()}], lr=0),
-                                       config["train"]["warmup_steps"],
-                                       (config["train"]["lr_min"], config["train"]["lr_max"]),
-                                       config["train"]["decay_steps"], config["train"]["minimum_lr"])
+        # self.encoder_optimizer = CTOpt(torch.optim.Adam([{"params": self.encoder.parameters()},
+        #                                                  {"params": self.latent_compressor.parameters()}], lr=0),
+        #                                config["train"]["warmup_steps"],
+        #                                (config["train"]["lr_min"], config["train"]["lr_max"]),
+        #                                config["train"]["decay_steps"], config["train"]["minimum_lr"]
+        #                                )
+        # self.decoder_optimizer = CTOpt(torch.optim.Adam([{"params": self.latent_decompressor.parameters()},
+        #                                                  {"params": self.decoder.parameters()}], lr=0),
+        #                                config["train"]["warmup_steps"],
+        #                                (config["train"]["lr_min"], config["train"]["lr_max"]),
+        #                                config["train"]["decay_steps"], config["train"]["minimum_lr"])
+
+        self.encoder_optimizer = torch.optim.Adam([{"params": self.encoder.parameters()},
+                                                   {"params": self.latent_compressor.parameters()}])
+        self.decoder_optimizer = torch.optim.Adam([{"params": self.latent_decompressor.parameters()},
+                                                   {"params": self.decoder.parameters()}])
+
         if config["train"]["aae"]:
             self.disc_optimizer = CTOpt(torch.optim.Adam([{"params": self.discriminator.parameters()}], lr=0),
                                         config["train"]["warmup_steps"],
@@ -420,17 +418,22 @@ class Trainer:
                 print("Compressing latents")
             else:
                 print("NOT compressing latents")
+            if config["train"]["use_src_mask"]:
+                print("using src mask")
+            else:
+                print("NOT using src mask")
 
         # Setup train
         self.encoder.train()
         self.latent_compressor.train()
+        self.latent_decompressor.train()
         self.decoder.train()
         if config["train"]["aae"]:
             self.discriminator.train()
         desc = "Train epoch " + str(self.epoch) + ", mb " + str(0)
         train_progress = tqdm(total=config["train"]["steps_before_eval"], position=0, leave=True, desc=desc)
         self.step = 0  # -1 to do eval in first step
-        first_batch = None  # TODO remove
+        first = None  # TODO remove
 
         # Main loop
         for self.epoch in range(config["train"]["n_epochs"]):  # for each epoch
@@ -439,12 +442,13 @@ class Trainer:
                 #########
                 # TRAIN #
                 #########
-                if first_batch is None:  # TODO remove
-                    first_batch = batch  # TODO remove
+                if first is None:  # TODO remove
+                    first = batch  # TODO remove
+                second = batch  # TODO remove
                 tr_losses = self.run_mb(batch)
 
                 self.logger.log_losses(tr_losses, self.encoder.training)
-                self.logger.log_stuff(self.encoder_optimizer.lr,
+                self.logger.log_stuff(1,  #self.encoder_optimizer.lr,  # TODO correct
                                       self.latent,
                                       self.disc_optimizer.lr if config["train"]["aae"] else None,
                                       self.gen_optimizer.lr if config["train"]["aae"] else None,
@@ -465,6 +469,7 @@ class Trainer:
 
                     self.encoder.eval()
                     self.latent_compressor.eval()
+                    self.latent_decompressor.eval()
                     self.decoder.eval()
 
                     if config["train"]["aae"]:
@@ -472,10 +477,11 @@ class Trainer:
                     desc = "Eval epoch " + str(self.epoch) + ", mb " + str(song_it)
 
                     # Compute validation score
-                    # first = None  TODO put it back
+                    first = None  # TODO put it back
                     for test in tqdm(ts_loader, position=0, leave=True, desc=desc):  # remember test losses
-                        # if first is None:  TODO put it back
-                        #     first = test  TODO put it back
+                        if first is None:  # TODO put it back
+                            first = test  # TODO put it back
+                        second = test
                         with torch.no_grad():
                             ts_loss = self.run_mb(test)
                         ts_losses.append(ts_loss)
@@ -491,6 +497,7 @@ class Trainer:
                     # eval end
                     self.encoder.train()
                     self.latent_compressor.train()
+                    self.latent_decompressor.train()
                     self.decoder.train()
                     if config["train"]["aae"]:
                         self.discriminator.train()
@@ -530,8 +537,7 @@ class Trainer:
 
                     # RECONSTRUCTION
                     note_manager = NoteRepresentationManager()
-                    test = batch  # TODO remove
-                    to_reconstruct = test
+                    to_reconstruct = first
                     with torch.no_grad():
                         original, reconstructed, limited, acc = self.tester.reconstruct(to_reconstruct, note_manager)
                     prefix = "epoch_" + str(self.epoch) + "_mb_" + str(song_it)
@@ -551,9 +557,8 @@ class Trainer:
                                               "generated")
 
                         # INTERPOLATION
-                        second = test
                         with torch.no_grad():
-                            first, interpolation, limited, second = self.tester.interpolation(note_manager, first_batch,
+                            first, interpolation, limited, second = self.tester.interpolation(note_manager, first,
                                                                                               second)
 
                         self.logger.log_songs(os.path.join(wandb.run.dir, prefix),

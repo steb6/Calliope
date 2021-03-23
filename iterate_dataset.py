@@ -14,7 +14,7 @@ class SongIterator(torch.utils.data.Dataset):
         _, _, songs = next(os.walk(self.dataset_path))
         self.songs = [x.split(".")[0] for x in songs]
         random.shuffle(self.songs)
-        ts_length = config["train"]["batch_size"]  # int(len(songs) * test_size)
+        ts_length = config["train"]["batch_size"]*3  # int(len(songs) * test_size)
         self.ts_set = self.songs[:ts_length]
         self.tr_set = self.songs[ts_length:]
         self.batch_size = batch_size

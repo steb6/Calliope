@@ -21,15 +21,25 @@ def get_prior(shape):
 
 
 def get_memories(n_batch=None):
-    a = 4
-    b = config["model"]["layers"]
-    c = n_batch if n_batch is not None else config["train"]["batch_size"]
-    e = config["model"]["d_model"]
-    device = config["train"]["device"]
-    mem_len = config["model"]["mem_len"]
-    cmem_len = config["model"]["cmem_len"]
-    mems = torch.zeros(a, b, c, mem_len, e, dtype=torch.float32, device=device)
-    cmems = torch.zeros(a, b, c, cmem_len, e, dtype=torch.float32, device=device)
+    # a = 4
+    # b = config["model"]["layers"]
+    # c = n_batch if n_batch is not None else config["train"]["batch_size"]
+    # e = config["model"]["d_model"]
+    # device = config["train"]["device"]
+    # mem_len = config["model"]["mem_len"]
+    # cmem_len = config["model"]["cmem_len"]
+    # mems = torch.zeros(a, b, c, mem_len, e, dtype=torch.float32, device=device)
+    # cmems = torch.zeros(a, b, c, cmem_len, e, dtype=torch.float32, device=device)
+    mems = []
+    cmems = []
+    for _ in range(4):
+        m = []
+        cm = []
+        for _ in range(config["model"]["layers"]):
+            m.append(torch.empty(0, dtype=torch.float32, device=config["train"]["device"]))
+            cm.append(torch.empty(0, dtype=torch.float32, device=config["train"]["device"]))
+        mems.append(m)
+        cmems.append(cm)
     return mems, cmems
 
 
