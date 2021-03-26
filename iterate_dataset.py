@@ -5,6 +5,7 @@ import pickle
 from torch.utils.data import SubsetRandomSampler
 from config import config
 import numpy as np
+import pickle
 
 
 class SongIterator(torch.utils.data.Dataset):
@@ -14,9 +15,14 @@ class SongIterator(torch.utils.data.Dataset):
         _, _, songs = next(os.walk(self.dataset_path))
         self.songs = [x.split(".")[0] for x in songs]
         random.shuffle(self.songs)
-        ts_length = config["train"]["batch_size"]*3  # int(len(songs) * test_size)
-        self.ts_set = self.songs[:ts_length]
-        self.tr_set = self.songs[ts_length:]
+        # ts_length = config["train"]["batch_size"]*3  # int(len(songs) * test_size)
+        ts_length = int(len(songs) * test_size)
+        final_length = int(len(songs) * config["train"]["final_size"])
+        self.final_set = self.songs[0:final_length]
+        with open("test_set_indices.pickle", "wb") as f:
+            pickle.dump(self.final_set, f)
+        self.ts_set = self.songs[final_length:(ts_length + final_length)]
+        self.tr_set = self.songs[(ts_length + final_length):]
         self.batch_size = batch_size
         self.max_len = max_len
         if len(self.tr_set) < batch_size:

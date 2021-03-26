@@ -21,6 +21,8 @@ import time
 from utilities import get_prior
 from test import Tester
 import random
+import dill
+
 
 # scaler = torch.cuda.amp.GradScaler()
 
@@ -95,26 +97,27 @@ class Trainer:
         # ENCODING #
         ############
         # with torch.cuda.amp.autocast():
+        latents = []
         e_cmems, e_mems = get_memories()
         for src, src_mask in zip(srcs, src_masks):
-            latent, e_cmems, e_mems, e_attn_loss, sw = self.encoder(src, src_mask, e_cmems, e_mems)
-            enc_self_weights.append(sw)
+            latent, e_cmems, e_mems, e_attn_loss = self.encoder(src, src_mask,
+                                                                None, None)
+            # enc_self_weights.append(sw)
             e_attn_losses.append(e_attn_loss)
             # e_mems = e_mems.detach()
             # e_cmems = e_cmems.detach()
+            latents.append(latent)
 
         ############
         # COMPRESS #
         ############
         if config["train"]["compress_latents"]:
-            latent = self.latent_compressor(latent)  # in: 3, 4, 200, 256, out: 3, 256
+            latent = self.latent_compressor(latents)  # in: 3, 4, 200, 256, out: 3, 256
 
         self.latent = latent.detach().cpu().numpy()
 
         if config["train"]["compress_latents"]:
-            latent = self.latent_decompressor(latent)  # in 3, 256, out: 3, 4, 200, 256
-
-        latent = latent.transpose(0, 1)  # in: 3, 4, 200, 256 out: 4, 3, 200, 256
+            latents = self.latent_decompressor(latent)  # in 3, 256, out: 3, 4, 200, 256
 
         ############
         # DECODING #
@@ -122,7 +125,7 @@ class Trainer:
         d_attn_losses = []
 
         # TODO simple scheduled sampling for transformer
-        if config["train"]["scheduled_sampling"] and self.step > config["train"]["after_steps_mix_sequences"]:
+        if config["train"]["scheduled_sampling"]:
             for _ in range(1):  # K
                 # tf_step = self.step - config["train"]["after_steps_mix_sequences"]
                 # self.tf_prob = max(config["train"]["min_tf_prob"],
@@ -131,15 +134,13 @@ class Trainer:
 
                 d_cmems, d_mems = get_memories()
                 predicted = []
-                for trg, trg_mask, src_mask in zip(trgs, trg_masks, src_masks):
+                for trg, trg_mask, src_mask, latent in zip(trgs, trg_masks, src_masks, latents):
                     src_mask = None if not config["train"]["use_src_mask"] else src_mask
-                    out, d_cmems, d_mems, d_attn_loss, self_weight, src_weight = self.decoder(trg, trg_mask,
-                                                                                              src_mask,
-                                                                                              latent, d_cmems,
-                                                                                              d_mems)
+                    out, d_cmems, d_mems, d_attn_loss = self.decoder(trg, trg_mask,
+                                                                     src_mask,
+                                                                     latent.transpose(0, 1), d_cmems,
+                                                                     d_mems)
                     d_attn_losses.append(d_attn_loss)
-                    dec_self_weights.append(self_weight.detach())
-                    dec_src_weights.append(src_weight.detach())
                     predicted.append(torch.max(out, dim=-1).indices)
 
                 # add sos at beginning and cut last token
@@ -154,14 +155,13 @@ class Trainer:
         # TODO classic transformer decoding
         outs = []
         d_mems, d_cmems = get_memories()
-        for trg, trg_mask, src_mask in zip(trgs, trg_masks, src_masks):
+        for trg, trg_mask, src_mask, latent in zip(trgs, trg_masks, src_masks, latents):
             src_mask = None if not config["train"]["use_src_mask"] else src_mask
-            out, d_cmems, d_mems, d_attn_loss, self_weight, src_weight = self.decoder(trg, trg_mask, src_mask,
-                                                                                      latent,
-                                                                                      d_cmems, d_mems)
+            out, d_cmems, d_mems, d_attn_loss = self.decoder(trg, trg_mask,
+                                                             src_mask,
+                                                             latent.transpose(0, 1),
+                                                             d_cmems, d_mems)
             d_attn_losses.append(d_attn_loss)
-            dec_self_weights.append(self_weight.detach())
-            dec_src_weights.append(src_weight.detach())
             outs.append(out)
 
         # Format results
@@ -176,17 +176,104 @@ class Trainer:
         losses = (loss.item(), accuracy, e_attn_losses.item(), d_attn_losses.item(), *loss_items)
 
         # LOG IMAGES  # TODO move this (?)
-        # self.test_losses(loss, e_attn_losses, d_attn_losses)
         if self.encoder.training and config["train"]["log_images"]:
+
+            # ENCODER SELF
+            drums_encoder_attn = []
+            for layer in self.encoder.drums_encoder.layers:
+                instrument_attn = []
+                for head in layer.mem_attn.attn[0]:
+                    instrument_attn.append(head)
+                drums_encoder_attn.append(instrument_attn)
+
+            bass_encoder_attn = []
+            for layer in self.encoder.bass_encoder.layers:
+                instrument_attn = []
+                for head in layer.mem_attn.attn[0]:
+                    instrument_attn.append(head)
+                bass_encoder_attn.append(instrument_attn)
+
+            guitar_encoder_attn = []
+            for layer in self.encoder.guitar_encoder.layers:
+                instrument_attn = []
+                for head in layer.mem_attn.attn[0]:
+                    instrument_attn.append(head)
+                guitar_encoder_attn.append(instrument_attn)
+
+            strings_encoder_attn = []
+            for layer in self.encoder.strings_encoder.layers:
+                instrument_attn = []
+                for head in layer.mem_attn.attn[0]:
+                    instrument_attn.append(head)
+                strings_encoder_attn.append(instrument_attn)
+
+            enc_attention = [drums_encoder_attn, bass_encoder_attn, guitar_encoder_attn, strings_encoder_attn]
+
+            # DECODER SELF
+            drums_decoder_attn = []
+            for layer in self.decoder.drums_decoder.layers:
+                instrument_attn = []
+                for head in layer.mem_attn.attn[0]:
+                    instrument_attn.append(head)
+                drums_decoder_attn.append(instrument_attn)
+
+            bass_decoder_attn = []
+            for layer in self.decoder.bass_decoder.layers:
+                instrument_attn = []
+                for head in layer.mem_attn.attn[0]:
+                    instrument_attn.append(head)
+                bass_decoder_attn.append(instrument_attn)
+
+            guitar_decoder_attn = []
+            for layer in self.decoder.guitar_decoder.layers:
+                instrument_attn = []
+                for head in layer.mem_attn.attn[0]:
+                    instrument_attn.append(head)
+                guitar_decoder_attn.append(instrument_attn)
+
+            strings_decoder_attn = []
+            for layer in self.decoder.strings_decoder.layers:
+                instrument_attn = []
+                for head in layer.mem_attn.attn[0]:
+                    instrument_attn.append(head)
+                strings_decoder_attn.append(instrument_attn)
+
+            dec_attention = [drums_decoder_attn, bass_decoder_attn, guitar_decoder_attn, strings_decoder_attn]
+            # DECODER SRC
+            drums_src_attn = []
+            for layer in self.decoder.drums_decoder.layers:
+                instrument_attn = []
+                for head in layer.src_attn.attn[0]:
+                    instrument_attn.append(head)
+                drums_src_attn.append(instrument_attn)
+
+            bass_src_attn = []
+            for layer in self.decoder.bass_decoder.layers:
+                instrument_attn = []
+                for head in layer.src_attn.attn[0]:
+                    instrument_attn.append(head)
+                bass_src_attn.append(instrument_attn)
+
+            guitar_src_attn = []
+            for layer in self.decoder.guitar_decoder.layers:
+                instrument_attn = []
+                for head in layer.src_attn.attn[0]:
+                    instrument_attn.append(head)
+                guitar_src_attn.append(instrument_attn)
+
+            strings_src_attn = []
+            for layer in self.decoder.strings_decoder.layers:
+                instrument_attn = []
+                for head in layer.src_attn.attn[0]:
+                    instrument_attn.append(head)
+                strings_src_attn.append(instrument_attn)
+
+            src_attention = [drums_src_attn, bass_src_attn, guitar_src_attn, strings_src_attn]
+
             if self.step % config["train"]["after_steps_log_images"] == 0:
                 print("Logging images...")
                 self.logger.log_latent(self.latent)
-                enc_self_weights = torch.stack(enc_self_weights)
-                dec_self_weights = torch.stack(dec_self_weights)
-                dec_src_weights = torch.stack(dec_src_weights)
-                self.logger.log_attn_heatmap(enc_self_weights, dec_self_weights, dec_src_weights)
-                self.logger.log_memories(e_mems, e_cmems)
-                self.logger.log_examples(srcs, trgs)
+                self.logger.log_attn_heatmap(enc_attention, dec_attention, src_attention)
 
         ####################
         # UPDATE GENERATOR #
@@ -204,6 +291,7 @@ class Trainer:
 
             torch.nn.utils.clip_grad_norm_(self.encoder.parameters(), 0.1)
             torch.nn.utils.clip_grad_norm_(self.latent_compressor.parameters(), 0.1)
+            torch.nn.utils.clip_grad_norm_(self.latent_decompressor.parameters(), 0.1)
             torch.nn.utils.clip_grad_norm_(self.decoder.parameters(), 0.1)
 
             # TODO experiment
@@ -241,11 +329,13 @@ class Trainer:
                     D_real = self.discriminator(prior).reshape(-1)
 
                     e_cmems, e_mems = get_memories()
+                    latents = []
                     for src, src_mask in zip(srcs, src_masks):
-                        latent, e_cmems, e_mems, _, _ = self.encoder(src, src_mask, e_cmems, e_mems)
+                        latent, e_cmems, e_mems, _ = self.encoder(src, src_mask, e_cmems, e_mems)
                         # e_mems = e_mems.detach()
-                        # e_cmems = e_cmems.detach()
-                    latent = self.latent_compressor(latent)
+                        # e_cmems = e_cmems.detach
+                        latents.append(latent)
+                    latent = self.latent_compressor(latents)
                     D_fake = self.discriminator(latent).reshape(-1)
 
                     gradient_penalty = calc_gradient_penalty(self.discriminator, prior.data, latent.data)
@@ -257,8 +347,6 @@ class Trainer:
 
                     self.discriminator.zero_grad()
                     loss_critic.backward(retain_graph=True)
-
-                    # torch.nn.utils.clip_grad_norm_(self.discriminator.parameters(), 0.1)  # TODO experiment
 
                     self.disc_optimizer.step(lr=self.encoder_optimizer.lr)
 
@@ -274,12 +362,14 @@ class Trainer:
 
                 e_attn_losses = []  # TODO experiment
                 e_cmems, e_mems = get_memories()
+                latents = []
                 for src, src_mask in zip(srcs, src_masks):
-                    latent, e_cmems, e_mems, e_attn_loss, _ = self.encoder(src, src_mask, e_cmems, e_mems)
+                    latent, e_cmems, e_mems, e_attn_loss = self.encoder(src, src_mask, e_cmems, e_mems)
                     # e_mems = e_mems.detach()
                     # e_cmems = e_cmems.detach()
+                    latents.append(latent)
                     e_attn_losses.append(e_attn_loss)  # TODO experiment
-                latent = self.latent_compressor(latent)
+                latent = self.latent_compressor(latents)
 
                 G = self.discriminator(latent).reshape(-1)
 
@@ -292,9 +382,6 @@ class Trainer:
                 self.encoder.zero_grad()
                 self.latent_compressor.zero_grad()
                 loss_gen.backward()
-
-                # torch.nn.utils.clip_grad_norm_(self.encoder.parameters(), 0.1)  # TODO experiment
-                # torch.nn.utils.clip_grad_norm_(self.latent_compressor.parameters(), 0.1)  # TODO experiment
 
                 self.gen_optimizer.step(lr=self.encoder_optimizer.lr)
 
@@ -324,22 +411,22 @@ class Trainer:
                                                config["model"]["discriminator_dropout"]).to(config["train"]["device"])
 
         # Create optimizers
-        # self.encoder_optimizer = CTOpt(torch.optim.Adam([{"params": self.encoder.parameters()},
-        #                                                  {"params": self.latent_compressor.parameters()}], lr=0),
-        #                                config["train"]["warmup_steps"],
-        #                                (config["train"]["lr_min"], config["train"]["lr_max"]),
-        #                                config["train"]["decay_steps"], config["train"]["minimum_lr"]
-        #                                )
-        # self.decoder_optimizer = CTOpt(torch.optim.Adam([{"params": self.latent_decompressor.parameters()},
-        #                                                  {"params": self.decoder.parameters()}], lr=0),
-        #                                config["train"]["warmup_steps"],
-        #                                (config["train"]["lr_min"], config["train"]["lr_max"]),
-        #                                config["train"]["decay_steps"], config["train"]["minimum_lr"])
+        self.encoder_optimizer = CTOpt(torch.optim.Adam([{"params": self.encoder.parameters()},
+                                                         {"params": self.latent_compressor.parameters()}], lr=0),
+                                       config["train"]["warmup_steps"],
+                                       (config["train"]["lr_min"], config["train"]["lr_max"]),
+                                       config["train"]["decay_steps"], config["train"]["minimum_lr"]
+                                       )
+        self.decoder_optimizer = CTOpt(torch.optim.Adam([{"params": self.latent_decompressor.parameters()},
+                                                         {"params": self.decoder.parameters()}], lr=0),
+                                       config["train"]["warmup_steps"],
+                                       (config["train"]["lr_min"], config["train"]["lr_max"]),
+                                       config["train"]["decay_steps"], config["train"]["minimum_lr"])
 
-        self.encoder_optimizer = torch.optim.Adam([{"params": self.encoder.parameters()},
-                                                   {"params": self.latent_compressor.parameters()}])
-        self.decoder_optimizer = torch.optim.Adam([{"params": self.latent_decompressor.parameters()},
-                                                   {"params": self.decoder.parameters()}])
+        # self.encoder_optimizer = torch.optim.Adam([{"params": self.encoder.parameters()},
+        #                                            {"params": self.latent_compressor.parameters()}])
+        # self.decoder_optimizer = torch.optim.Adam([{"params": self.latent_decompressor.parameters()},
+        #                                            {"params": self.decoder.parameters()}])
 
         if config["train"]["aae"]:
             self.disc_optimizer = CTOpt(torch.optim.Adam([{"params": self.discriminator.parameters()}], lr=0),
@@ -388,6 +475,7 @@ class Trainer:
             assert given <= max_range, "Given {} as input to model with max range {}".format(given, max_range)
             print("Giving", given, "as input to model with a maximum range of", max_range)
             print("Giving", len(tr_loader), "training samples and", len(ts_loader), "test samples")
+            print("Final set has size", len(dataset.final_set))
             print("Model has", config["model"]["layers"], "layers")
             print("Batch size is", config["train"]["batch_size"])
             print("d_model is", config["model"]["d_model"])
@@ -433,7 +521,7 @@ class Trainer:
         desc = "Train epoch " + str(self.epoch) + ", mb " + str(0)
         train_progress = tqdm(total=config["train"]["steps_before_eval"], position=0, leave=True, desc=desc)
         self.step = 0  # -1 to do eval in first step
-        first = None  # TODO remove
+        first_batch = None  # TODO remove
 
         # Main loop
         for self.epoch in range(config["train"]["n_epochs"]):  # for each epoch
@@ -442,13 +530,13 @@ class Trainer:
                 #########
                 # TRAIN #
                 #########
-                if first is None:  # TODO remove
-                    first = batch  # TODO remove
-                second = batch  # TODO remove
+                if first_batch is None:  # TODO remove
+                    first_batch = batch  # TODO remove
+                second_batch = batch  # TODO remove
                 tr_losses = self.run_mb(batch)
 
                 self.logger.log_losses(tr_losses, self.encoder.training)
-                self.logger.log_stuff(1,  #self.encoder_optimizer.lr,  # TODO correct
+                self.logger.log_stuff(self.encoder_optimizer.lr,
                                       self.latent,
                                       self.disc_optimizer.lr if config["train"]["aae"] else None,
                                       self.gen_optimizer.lr if config["train"]["aae"] else None,
@@ -477,11 +565,11 @@ class Trainer:
                     desc = "Eval epoch " + str(self.epoch) + ", mb " + str(song_it)
 
                     # Compute validation score
-                    first = None  # TODO put it back
+                    first_batch = None  # TODO put it back
                     for test in tqdm(ts_loader, position=0, leave=True, desc=desc):  # remember test losses
-                        if first is None:  # TODO put it back
-                            first = test  # TODO put it back
-                        second = test
+                        if first_batch is None:  # TODO put it back
+                            first_batch = test  # TODO put it back
+                        second_batch = test
                         with torch.no_grad():
                             ts_loss = self.run_mb(test)
                         ts_losses.append(ts_loss)
@@ -511,17 +599,16 @@ class Trainer:
                 if (self.step % config["train"]["after_steps_save_model"]) == 0:
                     full_path = self.save_path + os.sep + str(self.step)
                     os.makedirs(full_path)
-                    print("NOT SAVING MODEL; SOLVE PROBLEM")
-                    # print("Saving last model in " + full_path + ", DO NOT INTERRUPT")
-                    # torch.save(self.encoder, os.path.join(full_path, "encoder.pt"))  # TODO readd
-                    # torch.save(self.latent_compressor, os.path.join(full_path,
-                    #                                                 "latent_compressor.pt"))
-                    # torch.save(self.latent_decompressor, os.path.join(full_path,
-                    #                                                   "latent_decompressor.pt"))
-                    # torch.save(self.decoder, os.path.join(full_path, "decoder.pt"))
-                    # if config["train"]["aae"]:
-                    #     torch.save(self.discriminator, os.path.join(full_path, "discriminator.pt"))
-                    # print("Model saved")
+                    print("Saving last model in " + full_path + ", DO NOT INTERRUPT")
+                    torch.save(self.encoder, os.path.join(full_path, "encoder.pt"), pickle_module=dill)  # TODO readd
+                    torch.save(self.latent_compressor, os.path.join(full_path,
+                                                                    "latent_compressor.pt"), pickle_module=dill)
+                    torch.save(self.latent_decompressor, os.path.join(full_path,
+                                                                      "latent_decompressor.pt"), pickle_module=dill)
+                    torch.save(self.decoder, os.path.join(full_path, "decoder.pt"), pickle_module=dill)
+                    if config["train"]["aae"]:
+                        torch.save(self.discriminator, os.path.join(full_path, "discriminator.pt"), pickle_module=dill)
+                    print("Model saved")
 
                 ########
                 # TEST #
@@ -537,7 +624,7 @@ class Trainer:
 
                     # RECONSTRUCTION
                     note_manager = NoteRepresentationManager()
-                    to_reconstruct = first
+                    to_reconstruct = first_batch
                     with torch.no_grad():
                         original, reconstructed, limited, acc = self.tester.reconstruct(to_reconstruct, note_manager)
                     prefix = "epoch_" + str(self.epoch) + "_mb_" + str(song_it)
@@ -558,8 +645,8 @@ class Trainer:
 
                         # INTERPOLATION
                         with torch.no_grad():
-                            first, interpolation, limited, second = self.tester.interpolation(note_manager, first,
-                                                                                              second)
+                            first, interpolation, limited, second = self.tester.interpolation(note_manager, first_batch,
+                                                                                              second_batch)
 
                         self.logger.log_songs(os.path.join(wandb.run.dir, prefix),
                                               [first, interpolation, limited, second],

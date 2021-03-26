@@ -66,9 +66,9 @@ class Logger:
     @staticmethod
     def log_attn_heatmap(enc_self_weights, dec_self_weights, dec_src_weights):
         # seq, tracks, layer, batch, heads, attn1, attn2
-        enc_self_weights = torch.mean(enc_self_weights[:, :, :, 0, ...], dim=0).detach().cpu().numpy()
-        dec_self_weights = torch.mean(dec_self_weights[:, :, :, 0, ...], dim=0).detach().cpu().numpy()
-        dec_src_weights = torch.mean(dec_src_weights[:, :, :, 0, ...], dim=0).detach().cpu().numpy()
+        # enc_self_weights = torch.mean(enc_self_weights[:, :, :, 0, ...], dim=0).detach().cpu().numpy()
+        # dec_self_weights = torch.mean(dec_self_weights[:, :, :, 0, ...], dim=0).detach().cpu().numpy()
+        # dec_src_weights = torch.mean(dec_src_weights[:, :, :, 0, ...], dim=0).detach().cpu().numpy()
         # tracks, layer, heads, attn1, attn2
 
         instruments = ["drums", "bass", "guitar", "strings"]
@@ -84,14 +84,14 @@ class Logger:
                     for c2 in np.unique(condition2):
                         T.append({'layer': c1,
                                   'head': c2,
-                                  'picture': weight[i, c1, c2, ...],
+                                  'picture': weight[i][c1][c2].detach().cpu().numpy(),
                                   })
                 df = pd.DataFrame(T)
-                true_height = weight.shape[-2]
-                true_width = weight.shape[-1]
-                aspect = true_width/true_height
+                # true_height = weight[0][0][0].detach().cpu().numpy()
+                # true_width = weight.shape[-1]
+                # aspect = true_width/true_height
                 if w != 2:
-                    grid = sns.FacetGrid(df, row='layer', col='head', aspect=aspect,
+                    grid = sns.FacetGrid(df, row='layer', col='head',  # aspect=aspect,
                                          row_order=list(reversed(range(config["model"]["layers"]))))
                 else:
                     grid = sns.FacetGrid(df, row='layer', col='head',

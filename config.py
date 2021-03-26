@@ -6,23 +6,25 @@ import numpy as np
 remote = os.getcwd() != 'C:\\Users\\berti\\PycharmProjects\\MusAE'
 
 max_bar_length = 200  # for preprocessing, seq_len, mem_len e cmem_len
-n_bars = 1
+n_bars = 4
 
 config = {
     "train": {
         # MODALITIES
+        "use_memories": False,
         "use_src_mask": False,
         "scheduled_sampling": True,
-        "compress_latents": False,
+        "compress_latents": True,
         "verbose": True,
-        "make_songs": True,  # True if remote else False,
-        "log_images": False,
+        "make_songs": False,  # True if remote else False,
+        "log_images": True,
         "do_eval": True,
-        "aae": False,
+        "aae": True,
         "test_losses": False,
         "device": "cuda" if remote else "cuda",
-        "batch_size": 16 if remote else 3,  # 128 for 1 layer, 30 for 6 layer
-        "test_size": 0.0001 if remote else 0.5,  # 0.00001
+        "batch_size": 4 if remote else 3,  # 128 for 1 layer, 30 for 6 layer
+        "test_size": 0.001 if remote else 0.1,  # 0.00001
+        "final_size": 0.1,
         "n_workers": 0,
         "n_epochs": 25000,
         # LOGS AND GENERATIONS
@@ -36,21 +38,20 @@ config = {
         "interpolation_timesteps_length": 1,  # number of bar for each timesteps
         # "test_loss": False,
         # LR SCHEDULE
-        "warmup_steps": 4000,
-        "lr_min": 1e-4,
-        "lr_max": 1e-3,
-        "decay_steps": 50000,
-        "minimum_lr": 1e-4,  # USE ONLY THIS  # 5e-5 or 1e-5
+        "warmup_steps": 2500,
+        "lr_min": 1e-6,
+        "lr_max": 3e-4,
+        "decay_steps": 100000,
+        "minimum_lr": 1e-6,  # USE ONLY THIS  # 5e-5 or 1e-5
         "lr": 1e-4,
         # AAE PART
         "train_aae_after_steps": 0,
-        "increase_beta_every": 4000 if remote else 200,  # was 2000
-        "max_beta": 1 if remote else 1,
+        "increase_beta_every": 1 if remote else 1,  # was 4000
+        "max_beta": 0.1,
         "lambda": 10,
         "critic_iterations": 5,
         "top_k_mixed_embeddings": 5,
         # TF SCHEDULE
-        "after_steps_mix_sequences": 0,
         "min_tf_prob": 0.1,
         "max_tf_prob": 1.,
         "tf_prob_step_reduction": 1e-4 if remote else 1e-3  # 5e-4 seems good
@@ -76,7 +77,7 @@ config = {
         "max_bars": 200,
         "use_velocity": False,
         "reconstruction_programs": [0, 0, 32, 40],
-        "early_stop": 300000 if remote else 100000,  # set this to 0 to disable early stop
+        "early_stop": 0 if remote else 100,  # set this to 0 to disable early stop
         "resolution": 24,
         "tempo": 120,
         "velocities_total": (0, 127),  # using min max scaling, limits are inclusive
