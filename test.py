@@ -22,7 +22,6 @@ class Tester:
 
     def interpolation(self, note_manager, first, second):
         # Encode first
-        e_cmems, e_mems = get_memories()
         srcs, _, src_masks, _, _ = first
 
         srcs = torch.LongTensor(srcs.long()).to(config["train"]["device"])[:1].transpose(0, 2)
@@ -30,19 +29,18 @@ class Tester:
 
         first_latents = []
         for src, src_mask in zip(srcs, src_masks):
-            latent, e_cmems, e_mems, e_attn_loss = self.encoder(src, src_mask, e_cmems, e_mems)
+            latent = self.encoder(src, src_mask)
             first_latents.append(latent)
         first_latent = self.latent_compressor(first_latents)
 
         # Encode second
-        e_cmems, e_mem = get_memories()
         srcs, _, src_masks, _, _ = second
         srcs = torch.LongTensor(srcs.long()).to(config["train"]["device"])[:1].transpose(0, 2)
         src_masks = torch.BoolTensor(src_masks).to(config["train"]["device"])[:1].transpose(0, 2)
 
         second_latents = []
         for src, src_mask in zip(srcs, src_masks):
-            latent, e_cmems, e_mems, e_attn_loss = self.encoder(src, src_mask, e_cmems, e_mems)
+            latent = self.encoder(src, src_mask)
             second_latents.append(latent)
         second_latent = self.latent_compressor(second_latents)
 
@@ -90,17 +88,18 @@ class Tester:
     def greedy_decode(self, latents, n, desc):
         outs = []
         outs_limited = []
-        cmems, mems = get_memories()
 
         for i in tqdm(range(n), position=0, leave=True, desc=desc):
             trg = np.full((4, 1, 1), config["tokens"]["sos"])  # track batch tok
             trg = torch.LongTensor(trg).to(config["train"]["device"])
             for j in range(config["model"]["seq_len"] - 1):  # for each token of each bar
-                out, _, _, _ = self.decoder(trg, None, None, latents[i].transpose(0, 1), cmems, mems)
+                trg_mask = create_trg_mask(trg.cpu().numpy())
+                out = self.decoder(trg, trg_mask, latents[i].transpose(0, 1))
                 out = torch.max(out, dim=-1).indices
                 trg = torch.cat((trg, out[..., -1:]), dim=-1)
 
-            out, cmems, mems, _ = self.decoder(trg, None, None, latents[i].transpose(0, 1), cmems, mems)
+            trg_mask = create_trg_mask(trg.cpu().numpy())
+            out = self.decoder(trg, trg_mask, latents[i].transpose(0, 1))
             out = torch.max(out, dim=-1).indices
             outs.append(copy.deepcopy(out))
             for t in range(len(out)):  # for each track
@@ -129,10 +128,9 @@ class Tester:
         src_masks = torch.BoolTensor(src_masks).to(config["train"]["device"])[:1].transpose(0, 2)
         trg_masks = torch.BoolTensor(trg_masks).to(config["train"]["device"])[:1].transpose(0, 2)
 
-        e_cmems, e_mems = get_memories()
         latents = []
         for src, src_mask in zip(srcs, src_masks):
-            latent, e_cmems, e_mems, _ = self.encoder(src, src_mask, None, None)
+            latent = self.encoder(src, src_mask)
             latents.append(latent)
 
         if config["train"]["compress_latents"]:

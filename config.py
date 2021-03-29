@@ -6,23 +6,24 @@ import numpy as np
 remote = os.getcwd() != 'C:\\Users\\berti\\PycharmProjects\\MusAE'
 
 max_bar_length = 200  # for preprocessing, seq_len, mem_len e cmem_len
-n_bars = 4
+n_bars = 1
 
 config = {
     "train": {
         # MODALITIES
         "use_memories": False,
         "use_src_mask": False,
+        "use_rel_pos": True,
         "scheduled_sampling": True,
         "compress_latents": True,
         "verbose": True,
-        "make_songs": False,  # True if remote else False,
-        "log_images": True,
-        "do_eval": True,
+        "make_songs": True,
+        "log_images": False if remote else False,
+        "do_eval": False if remote else False,
         "aae": True,
         "test_losses": False,
         "device": "cuda" if remote else "cuda",
-        "batch_size": 4 if remote else 3,  # 128 for 1 layer, 30 for 6 layer
+        "batch_size": 8 if remote else 3,  # 128 for 1 layer, 30 for 6 layer
         "test_size": 0.001 if remote else 0.1,  # 0.00001
         "final_size": 0.1,
         "n_workers": 0,
@@ -39,7 +40,7 @@ config = {
         # "test_loss": False,
         # LR SCHEDULE
         "warmup_steps": 2500,
-        "lr_min": 1e-6,
+        "lr_min": 1e-4,
         "lr_max": 3e-4,
         "decay_steps": 100000,
         "minimum_lr": 1e-6,  # USE ONLY THIS  # 5e-5 or 1e-5
