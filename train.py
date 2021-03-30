@@ -457,6 +457,15 @@ class Trainer:
                 print("Using relative positional encoding")
             else:
                 print("NOT using relative positional encoding")
+            if remote:
+                wandb.save("compress_latents.py")
+                wandb.save("train.py")
+                wandb.save("config.py")
+                wandb.save("test.py")
+                wandb.save("loss_computer.py")
+                wandb.save("utilities.py")
+                wandb.save("discriminator.py")
+                wandb.save("compressive_transformer.py")
 
         # Setup train
         self.encoder.train()
@@ -571,7 +580,7 @@ class Trainer:
 
                     # RECONSTRUCTION
                     note_manager = NoteRepresentationManager()
-                    to_reconstruct = first_batch
+                    to_reconstruct = second_batch
                     with torch.no_grad():
                         original, reconstructed, limited, acc = self.tester.reconstruct(to_reconstruct, note_manager)
                     prefix = "epoch_" + str(self.epoch) + "_mb_" + str(song_it)

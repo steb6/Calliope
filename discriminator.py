@@ -20,10 +20,9 @@ class Discriminator(nn.Module):
         self.dropout = dropout
 
     def forward(self, x):
-        x = F.dropout(self.lin1(x), p=self.dropout, training=self.training)
+        x = self.lin1(x)
         x = F.leaky_relu(x)
-        # x = self.norm1(x)
-        x = F.dropout(self.lin2(x), p=self.dropout, training=self.training)
+        x = self.lin2(x)
         x = self.norm2(x)
         x = F.leaky_relu(x)
         x = self.lin3(x)
