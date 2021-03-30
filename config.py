@@ -44,7 +44,7 @@ config = {
         "lr_max": 3e-4,
         "decay_steps": 100000,
         "minimum_lr": 1e-6,  # USE ONLY THIS  # 5e-5 or 1e-5
-        "lr": 1e-4,
+        "lr": 3e-4,
         # AAE PART
         "train_aae_after_steps": 0,
         "increase_beta_every": 1 if remote else 1,  # was 4000

@@ -278,15 +278,16 @@ class Trainer:
                 for p in self.discriminator.parameters():
                     p.requires_grad = True
 
+                latents = []
+                for src, src_mask in zip(srcs, src_masks):
+                    latent = self.encoder(src, src_mask)
+                    latents.append(latent)
+                latent = self.latent_compressor(latents)
+
                 for _ in range(config["train"]["critic_iterations"]):
                     prior = get_prior((config["train"]["batch_size"], config["model"]["d_model"]))  # autograd is intern
                     D_real = self.discriminator(prior).reshape(-1)
 
-                    latents = []
-                    for src, src_mask in zip(srcs, src_masks):
-                        latent = self.encoder(src, src_mask)
-                        latents.append(latent)
-                    latent = self.latent_compressor(latents)
                     D_fake = self.discriminator(latent).reshape(-1)
 
                     gradient_penalty = calc_gradient_penalty(self.discriminator, prior.data, latent.data)

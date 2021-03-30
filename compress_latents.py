@@ -89,6 +89,7 @@ class LatentCompressor(nn.Module):
         latent = latent.reshape(n_batch, d_model*4)  # out: 1 1024
 
         latent = F.dropout(self.compressor3(latent), p=0.1, training=self.training)  # out: 1 256
+        # latent = self.norm3(latent)
 
         return latent
 
