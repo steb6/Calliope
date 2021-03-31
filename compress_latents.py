@@ -68,31 +68,38 @@ class LatentCompressor(nn.Module):
         self.compressor3 = nn.Linear(d_model*4, d_model)
         self.norm3 = nn.LayerNorm(d_model)
 
-        self.compressor_simple = nn.Linear(d_model*4, d_model)
+        self.compressor_simple = nn.Linear(d_model*n_bars, d_model)
 
     def forward(self, latents):  # TODO multibar
         """
         :param latents: list(n_batch n_bars n_tok d_model)
         :return: n_batch d_model
         """
-        latent = latents[0]
-        n_batch, n_track, seq_len, d_model = latent.shape  # out: 1 4 200 256
+        out_latents = []
+        n_batch, n_track, seq_len, d_model = latents[0].shape  # out: 1 4 200 256
 
-        latent = self.compressor1(latent)  # out: 1 4 200 32
-        latent = F.leaky_relu(latent)
-        # latent = self.norm1(latent)
+        for latent in latents:
+            latent = self.compressor1(latent)  # out: 1 4 200 32
+            latent = F.leaky_relu(latent)
 
-        latent = latent.reshape(n_batch, n_track, seq_len*(d_model//8))  # out: 1 4 6400
+            latent = latent.reshape(n_batch, n_track, seq_len*(d_model//8))  # out: 1 4 6400
 
-        latent = self.compressor2(latent)  # out: 1 4 256
-        latent = self.norm2(latent)
-        latent = F.leaky_relu(latent)
+            latent = self.compressor2(latent)  # out: 1 4 256
+            latent = self.norm2(latent)
+            latent = F.leaky_relu(latent)
 
-        latent = latent.reshape(n_batch, d_model*4)  # out: 1 1024
+            latent = latent.reshape(n_batch, d_model*4)  # out: 1 1024
 
-        latent = self.compressor3(latent)  # out: 1 256
-        # latent = self.norm3(latent)
+            latent = self.compressor3(latent)  # out: 1 256
+            latent = self.norm3(latent)
+            latent = F.leaky_relu(latent)
 
+            out_latents.append(latent)
+
+        latents = torch.stack(out_latents, dim=1)
+        latents = latents.reshape(n_batch, -1)
+
+        latent = self.compressor_simple(latents)
         return latent
 
 
@@ -109,6 +116,8 @@ class LatentDecompressor(nn.Module):
         self.decompressor3 = nn.Linear(d_model, d_model*4)
         self.norm0 = nn.LayerNorm(d_model)
 
+        self.decompressor_simple = nn.Linear(d_model, d_model*n_bars)
+
     def forward(self, latent):  # 1 1000
         """
         # TODO add list
@@ -116,19 +125,29 @@ class LatentDecompressor(nn.Module):
         :return: list(n_batch n_track n_tok d_model)
         """
         n_batch = latent.shape[0]  # 1 256
-        latent = self.decompressor3(latent)  # out: 1 1024
-        latent = F.leaky_relu(latent)
-        # latent = self.norm2(latent)
+        out_latents = []
 
-        latent = latent.reshape(n_batch, 4, self.d_model)  # out: 1 4 256
+        latents = self.decompressor_simple(latent)
+        latents = F.leaky_relu(latents)
 
-        latent = self.decompressor2(latent)  # out:  # 1 4 6400
-        latent = self.norm1(latent)
-        latent = F.leaky_relu(latent)
+        latents = latents.reshape(n_batch, n_bars, self.d_model)
+        latents = latents.transpose(0, 1)  # n_bars n_batch d_model
 
-        latent = latent.reshape(n_batch, 4, max_bar_length, self.d_model//8)  # out: 1 4 200 32
+        for latent in latents:
 
-        latent = self.decompressor1(latent)  # out: 1 4 200 256
-        # latent = self.norm0(latent)
+            latent = self.decompressor3(latent)  # out: 1 1024
+            latent = self.norm2(latent)
+            latent = F.leaky_relu(latent)
 
-        return [latent]
+            latent = latent.reshape(n_batch, 4, self.d_model)  # out: 1 4 256
+
+            latent = self.decompressor2(latent)  # out:  # 1 4 6400
+            latent = self.norm1(latent)
+            latent = F.leaky_relu(latent)
+
+            latent = latent.reshape(n_batch, 4, max_bar_length, self.d_model//8)  # out: 1 4 200 32
+
+            latent = self.decompressor1(latent)  # out: 1 4 200 256
+            out_latents.append(latent)
+
+        return out_latents

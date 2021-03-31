@@ -6,7 +6,7 @@ import numpy as np
 remote = os.getcwd() != 'C:\\Users\\berti\\PycharmProjects\\MusAE'
 
 max_bar_length = 200  # for preprocessing, seq_len, mem_len e cmem_len
-n_bars = 1
+n_bars = 4
 
 config = {
     "train": {
@@ -18,8 +18,8 @@ config = {
         "compress_latents": True,
         "verbose": True,
         "make_songs": True,
-        "log_images": False if remote else False,
-        "do_eval": False if remote else False,
+        "log_images": True if remote else False,
+        "do_eval": True if remote else False,
         "aae": True,
         "test_losses": False,
         "device": "cuda" if remote else "cuda",
@@ -45,6 +45,9 @@ config = {
         "decay_steps": 100000,
         "minimum_lr": 1e-6,  # USE ONLY THIS  # 5e-5 or 1e-5
         "lr": 3e-4,
+        # SCHEDULING
+        "after_steps_mix_sequences": 50000 if remote else 500,
+        "after_steps_train_aae": 100000 if remote else 1000,
         # AAE PART
         "train_aae_after_steps": 0,
         "increase_beta_every": 1 if remote else 1,  # was 4000

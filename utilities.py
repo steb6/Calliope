@@ -9,7 +9,7 @@ from torch.autograd import Variable
 
 
 def get_prior(shape):
-    return Variable(torch.randn(*shape) * 3.).to(config["train"]["device"])  # single gaussian
+    return Variable(torch.randn(*shape) * 5.).to(config["train"]["device"])  # single gaussian
 
 
 def get_memories(n_batch=None):

@@ -105,7 +105,7 @@ class Trainer:
         # DECODING #
         ############
         # Scheduled sampling for transformer
-        if config["train"]["scheduled_sampling"]:
+        if config["train"]["scheduled_sampling"] and self.step > config["train"]["after_steps_mix_sequences"]:
             for _ in range(1):  # K
                 self.tf_prob = 0.5
 
@@ -257,7 +257,7 @@ class Trainer:
             self.encoder_optimizer.step()
             self.decoder_optimizer.step()
 
-        if config["train"]["aae"] and self.encoder.training:
+        if config["train"]["aae"] and self.encoder.training and self.step > config["train"]["after_steps_train_aae"]:
 
             if self.step % config["train"]["increase_beta_every"] == 0 and self.beta < config["train"]["max_beta"]:
                 self.beta += 0.1
@@ -491,14 +491,15 @@ class Trainer:
                 second_batch = batch
                 tr_losses = self.run_mb(batch)
 
-                self.logger.log_losses(tr_losses, self.encoder.training)
-                self.logger.log_stuff(self.encoder_optimizer.lr,
-                                      self.latent,
-                                      self.disc_optimizer.lr if config["train"]["aae"] else None,
-                                      self.gen_optimizer.lr if config["train"]["aae"] else None,
-                                      self.beta if config["train"]["aae"] else None,
-                                      get_prior(self.latent.shape) if config["train"]["aae"] else None,
-                                      self.tf_prob)
+                if self.step % 10 == 0:
+                    self.logger.log_losses(tr_losses, self.encoder.training)
+                    self.logger.log_stuff(self.encoder_optimizer.lr,
+                                          self.latent,
+                                          self.disc_optimizer.lr if config["train"]["aae"] else None,
+                                          self.gen_optimizer.lr if config["train"]["aae"] else None,
+                                          self.beta if config["train"]["aae"] else None,
+                                          get_prior(self.latent.shape) if config["train"]["aae"] else None,
+                                          self.tf_prob)
                 if self.step == 0:
                     print("Latent shape is:", self.latent.shape)
                 train_progress.update()
