@@ -19,20 +19,15 @@ class CompressiveEncoder(nn.Module):
                  ff_dropout=config["model"]["ff_dropout"],
                  layers=config["model"]["layers"],
                  vocab_size=config["tokens"]["vocab_size"],
-                 seq_len=config["model"]["seq_len"],
-                 mem_len=config["model"]["mem_len"],
-                 cmem_len=config["model"]["cmem_len"],
-                 cmem_ratio=config["model"]["cmem_ratio"],
                  ):
         super(CompressiveEncoder, self).__init__()
-        assert mem_len >= seq_len, 'length of memory should be at least the sequence length'
-        assert cmem_len >= (mem_len // cmem_ratio), f'len of cmem should be at least ' f'{int(mem_len // cmem_ratio)}' \
-                                                    f' but it is ' f'{int(cmem_len)}'
 
         c = copy.deepcopy
 
-        # self_attn = RelMultiHeadedAttention(heads, d_model, dropout=0.1)
-        self_attn = MultiHeadedAttention(heads, d_model, dropout=0.1)
+        if config["train"]["use_rel_pos"]:
+            self_attn = RelMultiHeadedAttention(heads, d_model, dropout=0.1)
+        else:
+            self_attn = MultiHeadedAttention(heads, d_model, dropout=0.1)
 
         ff = FeedForward(d_model, ff_mul, dropout=ff_dropout)
 
@@ -41,6 +36,7 @@ class CompressiveEncoder(nn.Module):
         self.bass_encoder = c(encoder)
         self.guitar_encoder = c(encoder)
         self.strings_encoder = c(encoder)
+
         for p in self.parameters():
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
@@ -62,19 +58,9 @@ class CompressiveDecoder(nn.Module):
                  ff_dropout=config["model"]["ff_dropout"],
                  layers=config["model"]["layers"],
                  vocab_size=config["tokens"]["vocab_size"],
-                 seq_len=config["model"]["seq_len"],
-                 mem_len=config["model"]["mem_len"],
-                 cmem_len=config["model"]["cmem_len"],
-                 cmem_ratio=config["model"]["cmem_ratio"],
-                 device=config["train"]["device"]
                  ):
         super(CompressiveDecoder, self).__init__()
-        assert mem_len >= seq_len, 'length of memory should be at least the sequence length'
-        assert cmem_len >= (mem_len // cmem_ratio), f'len of cmem should be at least ' f'{int(mem_len // cmem_ratio)}' \
-                                                    f' but it is ' f'{int(cmem_len)}'
 
-        self.pos_emb = nn.Parameter(torch.zeros(4, heads, seq_len, d_model // heads, device=device,
-                                                requires_grad=True))
         c = copy.deepcopy
 
         if config["train"]["use_rel_pos"]:
@@ -92,15 +78,16 @@ class CompressiveDecoder(nn.Module):
         self.guitar_decoder = c(decoder)
         self.strings_decoder = c(decoder)
         self.generator = Generator(d_model, vocab_size)
+
         for p in self.parameters():
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
-    def forward(self, trg, trg_mask, latent):
-        d_out = self.drums_decoder(trg[0], ifn(trg_mask, 0), latent[0])
-        b_out = self.bass_decoder(trg[1], ifn(trg_mask, 1), latent[1])
-        g_out = self.guitar_decoder(trg[2], ifn(trg_mask, 2), latent[2])
-        s_out = self.strings_decoder(trg[3], ifn(trg_mask, 3), latent[3])
+    def forward(self, trg, src_mask, trg_mask, latent):
+        d_out = self.drums_decoder(trg[0], ifn(src_mask, 0), ifn(trg_mask, 0), latent[0])
+        b_out = self.bass_decoder(trg[1], ifn(src_mask, 1), ifn(trg_mask, 1), latent[1])
+        g_out = self.guitar_decoder(trg[2], ifn(src_mask, 2), ifn(trg_mask, 2), latent[2])
+        s_out = self.strings_decoder(trg[3], ifn(src_mask, 3), ifn(trg_mask, 3), latent[3])
         output = torch.stack([d_out, b_out, g_out, s_out], dim=0)
         output = self.generator(output)
         return output
@@ -153,7 +140,7 @@ class Decoder(nn.Module):
 
         self.pos = PositionalEncoding(d_model)
 
-    def forward(self, trg, trg_mask, latent):
+    def forward(self, trg, src_mask, trg_mask, latent):
         trg = self.embed(trg)
 
         if not config["train"]["use_rel_pos"]:
@@ -161,7 +148,7 @@ class Decoder(nn.Module):
 
         i = 0
         for layer in self.layers:
-            trg = layer(trg, trg_mask, latent, self.r_emb[i], self.r_w_bias[i], self.r_bias[i])
+            trg = layer(trg, src_mask, trg_mask, latent, self.r_emb[i], self.r_w_bias[i], self.r_bias[i])
             i += 1
         return trg
 
@@ -176,7 +163,6 @@ class EncoderLayer(nn.Module):
 
     def forward(self, x, input_mask, pos_emb, r_w_bias, r_bias):
         out = self.self_attn(x, key=x, value=x, mask=input_mask, r_emb=pos_emb, r_w_bias=r_w_bias, r_bias=r_bias)
-        # out, self_weights = self.mem_attn(x, key=x, value=x, mask=input_mask)
         x = self.norm1(x + out)
         out = self.feed_forward(x)
         x = self.norm2(x + out)
@@ -193,11 +179,10 @@ class DecoderLayer(nn.Module):
         self.norm2 = nn.LayerNorm(config["model"]["d_model"])
         self.norm3 = nn.LayerNorm(config["model"]["d_model"])
 
-    def forward(self, x, trg_mask, latent, pos_emb, r_w_bias, r_bias):
+    def forward(self, x, src_mask, trg_mask, latent, pos_emb, r_w_bias, r_bias):
         out = self.self_attn(x, key=x, value=x, mask=trg_mask, r_emb=pos_emb, r_w_bias=r_w_bias, r_bias=r_bias)
-        # out, self_weights = self.self_mem_attn(x, key=x, value=x, mask=trg_mask)
         x = self.norm1(x + out)
-        out = self.src_attn(x, key=latent, value=latent)
+        out = self.src_attn(x, key=latent, value=latent, mask=src_mask)
         x = self.norm2(x + out)
         out = self.feed_forward(x)
         x = self.norm3(x + out)
@@ -217,7 +202,6 @@ class RelMultiHeadedAttention(nn.Module):
         self.linears = (clones(nn.Linear(d_model, d_model, bias=False), 4))  # TODO bias or not?
         self.dropout = nn.Dropout(p=dropout)
         self.scale = 1 / (h ** 0.5)
-        self.compress_mem_fn = ConvCompress(d_model, config["model"]["cmem_ratio"])
         self.seq_len = config["model"]["seq_len"]
         self.mem_len = config["model"]["mem_len"]
         self.cmem_len = config["model"]["cmem_len"]
@@ -264,8 +248,8 @@ class RelMultiHeadedAttention(nn.Module):
             attn_score = attn_score.masked_fill(~mask, -1e9)  # TODO empty row becomes 0.005 is it good?
 
         attn_prob = F.softmax(attn_score, dim=-1)
-        self.attn = attn_prob.detach()
         attn_prob = self.dropout(attn_prob)
+        self.attn = attn_prob.detach()
 
         attn_vec = torch.einsum('bnij,bnjd->bnid', attn_prob, v)
         attn_vec = attn_vec.transpose(1, 2).contiguous().view(n_batches, -1, self.h * self.d_out)
@@ -521,7 +505,6 @@ class MyMemoryAttention(nn.Module):
         self.cmem_len = cmem_len
         self.cmem_ratio = cmem_ratio
         self.scale = self.dim_head ** (-0.5)  # 1/root(dim_head)
-        self.compress_mem_fn = ConvCompress(dim, cmem_ratio)
         self.reconstruction_attn_dropout = nn.Dropout(reconstruction_attn_dropout)
         self.multi_head_attention = MultiHeadedAttention(h, dim, attn_dropout)
         self.norm1 = nn.LayerNorm(dim)

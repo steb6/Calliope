@@ -94,12 +94,12 @@ class Tester:
             trg = torch.LongTensor(trg).to(config["train"]["device"])
             for j in range(config["model"]["seq_len"] - 1):  # for each token of each bar
                 trg_mask = create_trg_mask(trg.cpu().numpy())
-                out = self.decoder(trg, trg_mask, latents[i].transpose(0, 1))
+                out = self.decoder(trg, None, trg_mask, latents[i].transpose(0, 1))
                 out = torch.max(out, dim=-1).indices
                 trg = torch.cat((trg, out[..., -1:]), dim=-1)
 
             trg_mask = create_trg_mask(trg.cpu().numpy())
-            out = self.decoder(trg, trg_mask, latents[i].transpose(0, 1))
+            out = self.decoder(trg, None, trg_mask, latents[i].transpose(0, 1))
             out = torch.max(out, dim=-1).indices
             outs.append(copy.deepcopy(out))
             for t in range(len(out)):  # for each track
@@ -114,8 +114,7 @@ class Tester:
     def generate(self, note_manager):  # TODO CHECK THIS
         latent = get_prior((1, config["model"]["d_model"])).to(config["train"]["device"])
         latent = self.latent_decompressor(latent)
-        # latent = latent.transpose(0, 1)
-        outs, limited = self.greedy_decode(latent, config["train"]["generated_iterations"], "generate")  # TODO careful
+        outs, limited = self.greedy_decode(latent, n_bars, "generate")  # TODO careful
         outs = torch.stack(outs)
         limited = torch.stack(limited)
         outs = outs.transpose(0, 2)[0].cpu().numpy()

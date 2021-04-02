@@ -51,23 +51,22 @@ class Trainer:
             self.beta = -0.1  # so it become 0 at first iteration
             self.reg_optimizer = None
 
-    def test_losses(self, loss, e_attn_losses, d_attn_losses):
-        losses = [loss, e_attn_losses, d_attn_losses]
-        names = ["loss", "e_att_losses", "d_attn_losses"]
-        for ls, name in zip(losses, names):
-            print("********************** Optimized by " + name)
-            self.encoder_optimizer.optimizer.zero_grad(set_to_none=True)
-            self.decoder_optimizer.zero_grad(set_to_none=True)
-            ls.backward(retain_graph=True)
-            for model in [self.encoder, self.latent_compressor, self.decoder]:  # removed latent compressor
-                for module_name, parameter in model.named_parameters():
-                    if parameter.grad is not None:
-                        print(module_name)
+    def test_losses(self, loss):
+        print("********************** Optimized by loss")
         self.encoder_optimizer.optimizer.zero_grad(set_to_none=True)
         self.decoder_optimizer.zero_grad(set_to_none=True)
-        (losses[0] + losses[1] + losses[2]).backward(retain_graph=True)
+
+        loss.backward(retain_graph=True)
+        for model in [self.encoder, self.latent_compressor, self.latent_decompressor, self.decoder]:
+            for module_name, parameter in model.named_parameters():
+                if parameter.grad is not None:
+                    print(module_name)
+
+        self.encoder_optimizer.optimizer.zero_grad(set_to_none=True)
+        self.decoder_optimizer.zero_grad(set_to_none=True)
+        loss.backward(retain_graph=True)
         print("********************** NOT OPTIMIZED BY NOTHING")
-        for model in [self.encoder, self.latent_compressor, self.decoder]:  # removed latent compressor
+        for model in [self.encoder, self.latent_compressor, self.latent_decompressor, self.decoder]:
             for module_name, parameter in model.named_parameters():
                 if parameter.grad is None:
                     print(module_name)
@@ -111,7 +110,10 @@ class Trainer:
 
                 predicted = []
                 for trg, trg_mask, latent in zip(trgs, trg_masks, latents):
-                    out = self.decoder(trg, trg_mask, latent.transpose(0, 1))
+                    src_mask = trg != config["tokens"]["pad"]
+                    src_mask = src_mask.repeat([1, 1, src_mask.shape[-1]])
+                    src_mask = src_mask.reshape(trg_mask.shape).transpose(-1, -2)
+                    out = self.decoder(trg, src_mask, trg_mask, latent.transpose(0, 1))
                     predicted.append(torch.max(out, dim=-1).indices)
 
                 # add sos at beginning and cut last token
@@ -125,7 +127,10 @@ class Trainer:
 
         outs = []
         for trg, trg_mask, src_mask, latent in zip(trgs, trg_masks, src_masks, latents):
-            out = self.decoder(trg, trg_mask, latent.transpose(0, 1))
+            src_mask = trg != config["tokens"]["pad"]
+            src_mask = src_mask.repeat([1, 1, src_mask.shape[-1]])
+            src_mask = src_mask.reshape(trg_mask.shape).transpose(-1, -2)
+            out = self.decoder(trg, src_mask, trg_mask, latent.transpose(0, 1))
             outs.append(out)
 
         # Format results
@@ -138,6 +143,7 @@ class Trainer:
         losses = (loss.item(), accuracy, 0, 0, *loss_items)
 
         # LOG IMAGES
+        # self.test_losses(loss)
         if self.encoder.training and config["train"]["log_images"] and \
                 self.step % config["train"]["after_steps_log_images"] == 0:
 
@@ -402,10 +408,10 @@ class Trainer:
         self.logger = Logger()
         wandb.login()
         wandb.init(project="MusAE", config=config, name="r_" + timestamp if remote else "l_" + timestamp)
-        wandb.watch(self.encoder, log_freq=1000, log="all")
-        wandb.watch(self.latent_compressor, log_freq=1000, log="all")
-        wandb.watch(self.latent_decompressor, log_freq=1000, log="all")
-        wandb.watch(self.decoder, log_freq=1000, log="all")
+        wandb.watch(self.encoder, log_freq=10 if remote else 1000, log="all")
+        wandb.watch(self.latent_compressor, log_freq=10 if remote else 1000, log="all")
+        wandb.watch(self.latent_decompressor, log_freq=10 if remote else 1000, log="all")
+        wandb.watch(self.decoder, log_freq=10 if remote else 1000, log="all")
         if config["train"]["aae"]:
             wandb.watch(self.discriminator, log_freq=1000, log="all")
 
@@ -493,7 +499,8 @@ class Trainer:
 
                 if self.step % 10 == 0:
                     self.logger.log_losses(tr_losses, self.encoder.training)
-                    self.logger.log_stuff(self.encoder_optimizer.lr,
+                    self.logger.log_stuff(self.step,
+                                          self.encoder_optimizer.lr,
                                           self.latent,
                                           self.disc_optimizer.lr if config["train"]["aae"] else None,
                                           self.gen_optimizer.lr if config["train"]["aae"] else None,

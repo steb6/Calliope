@@ -42,8 +42,8 @@ class Logger:
         wandb.log(log)
 
     @staticmethod
-    def log_stuff(lr, latent, disc=None, gen=None, beta=None, prior=None, tf_prob=None):
-        log = {"stuff/lr": lr, "stuff/latent": latent[0]}
+    def log_stuff(step, lr, latent, disc=None, gen=None, beta=None, prior=None, tf_prob=None):
+        log = {"stuff/step": step, "stuff/lr": lr, "stuff/latent": latent[0]}
         if config["train"]["aae"]:
             log["stuff/disc lr"] = disc
             log["stuff/gen lr"] = gen
