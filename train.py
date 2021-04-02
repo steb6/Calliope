@@ -51,22 +51,23 @@ class Trainer:
             self.beta = -0.1  # so it become 0 at first iteration
             self.reg_optimizer = None
 
-    def test_losses(self, loss):
-        print("********************** Optimized by loss")
+    def test_losses(self, loss, e_attn_losses, d_attn_losses):
+        losses = [loss, e_attn_losses, d_attn_losses]
+        names = ["loss", "e_att_losses", "d_attn_losses"]
+        for ls, name in zip(losses, names):
+            print("********************** Optimized by " + name)
+            self.encoder_optimizer.optimizer.zero_grad(set_to_none=True)
+            self.decoder_optimizer.zero_grad(set_to_none=True)
+            ls.backward(retain_graph=True)
+            for model in [self.encoder, self.latent_compressor, self.decoder]:  # removed latent compressor
+                for module_name, parameter in model.named_parameters():
+                    if parameter.grad is not None:
+                        print(module_name)
         self.encoder_optimizer.optimizer.zero_grad(set_to_none=True)
         self.decoder_optimizer.zero_grad(set_to_none=True)
-
-        loss.backward(retain_graph=True)
-        for model in [self.encoder, self.latent_compressor, self.latent_decompressor, self.decoder]:
-            for module_name, parameter in model.named_parameters():
-                if parameter.grad is not None:
-                    print(module_name)
-
-        self.encoder_optimizer.optimizer.zero_grad(set_to_none=True)
-        self.decoder_optimizer.zero_grad(set_to_none=True)
-        loss.backward(retain_graph=True)
+        (losses[0] + losses[1] + losses[2]).backward(retain_graph=True)
         print("********************** NOT OPTIMIZED BY NOTHING")
-        for model in [self.encoder, self.latent_compressor, self.latent_decompressor, self.decoder]:
+        for model in [self.encoder, self.latent_compressor, self.decoder]:  # removed latent compressor
             for module_name, parameter in model.named_parameters():
                 if parameter.grad is None:
                     print(module_name)
@@ -86,7 +87,7 @@ class Trainer:
         ############
         latents = []
         for src, src_mask in zip(srcs, src_masks):
-            latent = self.encoder(src, None)
+            latent = self.encoder(src, src_mask)
             latents.append(latent)
 
         ############
@@ -109,12 +110,11 @@ class Trainer:
                 self.tf_prob = 0.5
 
                 predicted = []
-                for trg, trg_mask, latent in zip(trgs, trg_masks, latents):
+                for trg, src_mask, trg_mask, latent in zip(trgs, src_masks, trg_masks, latents):
                     # src_mask = trg != config["tokens"]["pad"]
                     # src_mask = src_mask.repeat([1, 1, src_mask.shape[-1]])
                     # src_mask = src_mask.reshape(trg_mask.shape).transpose(-1, -2)
-                    # out = self.decoder(trg, src_mask, trg_mask, latent.transpose(0, 1))
-                    out = self.decoder(trg, None, trg_mask, latent.transpose(0, 1))
+                    out = self.decoder(trg, src_mask, trg_mask, latent.transpose(0, 1))
                     predicted.append(torch.max(out, dim=-1).indices)
 
                 # add sos at beginning and cut last token
@@ -131,7 +131,7 @@ class Trainer:
             # src_mask = trg != config["tokens"]["pad"]
             # src_mask = src_mask.repeat([1, 1, src_mask.shape[-1]])
             # src_mask = src_mask.reshape(trg_mask.shape).transpose(-1, -2)
-            out = self.decoder(trg, None, trg_mask, latent.transpose(0, 1))
+            out = self.decoder(trg, src_mask, trg_mask, latent.transpose(0, 1))
             outs.append(out)
 
         # Format results
@@ -144,7 +144,6 @@ class Trainer:
         losses = (loss.item(), accuracy, 0, 0, *loss_items)
 
         # LOG IMAGES
-        # self.test_losses(loss)
         if self.encoder.training and config["train"]["log_images"] and \
                 self.step % config["train"]["after_steps_log_images"] == 0:
 
@@ -152,93 +151,93 @@ class Trainer:
             drums_encoder_attn = []
             for layer in self.encoder.drums_encoder.layers:
                 instrument_attn = []
-                for head in layer.self_attn.attn[0]:
+                for head in layer.self_attn.fn.fn.attn[0]:
                     instrument_attn.append(head)
                 drums_encoder_attn.append(instrument_attn)
 
             bass_encoder_attn = []
             for layer in self.encoder.bass_encoder.layers:
                 instrument_attn = []
-                for head in layer.self_attn.attn[0]:
+                for head in layer.self_attn.fn.fn.attn[0]:
                     instrument_attn.append(head)
                 bass_encoder_attn.append(instrument_attn)
 
             guitar_encoder_attn = []
             for layer in self.encoder.guitar_encoder.layers:
                 instrument_attn = []
-                for head in layer.self_attn.attn[0]:
+                for head in layer.self_attn.fn.fn.attn[0]:
                     instrument_attn.append(head)
                 guitar_encoder_attn.append(instrument_attn)
 
             strings_encoder_attn = []
             for layer in self.encoder.strings_encoder.layers:
                 instrument_attn = []
-                for head in layer.self_attn.attn[0]:
+                for head in layer.self_attn.fn.fn.attn[0]:
                     instrument_attn.append(head)
                 strings_encoder_attn.append(instrument_attn)
 
-            enc_attention = [drums_encoder_attn, bass_encoder_attn, guitar_encoder_attn, strings_encoder_attn]
+            enc_attention = [drums_encoder_attn, guitar_encoder_attn, bass_encoder_attn, strings_encoder_attn]
 
             # DECODER SELF
             drums_decoder_attn = []
             for layer in self.decoder.drums_decoder.layers:
                 instrument_attn = []
-                for head in layer.self_attn.attn[0]:
+                for head in layer.self_attn.fn.fn.attn[0]:
                     instrument_attn.append(head)
                 drums_decoder_attn.append(instrument_attn)
 
             bass_decoder_attn = []
             for layer in self.decoder.bass_decoder.layers:
                 instrument_attn = []
-                for head in layer.self_attn.attn[0]:
+                for head in layer.self_attn.fn.fn.attn[0]:
                     instrument_attn.append(head)
                 bass_decoder_attn.append(instrument_attn)
 
             guitar_decoder_attn = []
             for layer in self.decoder.guitar_decoder.layers:
                 instrument_attn = []
-                for head in layer.self_attn.attn[0]:
+                for head in layer.self_attn.fn.fn.attn[0]:
                     instrument_attn.append(head)
                 guitar_decoder_attn.append(instrument_attn)
 
             strings_decoder_attn = []
             for layer in self.decoder.strings_decoder.layers:
                 instrument_attn = []
-                for head in layer.self_attn.attn[0]:
+                for head in layer.self_attn.fn.fn.attn[0]:
                     instrument_attn.append(head)
                 strings_decoder_attn.append(instrument_attn)
 
-            dec_attention = [drums_decoder_attn, bass_decoder_attn, guitar_decoder_attn, strings_decoder_attn]
+            dec_attention = [drums_decoder_attn, guitar_decoder_attn, bass_decoder_attn, strings_decoder_attn]
             # DECODER SRC
             drums_src_attn = []
             for layer in self.decoder.drums_decoder.layers:
                 instrument_attn = []
-                for head in layer.src_attn.attn[0]:
+                for head in layer.src_attn.fn.fn.attn[0]:
                     instrument_attn.append(head)
                 drums_src_attn.append(instrument_attn)
 
             bass_src_attn = []
             for layer in self.decoder.bass_decoder.layers:
                 instrument_attn = []
-                for head in layer.src_attn.attn[0]:
+                for head in layer.src_attn.fn.fn.attn[0]:
                     instrument_attn.append(head)
                 bass_src_attn.append(instrument_attn)
 
             guitar_src_attn = []
             for layer in self.decoder.guitar_decoder.layers:
                 instrument_attn = []
-                for head in layer.src_attn.attn[0]:
+                for head in layer.src_attn.fn.fn.attn[0]:
                     instrument_attn.append(head)
                 guitar_src_attn.append(instrument_attn)
 
             strings_src_attn = []
             for layer in self.decoder.strings_decoder.layers:
                 instrument_attn = []
-                for head in layer.src_attn.attn[0]:
+                for head in layer.src_attn.fn.fn.attn[0]:
                     instrument_attn.append(head)
                 strings_src_attn.append(instrument_attn)
 
-            src_attention = [drums_src_attn, bass_src_attn, guitar_src_attn, strings_src_attn]
+            src_attention = [drums_src_attn, guitar_src_attn, bass_src_attn, strings_src_attn]
 
             print("Logging images...")
             # self.logger.log_latent(self.latent)
@@ -409,10 +408,10 @@ class Trainer:
         self.logger = Logger()
         wandb.login()
         wandb.init(project="MusAE", config=config, name="r_" + timestamp if remote else "l_" + timestamp)
-        wandb.watch(self.encoder, log_freq=10 if remote else 1000, log="all")
-        wandb.watch(self.latent_compressor, log_freq=10 if remote else 1000, log="all")
-        wandb.watch(self.latent_decompressor, log_freq=10 if remote else 1000, log="all")
-        wandb.watch(self.decoder, log_freq=10 if remote else 1000, log="all")
+        wandb.watch(self.encoder, log_freq=1000, log="all")
+        wandb.watch(self.latent_compressor, log_freq=1000, log="all")
+        wandb.watch(self.latent_decompressor, log_freq=1000, log="all")
+        wandb.watch(self.decoder, log_freq=1000, log="all")
         if config["train"]["aae"]:
             wandb.watch(self.discriminator, log_freq=1000, log="all")
 
@@ -496,8 +495,7 @@ class Trainer:
 
                 if self.step % 10 == 0:
                     self.logger.log_losses(tr_losses, self.encoder.training)
-                    self.logger.log_stuff(self.step,
-                                          self.encoder_optimizer.lr,
+                    self.logger.log_stuff(self.encoder_optimizer.lr,
                                           self.latent,
                                           self.disc_optimizer.lr if config["train"]["aae"] else None,
                                           self.gen_optimizer.lr if config["train"]["aae"] else None,

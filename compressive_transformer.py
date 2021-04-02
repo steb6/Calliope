@@ -25,28 +25,27 @@ class CompressiveEncoder(nn.Module):
         c = copy.deepcopy
 
         if config["train"]["use_rel_pos"]:
-            self_attn = RelMultiHeadedAttention(heads, d_model, dropout=0.1)
+            self_attn = Residual(PreNorm(d_model, RelMultiHeadedAttention(heads, d_model, dropout=0.1)))
         else:
-            self_attn = MultiHeadedAttention(heads, d_model, dropout=0.1)
+            self_attn = Residual(PreNorm(d_model, MultiHeadedAttention(heads, d_model, dropout=0.1)))
 
-        ff = FeedForward(d_model, ff_mul, dropout=ff_dropout)
+        ff = Residual(PreNorm(d_model, FeedForward(d_model, ff_mul, dropout=ff_dropout)))
 
         encoder = Encoder(EncoderLayer(c(self_attn), c(ff)), layers, vocab_size, d_model)
         self.drums_encoder = c(encoder)
-        self.bass_encoder = c(encoder)
         self.guitar_encoder = c(encoder)
+        self.bass_encoder = c(encoder)
         self.strings_encoder = c(encoder)
-
         for p in self.parameters():
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
     def forward(self, seq, mask):
         d_z = self.drums_encoder(seq[0], ifn(mask, 0))
-        b_z = self.bass_encoder(seq[1], ifn(mask, 1))
-        g_z = self.guitar_encoder(seq[2], ifn(mask, 2))
+        g_z = self.guitar_encoder(seq[1], ifn(mask, 1))
+        b_z = self.bass_encoder(seq[2], ifn(mask, 2))
         s_z = self.strings_encoder(seq[3], ifn(mask, 3))
-        latents = torch.stack([d_z, b_z, g_z, s_z], dim=1)
+        latents = torch.stack([d_z, g_z, b_z, s_z], dim=1)
         return latents
 
 
@@ -64,31 +63,30 @@ class CompressiveDecoder(nn.Module):
         c = copy.deepcopy
 
         if config["train"]["use_rel_pos"]:
-            self_attn = RelMultiHeadedAttention(heads, d_model, dropout=0.1)
+            self_attn = Residual(PreNorm(d_model, RelMultiHeadedAttention(heads, d_model, dropout=0.1)))
         else:
-            self_attn = MultiHeadedAttention(heads, d_model, dropout=0.1)
+            self_attn = Residual(PreNorm(d_model, MultiHeadedAttention(heads, d_model, dropout=0.1)))
 
-        src_attn = MultiHeadedAttention(heads, d_model, dropout=0.1)
-        ff = FeedForward(d_model, ff_mul, dropout=ff_dropout)
+        src_attn = Residual(PreNorm(d_model, MultiHeadedAttention(heads, d_model, dropout=0.1)))
+        ff = Residual(PreNorm(d_model, FeedForward(d_model, ff_mul, dropout=ff_dropout)))
 
         decoder = Decoder(DecoderLayer(c(self_attn), c(src_attn), c(ff)), layers, vocab_size, d_model)
 
         self.drums_decoder = c(decoder)
-        self.bass_decoder = c(decoder)
         self.guitar_decoder = c(decoder)
+        self.bass_decoder = c(decoder)
         self.strings_decoder = c(decoder)
         self.generator = Generator(d_model, vocab_size)
-
         for p in self.parameters():
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
     def forward(self, trg, src_mask, trg_mask, latent):
         d_out = self.drums_decoder(trg[0], ifn(src_mask, 0), ifn(trg_mask, 0), latent[0])
-        b_out = self.bass_decoder(trg[1], ifn(src_mask, 1), ifn(trg_mask, 1), latent[1])
-        g_out = self.guitar_decoder(trg[2], ifn(src_mask, 2), ifn(trg_mask, 2), latent[2])
+        g_out = self.guitar_decoder(trg[1], ifn(src_mask, 1), ifn(trg_mask, 1), latent[1])
+        b_out = self.bass_decoder(trg[2], ifn(src_mask, 2), ifn(trg_mask, 2), latent[2])
         s_out = self.strings_decoder(trg[3], ifn(src_mask, 3), ifn(trg_mask, 3), latent[3])
-        output = torch.stack([d_out, b_out, g_out, s_out], dim=0)
+        output = torch.stack([d_out, g_out, b_out, s_out], dim=0)
         output = self.generator(output)
         return output
 
@@ -99,9 +97,9 @@ class Encoder(nn.Module):
         self.layers = clones(layer, N)
         self.embed = nn.Embedding(vocab_size, d_model)
         self.N = N
+        self.norm = nn.LayerNorm(d_model)
 
-        max_klen = config["model"]["seq_len"]  # TODO increase it when adding memory
-        max_klen += config["model"]["mem_len"] + config["model"]["cmem_len"]
+        max_klen = config["model"]["seq_len"]
         n_head = config["model"]["heads"]
         d_head = config["model"]["d_model"] // config["model"]["heads"]
         self.r_emb = nn.Parameter(torch.Tensor(N, n_head, max_klen, d_head))
@@ -120,7 +118,7 @@ class Encoder(nn.Module):
         for layer in self.layers:
             seq = layer(seq, mask, self.r_emb[i], self.r_w_bias[i], self.r_bias[i])
             i += 1
-        return seq
+        return self.norm(seq)
 
 
 class Decoder(nn.Module):
@@ -129,9 +127,9 @@ class Decoder(nn.Module):
         self.layers = clones(layer, N)
         self.embed = nn.Embedding(vocab_size, d_model)
         self.N = N
+        self.norm = nn.LayerNorm(d_model)
 
-        max_klen = config["model"]["seq_len"]  # TODO increase it when adding memory
-        max_klen += config["model"]["mem_len"] + config["model"]["cmem_len"]
+        max_klen = config["model"]["seq_len"]
         n_head = config["model"]["heads"]
         d_head = config["model"]["d_model"] // config["model"]["heads"]
         self.r_emb = nn.Parameter(torch.Tensor(N, n_head, max_klen, d_head))
@@ -139,6 +137,7 @@ class Decoder(nn.Module):
         self.r_bias = nn.Parameter(torch.Tensor(N, n_head, max_klen))
 
         self.pos = PositionalEncoding(d_model)
+        self.norm = nn.LayerNorm(d_model)
 
     def forward(self, trg, src_mask, trg_mask, latent):
         trg = self.embed(trg)
@@ -150,7 +149,7 @@ class Decoder(nn.Module):
         for layer in self.layers:
             trg = layer(trg, src_mask, trg_mask, latent, self.r_emb[i], self.r_w_bias[i], self.r_bias[i])
             i += 1
-        return trg
+        return self.norm(trg)
 
 
 class EncoderLayer(nn.Module):
@@ -158,14 +157,10 @@ class EncoderLayer(nn.Module):
         super(EncoderLayer, self).__init__()
         self.self_attn = self_attn
         self.feed_forward = feed_forward
-        self.norm1 = nn.LayerNorm(config["model"]["d_model"])
-        self.norm2 = nn.LayerNorm(config["model"]["d_model"])
 
     def forward(self, x, input_mask, pos_emb, r_w_bias, r_bias):
-        out = self.self_attn(x, key=x, value=x, mask=input_mask, r_emb=pos_emb, r_w_bias=r_w_bias, r_bias=r_bias)
-        x = self.norm1(x + out)
-        out = self.feed_forward(x)
-        x = self.norm2(x + out)
+        x, = self.self_attn(x, key=x, value=x, mask=input_mask, r_emb=pos_emb, r_w_bias=r_w_bias, r_bias=r_bias)
+        x, = self.feed_forward(x)
         return x
 
 
@@ -175,17 +170,11 @@ class DecoderLayer(nn.Module):
         self.self_attn = self_attn
         self.src_attn = src_attn
         self.feed_forward = feed_forward
-        self.norm1 = nn.LayerNorm(config["model"]["d_model"])
-        self.norm2 = nn.LayerNorm(config["model"]["d_model"])
-        self.norm3 = nn.LayerNorm(config["model"]["d_model"])
 
     def forward(self, x, src_mask, trg_mask, latent, pos_emb, r_w_bias, r_bias):
-        out = self.self_attn(x, key=x, value=x, mask=trg_mask, r_emb=pos_emb, r_w_bias=r_w_bias, r_bias=r_bias)
-        x = self.norm1(x + out)
-        out = self.src_attn(x, key=latent, value=latent, mask=src_mask)
-        x = self.norm2(x + out)
-        out = self.feed_forward(x)
-        x = self.norm3(x + out)
+        x, = self.self_attn(x, key=x, value=x, mask=trg_mask, r_emb=pos_emb, r_w_bias=r_w_bias, r_bias=r_bias)
+        x, = self.src_attn(x, key=latent, value=latent, mask=src_mask)
+        x, = self.feed_forward(x)
         return x
 
 
@@ -199,9 +188,10 @@ class RelMultiHeadedAttention(nn.Module):
         assert d_model % h == 0
         self.d_out = d_model // h
         self.h = h
-        self.linears = (clones(nn.Linear(d_model, d_model, bias=False), 4))  # TODO bias or not?
+        self.linears = nn.ModuleList([nn.Linear(d_model, d_model, bias=False) for _ in range(4)])
         self.dropout = nn.Dropout(p=dropout)
         self.scale = 1 / (h ** 0.5)
+        self.compress_mem_fn = ConvCompress(d_model, config["model"]["cmem_ratio"])
         self.seq_len = config["model"]["seq_len"]
         self.mem_len = config["model"]["mem_len"]
         self.cmem_len = config["model"]["cmem_len"]
@@ -265,7 +255,7 @@ class MultiHeadedAttention(nn.Module):
         assert d_model % h == 0
         self.d_out = d_model // h
         self.h = h
-        self.linears = (clones(nn.Linear(d_model, d_model, bias=False), 4))  # TODO bias or not?
+        self.linears = nn.ModuleList([nn.Linear(d_model, d_model, bias=False) for _ in range(4)])
         self.dropout = nn.Dropout(p=dropout)
         self.attn = None
 
@@ -377,20 +367,15 @@ def full_attn(q, k, v, mask=None, dropout=None, pos_emb=None):
     *_, dim = q.shape
     dots = torch.einsum('bhid,bhjd->bhij', q, k) * (dim ** -0.5)  # Q K^T
 
-    if pos_emb is not None:
-        # TODO remember to modify this when adding memory !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-        pos_emb = pos_emb[:, :q.shape[2], :]  # get pos_emb of first elements for greedy decoding
-        pos_dots = torch.einsum('bhid,hjd->bhij', q, pos_emb) * (dim ** 0.5)
-        pos_dots = shift(pos_dots)  # left upper triangular has positional embedding of illegal token
-        # pos_dots = pos_dots[..., :dots.shape[-1]]  # TODO select useful embedding, confirm or remove
-        dots = dots + pos_dots
-
     if mask is not None:
         mask = mask[:, :, :dots.shape[2], :]  # during evaluation, must adapt mask to dots size
         dots = dots.masked_fill(mask == 0, -1e9)  # same mask for all heads
+
     attn = dots.softmax(dim=-1)
+
     if dropout is not None:
         attn = dropout(attn)
+
     return torch.einsum('bhij,bhjd->bhid', attn, v), attn  # (Q K^T) V
 
 
@@ -505,6 +490,7 @@ class MyMemoryAttention(nn.Module):
         self.cmem_len = cmem_len
         self.cmem_ratio = cmem_ratio
         self.scale = self.dim_head ** (-0.5)  # 1/root(dim_head)
+        self.compress_mem_fn = ConvCompress(dim, cmem_ratio)
         self.reconstruction_attn_dropout = nn.Dropout(reconstruction_attn_dropout)
         self.multi_head_attention = MultiHeadedAttention(h, dim, attn_dropout)
         self.norm1 = nn.LayerNorm(dim)

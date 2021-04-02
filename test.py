@@ -114,7 +114,8 @@ class Tester:
     def generate(self, note_manager):  # TODO CHECK THIS
         latent = get_prior((1, config["model"]["d_model"])).to(config["train"]["device"])
         latent = self.latent_decompressor(latent)
-        outs, limited = self.greedy_decode(latent, n_bars, "generate")  # TODO careful
+        # latent = latent.transpose(0, 1)
+        outs, limited = self.greedy_decode(latent, config["train"]["generated_iterations"], "generate")  # TODO careful
         outs = torch.stack(outs)
         limited = torch.stack(limited)
         outs = outs.transpose(0, 2)[0].cpu().numpy()

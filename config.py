@@ -13,18 +13,18 @@ config = {
         # MODALITIES
         "use_memories": False,
         "use_src_mask": False,
-        "use_rel_pos": False,
-        "scheduled_sampling": True,
+        "use_rel_pos": True,
+        "scheduled_sampling": False,
         "compress_latents": False,
         "verbose": True,
         "make_songs": True,
         "log_images": True,
-        "do_eval": True,
-        "aae": True,
+        "do_eval": False,
+        "aae": False,
         "test_losses": False,
         "device": "cuda" if remote else "cuda",
         "batch_size": 8 if remote else 3,  # 128 for 1 layer, 30 for 6 layer
-        "test_size": 0.001 if remote else 0.2,  # 0.00001
+        "test_size": 0.001 if remote else 0.1,  # 0.00001
         "final_size": 0.1,
         "n_workers": 0,
         "n_epochs": 25000,
@@ -44,10 +44,10 @@ config = {
         "lr_max": 3e-4,
         "decay_steps": 100000,
         "minimum_lr": 1e-6,  # USE ONLY THIS  # 5e-5 or 1e-5
-        "lr": 3e-4,
+        "lr": 1e-4,
         # SCHEDULING
-        "after_steps_mix_sequences": 0//n_bars if remote else 0,
-        "after_steps_train_aae": 50000//n_bars if remote else 1000,
+        "after_steps_mix_sequences": 50000 if remote else 500,
+        "after_steps_train_aae": 100000 if remote else 1000,
         # AAE PART
         "train_aae_after_steps": 0,
         "increase_beta_every": 1 if remote else 1,  # was 4000
