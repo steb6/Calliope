@@ -86,7 +86,7 @@ class Trainer:
         ############
         latents = []
         for src, src_mask in zip(srcs, src_masks):
-            latent = self.encoder(src, src_mask)
+            latent = self.encoder(src, None)
             latents.append(latent)
 
         ############
@@ -110,10 +110,11 @@ class Trainer:
 
                 predicted = []
                 for trg, trg_mask, latent in zip(trgs, trg_masks, latents):
-                    src_mask = trg != config["tokens"]["pad"]
-                    src_mask = src_mask.repeat([1, 1, src_mask.shape[-1]])
-                    src_mask = src_mask.reshape(trg_mask.shape).transpose(-1, -2)
-                    out = self.decoder(trg, src_mask, trg_mask, latent.transpose(0, 1))
+                    # src_mask = trg != config["tokens"]["pad"]
+                    # src_mask = src_mask.repeat([1, 1, src_mask.shape[-1]])
+                    # src_mask = src_mask.reshape(trg_mask.shape).transpose(-1, -2)
+                    # out = self.decoder(trg, src_mask, trg_mask, latent.transpose(0, 1))
+                    out = self.decoder(trg, None, trg_mask, latent.transpose(0, 1))
                     predicted.append(torch.max(out, dim=-1).indices)
 
                 # add sos at beginning and cut last token
@@ -127,10 +128,10 @@ class Trainer:
 
         outs = []
         for trg, trg_mask, src_mask, latent in zip(trgs, trg_masks, src_masks, latents):
-            src_mask = trg != config["tokens"]["pad"]
-            src_mask = src_mask.repeat([1, 1, src_mask.shape[-1]])
-            src_mask = src_mask.reshape(trg_mask.shape).transpose(-1, -2)
-            out = self.decoder(trg, src_mask, trg_mask, latent.transpose(0, 1))
+            # src_mask = trg != config["tokens"]["pad"]
+            # src_mask = src_mask.repeat([1, 1, src_mask.shape[-1]])
+            # src_mask = src_mask.reshape(trg_mask.shape).transpose(-1, -2)
+            out = self.decoder(trg, None, trg_mask, latent.transpose(0, 1))
             outs.append(out)
 
         # Format results
@@ -240,7 +241,7 @@ class Trainer:
             src_attention = [drums_src_attn, bass_src_attn, guitar_src_attn, strings_src_attn]
 
             print("Logging images...")
-            self.logger.log_latent(self.latent)
+            # self.logger.log_latent(self.latent)
             self.logger.log_attn_heatmap(enc_attention, dec_attention, src_attention)
             self.logger.log_examples(srcs, trgs)
 
@@ -418,11 +419,7 @@ class Trainer:
         # Print info about training
         time.sleep(1.)  # sleep for one second to let the machine connect to wandb
         if config["train"]["verbose"]:
-            cmem_range = config["model"]["cmem_len"] * config["model"]["cmem_ratio"]
-            max_range = config["model"]["layers"] * (cmem_range + config["model"]["mem_len"])
-            given = config["data"]["bars"] * config["model"]["seq_len"]
-            assert given <= max_range, "Given {} as input to model with max range {}".format(given, max_range)
-            print("Giving", given, "as input to model with a maximum range of", max_range)
+            print("NO MASKING!!!!!!!!!!!!!!!!!!!")
             print("Giving", len(tr_loader), "training samples and", len(ts_loader), "test samples")
             print("Final set has size", len(dataset.final_set))
             print("Model has", config["model"]["layers"], "layers")

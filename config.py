@@ -15,7 +15,7 @@ config = {
         "use_src_mask": False,
         "use_rel_pos": False,
         "scheduled_sampling": True,
-        "compress_latents": True,
+        "compress_latents": False,
         "verbose": True,
         "make_songs": True,
         "log_images": True,

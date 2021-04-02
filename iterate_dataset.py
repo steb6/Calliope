@@ -53,7 +53,8 @@ class SongIterator(torch.utils.data.Dataset):
                 pad_mask = np.matmul(line_mask[:, np.newaxis], line_mask[np.newaxis, :])
                 subsequent_mask = np.expand_dims(np.tril(np.ones((trg.shape[-1], trg.shape[-1]))), (0, 1))
                 subsequent_mask = subsequent_mask.astype(np.bool)
-                trg_mask[i][b] = pad_mask & subsequent_mask
+                # trg_mask[i][b] = pad_mask & subsequent_mask
+                trg_mask[i][b] = subsequent_mask
         src = src[..., 1:]
         src_mask = src_mask[..., 1:]
         return src, trg, src_mask, trg_mask, trg_y

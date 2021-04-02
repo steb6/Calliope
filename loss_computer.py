@@ -43,10 +43,14 @@ class SimpleLossCompute:
             x_bass = x_bar[2]
             x_strings = x_bar[3]
 
-            n_tokens_drums = (y_drums != self.pad).sum()
-            n_tokens_guitar = (y_guitar != self.pad).sum()
-            n_tokens_bass = (y_bass != self.pad).sum()
-            n_tokens_strings = (y_strings != self.pad).sum()
+            # n_tokens_drums = (y_drums != self.pad).sum()
+            # n_tokens_guitar = (y_guitar != self.pad).sum()
+            # n_tokens_bass = (y_bass != self.pad).sum()
+            # n_tokens_strings = (y_strings != self.pad).sum()
+            n_tokens_drums = torch.numel(y_drums)
+            n_tokens_guitar = torch.numel(y_guitar)
+            n_tokens_bass = torch.numel(y_bass)
+            n_tokens_strings = torch.numel(y_strings)
 
             loss_drums = self.smooth_label(x_drums, y_drums) / n_tokens_drums
             loss_guitar = self.smooth_label(x_guitar, y_guitar) / n_tokens_guitar
@@ -82,22 +86,24 @@ class LabelSmoothing(nn.Module):
         true_dist = x.data.clone()
         true_dist.fill_(self.smoothing / (self.size - 2))
         true_dist.scatter_(2, target.data.unsqueeze(2), self.confidence)
-        true_dist[:, :, self.padding_idx] = 0  # it was true_dist[:, self.padding_idx] = 0  # TODO CHECK BETTER
-        mask = torch.nonzero(target.data == self.padding_idx)
-        # if mask.dim() > 0:
-        for elem in mask:
-            true_dist[elem[0], elem[1], :] = 0
+        # true_dist[:, :, self.padding_idx] = 0  # it was true_dist[:, self.padding_idx] = 0  # TODO CHECK BETTER
+        # mask = torch.nonzero(target.data == self.padding_idx)
+        # # if mask.dim() > 0:
+        # for elem in mask:
+        #     true_dist[elem[0], elem[1], :] = 0
         self.true_dist = true_dist
         return self.criterion(x, Variable(true_dist, requires_grad=False))
 
 
 def compute_accuracy(x, y, pad):  # TODO remove pad
     assert x.shape == y.shape
-    y_pad = y != pad
-    true = ((x == y) & y_pad).sum()
-    count = y_pad.sum().item()
+    # y_pad = y != pad
+    # true = ((x == y) & y_pad).sum()
+    # count = y_pad.sum().item()
+    # return true/count
+    true = (x == y).sum()
+    count = torch.numel(x)
     return true/count
-
 
 def calc_gradient_penalty(model, real_data, gen_data):
     device = config["train"]["device"]
