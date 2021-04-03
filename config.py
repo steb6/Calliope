@@ -11,17 +11,15 @@ n_bars = 1
 config = {
     "train": {
         # MODALITIES
-        "use_memories": False,
-        "use_src_mask": False,
         "use_rel_pos": True,
         "scheduled_sampling": False,
         "compress_latents": False,
         "verbose": True,
-        "make_songs": True,
+        "make_songs": False,
         "log_images": True,
         "do_eval": False,
         "aae": False,
-        "test_losses": False,
+        "test_losses": True,
         "device": "cuda" if remote else "cuda",
         "batch_size": 8 if remote else 3,  # 128 for 1 layer, 30 for 6 layer
         "test_size": 0.001 if remote else 0.1,  # 0.00001

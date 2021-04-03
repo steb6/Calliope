@@ -1,429 +1,231 @@
-import torch.nn as nn
+import numpy as np
 import torch
-import math
-from torch.nn import functional as F
-import copy
-from config import config
+import torch.nn as nn
+import torch.nn.functional as F
+import math, copy, time
 from torch.autograd import Variable
+import matplotlib.pyplot as plt
+import seaborn
+from iterate_dataset import SongIterator
+from torchtext.legacy import data, datasets
+import spacy
+from config import config, max_bar_length
+seaborn.set_context(context="talk")
 
 
-def ifn(x, i):
-    return x[i] if x is not None else None
+class EncoderDecoder(nn.Module):
+    """
+    A standard Encoder-Decoder architecture. Base for this and many
+    other models.
+    """
+
+    def __init__(self, encoder, decoder, src_embed, tgt_embed, generator):
+        super(EncoderDecoder, self).__init__()
+        self.encoder = encoder
+        self.decoder = decoder
+        self.src_embed = src_embed
+        self.tgt_embed = tgt_embed
+        self.generator = generator
+
+    def forward(self, src, tgt, src_mask, tgt_mask):
+        "Take in and process masked src and target sequences."
+        return self.decode(self.encode(src, src_mask), src_mask,
+                           tgt, tgt_mask)
+
+    def encode(self, src, src_mask):
+        return self.encoder(self.src_embed(src), src_mask)
+
+    def decode(self, memory, src_mask, tgt, tgt_mask):
+        return self.decoder(self.tgt_embed(tgt), memory, src_mask, tgt_mask)
 
 
-class CompressiveEncoder(nn.Module):
-    def __init__(self,
-                 d_model=config["model"]["d_model"],
-                 heads=config["model"]["heads"],
-                 ff_mul=config["model"]["ff_mul"],
-                 ff_dropout=config["model"]["ff_dropout"],
-                 layers=config["model"]["layers"],
-                 vocab_size=config["tokens"]["vocab_size"],
-                 ):
-        super(CompressiveEncoder, self).__init__()
+class Generator(nn.Module):
+    "Define standard linear + softmax generation step."
+    def __init__(self, d_model, vocab):
+        super(Generator, self).__init__()
+        self.proj = nn.Linear(d_model, vocab)
 
-        c = copy.deepcopy
-
-        if config["train"]["use_rel_pos"]:
-            self_attn = Residual(PreNorm(d_model, RelMultiHeadedAttention(heads, d_model, dropout=0.1)))
-        else:
-            self_attn = Residual(PreNorm(d_model, MultiHeadedAttention(heads, d_model, dropout=0.1)))
-
-        ff = Residual(PreNorm(d_model, FeedForward(d_model, ff_mul, dropout=ff_dropout)))
-
-        encoder = Encoder(EncoderLayer(c(self_attn), c(ff)), layers, vocab_size, d_model)
-        self.drums_encoder = c(encoder)
-        self.guitar_encoder = c(encoder)
-        self.bass_encoder = c(encoder)
-        self.strings_encoder = c(encoder)
-        for p in self.parameters():
-            if p.dim() > 1:
-                nn.init.xavier_uniform_(p)
-
-    def forward(self, seq, mask):
-        d_z = self.drums_encoder(seq[0], ifn(mask, 0))
-        g_z = self.guitar_encoder(seq[1], ifn(mask, 1))
-        b_z = self.bass_encoder(seq[2], ifn(mask, 2))
-        s_z = self.strings_encoder(seq[3], ifn(mask, 3))
-        latents = torch.stack([d_z, g_z, b_z, s_z], dim=1)
-        return latents
+    def forward(self, x):
+        return F.log_softmax(self.proj(x), dim=-1)
 
 
-class CompressiveDecoder(nn.Module):
-    def __init__(self,
-                 d_model=config["model"]["d_model"],
-                 heads=config["model"]["heads"],
-                 ff_mul=config["model"]["ff_mul"],
-                 ff_dropout=config["model"]["ff_dropout"],
-                 layers=config["model"]["layers"],
-                 vocab_size=config["tokens"]["vocab_size"],
-                 ):
-        super(CompressiveDecoder, self).__init__()
-
-        c = copy.deepcopy
-
-        if config["train"]["use_rel_pos"]:
-            self_attn = Residual(PreNorm(d_model, RelMultiHeadedAttention(heads, d_model, dropout=0.1)))
-        else:
-            self_attn = Residual(PreNorm(d_model, MultiHeadedAttention(heads, d_model, dropout=0.1)))
-
-        src_attn = Residual(PreNorm(d_model, MultiHeadedAttention(heads, d_model, dropout=0.1)))
-        ff = Residual(PreNorm(d_model, FeedForward(d_model, ff_mul, dropout=ff_dropout)))
-
-        decoder = Decoder(DecoderLayer(c(self_attn), c(src_attn), c(ff)), layers, vocab_size, d_model)
-
-        self.drums_decoder = c(decoder)
-        self.guitar_decoder = c(decoder)
-        self.bass_decoder = c(decoder)
-        self.strings_decoder = c(decoder)
-        self.generator = Generator(d_model, vocab_size)
-        for p in self.parameters():
-            if p.dim() > 1:
-                nn.init.xavier_uniform_(p)
-
-    def forward(self, trg, src_mask, trg_mask, latent):
-        d_out = self.drums_decoder(trg[0], ifn(src_mask, 0), ifn(trg_mask, 0), latent[0])
-        g_out = self.guitar_decoder(trg[1], ifn(src_mask, 1), ifn(trg_mask, 1), latent[1])
-        b_out = self.bass_decoder(trg[2], ifn(src_mask, 2), ifn(trg_mask, 2), latent[2])
-        s_out = self.strings_decoder(trg[3], ifn(src_mask, 3), ifn(trg_mask, 3), latent[3])
-        output = torch.stack([d_out, g_out, b_out, s_out], dim=0)
-        output = self.generator(output)
-        return output
+def clones(module, N):
+    "Produce N identical layers."
+    return nn.ModuleList([copy.deepcopy(module) for _ in range(N)])
 
 
 class Encoder(nn.Module):
-    def __init__(self, layer, N, vocab_size, d_model):
+    "Core encoder is a stack of N layers"
+
+    def __init__(self, layer, N):
         super(Encoder, self).__init__()
         self.layers = clones(layer, N)
-        self.embed = nn.Embedding(vocab_size, d_model)
-        self.N = N
-        self.norm = nn.LayerNorm(d_model)
+        self.norm = LayerNorm(layer.size)
 
-        max_klen = config["model"]["seq_len"]
-        n_head = config["model"]["heads"]
-        d_head = config["model"]["d_model"] // config["model"]["heads"]
-        self.r_emb = nn.Parameter(torch.Tensor(N, n_head, max_klen, d_head))
-        self.r_w_bias = nn.Parameter(torch.Tensor(N, n_head, d_head))
-        self.r_bias = nn.Parameter(torch.Tensor(N, n_head, max_klen))
-
-        self.pos = PositionalEncoding(d_model)
-
-    def forward(self, seq, mask):
-        seq = self.embed(seq)
-
-        if not config["train"]["use_rel_pos"]:
-            seq = self.pos(seq)
-
-        i = 0
+    def forward(self, x, mask):
+        "Pass the input (and mask) through each layer in turn."
         for layer in self.layers:
-            seq = layer(seq, mask, self.r_emb[i], self.r_w_bias[i], self.r_bias[i])
-            i += 1
-        return self.norm(seq)
+            x = layer(x, mask)
+        return self.norm(x)
 
 
-class Decoder(nn.Module):
-    def __init__(self, layer, N, vocab_size, d_model):
-        super(Decoder, self).__init__()
-        self.layers = clones(layer, N)
-        self.embed = nn.Embedding(vocab_size, d_model)
-        self.N = N
-        self.norm = nn.LayerNorm(d_model)
+class LayerNorm(nn.Module):
+    "Construct a layernorm module (See citation for details)."
+    def __init__(self, features, eps=1e-6):
+        super(LayerNorm, self).__init__()
+        self.a_2 = nn.Parameter(torch.ones(features))
+        self.b_2 = nn.Parameter(torch.zeros(features))
+        self.eps = eps
 
-        max_klen = config["model"]["seq_len"]
-        n_head = config["model"]["heads"]
-        d_head = config["model"]["d_model"] // config["model"]["heads"]
-        self.r_emb = nn.Parameter(torch.Tensor(N, n_head, max_klen, d_head))
-        self.r_w_bias = nn.Parameter(torch.Tensor(N, n_head, d_head))
-        self.r_bias = nn.Parameter(torch.Tensor(N, n_head, max_klen))
+    def forward(self, x):
+        mean = x.mean(-1, keepdim=True)
+        std = x.std(-1, keepdim=True)
+        return self.a_2 * (x - mean) / (std + self.eps) + self.b_2
 
-        self.pos = PositionalEncoding(d_model)
-        self.norm = nn.LayerNorm(d_model)
 
-    def forward(self, trg, src_mask, trg_mask, latent):
-        trg = self.embed(trg)
+class SublayerConnection(nn.Module):
+    """
+    A residual connection followed by a layer norm.
+    Note for code simplicity the norm is first as opposed to last.
+    """
+    def __init__(self, size, dropout):
+        super(SublayerConnection, self).__init__()
+        self.norm = LayerNorm(size)
+        self.dropout = nn.Dropout(dropout)
 
-        if not config["train"]["use_rel_pos"]:
-            trg = self.pos(trg)
-
-        i = 0
-        for layer in self.layers:
-            trg = layer(trg, src_mask, trg_mask, latent, self.r_emb[i], self.r_w_bias[i], self.r_bias[i])
-            i += 1
-        return self.norm(trg)
+    def forward(self, x, sublayer):
+        "Apply residual connection to any sublayer with the same size."
+        return x + self.dropout(sublayer(self.norm(x)))
 
 
 class EncoderLayer(nn.Module):
-    def __init__(self, self_attn, feed_forward):
+    "Encoder is made up of self-attn and feed forward (defined below)"
+    def __init__(self, size, self_attn, feed_forward, dropout):
         super(EncoderLayer, self).__init__()
         self.self_attn = self_attn
         self.feed_forward = feed_forward
+        self.sublayer = clones(SublayerConnection(size, dropout), 2)
+        self.size = size
 
-    def forward(self, x, input_mask, pos_emb, r_w_bias, r_bias):
-        x, = self.self_attn(x, key=x, value=x, mask=input_mask, r_emb=pos_emb, r_w_bias=r_w_bias, r_bias=r_bias)
-        x, = self.feed_forward(x)
-        return x
+    def forward(self, x, mask):
+        "Follow Figure 1 (left) for connections."
+        x = self.sublayer[0](x, lambda x: self.self_attn(x, x, x, mask))
+        return self.sublayer[1](x, self.feed_forward)
+
+
+class Decoder(nn.Module):
+    "Generic N layer decoder with masking."
+
+    def __init__(self, layer, N):
+        super(Decoder, self).__init__()
+        self.layers = clones(layer, N)
+        self.norm = LayerNorm(layer.size)
+
+    def forward(self, x, memory, src_mask, tgt_mask):
+        for layer in self.layers:
+            x = layer(x, memory, src_mask, tgt_mask)
+        return self.norm(x)
 
 
 class DecoderLayer(nn.Module):
-    def __init__(self, self_attn, src_attn, feed_forward):
+    "Decoder is made of self-attn, src-attn, and feed forward (defined below)"
+
+    def __init__(self, size, self_attn, src_attn, feed_forward, dropout):
         super(DecoderLayer, self).__init__()
+        self.size = size
         self.self_attn = self_attn
         self.src_attn = src_attn
         self.feed_forward = feed_forward
+        self.sublayer = clones(SublayerConnection(size, dropout), 3)
 
-    def forward(self, x, src_mask, trg_mask, latent, pos_emb, r_w_bias, r_bias):
-        x, = self.self_attn(x, key=x, value=x, mask=trg_mask, r_emb=pos_emb, r_w_bias=r_w_bias, r_bias=r_bias)
-        x, = self.src_attn(x, key=latent, value=latent, mask=src_mask)
-        x, = self.feed_forward(x)
-        return x
+    def forward(self, x, memory, src_mask, tgt_mask):
+        "Follow Figure 1 (right) for connections."
+        m = memory
+        x = self.sublayer[0](x, lambda x: self.self_attn(x, x, x, tgt_mask))
+        x = self.sublayer[1](x, lambda x: self.src_attn(x, m, m, src_mask))
+        return self.sublayer[2](x, self.feed_forward)
 
 
-class RelMultiHeadedAttention(nn.Module):
-    """
-    https://github.com/kimiyoung/transformer-xl/blob/44781ed21dbaec88b280f74d9ae2877f52b492a5/pytorch/mem_transformer.py#L293
-    """
+def subsequent_mask(size):
+    "Mask out subsequent positions."
+    attn_shape = (1, size, size)
+    subsequent_mask = np.triu(np.ones(attn_shape), k=1).astype('uint8')
+    return torch.from_numpy(subsequent_mask) == 0
 
-    def __init__(self, h, d_model, dropout=0.1):
-        super(RelMultiHeadedAttention, self).__init__()
-        assert d_model % h == 0
-        self.d_out = d_model // h
-        self.h = h
-        self.linears = nn.ModuleList([nn.Linear(d_model, d_model, bias=False) for _ in range(4)])
-        self.dropout = nn.Dropout(p=dropout)
-        self.scale = 1 / (h ** 0.5)
-        self.compress_mem_fn = ConvCompress(d_model, config["model"]["cmem_ratio"])
-        self.seq_len = config["model"]["seq_len"]
-        self.mem_len = config["model"]["mem_len"]
-        self.cmem_len = config["model"]["cmem_len"]
-        self.reconstruction_attn_dropout = nn.Dropout(config["model"]["reconstruction_attn_dropout"])
-        self.attn = None
 
-    def forward(self, query, key=None, value=None, mask=None, r_emb=None, r_w_bias=None, r_bias=None):
-        """
-        :param memories:
-        :param query: batch_size x q_len x d_model
-        :param key: batch_size x k_len x d_model
-        :param value: batch_size x v_len x d_model
-        :param mask: batch_size x q_len ( x v_len)
-        :param r_emb: n_head x max_klen x d_head
-        :param r_w_bias: n_head x d_head
-        :param r_bias: n_head x max_klen
-        :return: batch_size x q_len x d_model
-        """
-        n_batches = query.size(0)
-
-        k_len = key.size(1)
-
-        # batch_size x n_head x seq_len x d_head
-        q, k, v = [l(x).view(n_batches, -1, self.h, self.d_out).transpose(1, 2)
-                   for l, x in zip(self.linears, (query, key, value))]
-
-        r_emb = r_emb[:, -k_len:, :]  # TODO try this (first or last?)
-        r_bias = r_bias[:, -k_len:]  # TODO try this (first or last?)
-
-        r_query = q + r_w_bias[None, :, None, :]
-
-        AC = torch.einsum('bnid,bnjd->bnij', r_query, k)
-        B_ = torch.einsum('bnid,njd->bnij', q, r_emb)  # r_emb_pe must be 3 4 200
-        D_ = r_bias[None, :, None]
-        BD = shift(B_ + D_)  # TODO place original shift
-
-        attn_score = AC + BD
-        attn_score.mul_(self.scale)
-
-        if mask is not None:  # TODO expand mask
-            if mask.dim() == 2:  # transform linear mask to square mask
-                mask = mask[:, :, None] * mask[:, None, :]
-            mask = mask.unsqueeze(1)  # apply same mask to all heads
-            attn_score = attn_score.masked_fill(~mask, -1e9)  # TODO empty row becomes 0.005 is it good?
-
-        attn_prob = F.softmax(attn_score, dim=-1)
-        attn_prob = self.dropout(attn_prob)
-        self.attn = attn_prob.detach()
-
-        attn_vec = torch.einsum('bnij,bnjd->bnid', attn_prob, v)
-        attn_vec = attn_vec.transpose(1, 2).contiguous().view(n_batches, -1, self.h * self.d_out)
-
-        attn_out = self.linears[-1](attn_vec)
-
-        return attn_out
+def attention(query, key, value, mask=None, dropout=None):
+    "Compute 'Scaled Dot Product Attention'"
+    d_k = query.size(-1)
+    scores = torch.matmul(query, key.transpose(-2, -1)) \
+             / math.sqrt(d_k)
+    if mask is not None:
+        scores = scores.masked_fill(mask == 0, -1e9)
+    p_attn = F.softmax(scores, dim = -1)
+    if dropout is not None:
+        p_attn = dropout(p_attn)
+    return torch.matmul(p_attn, value), p_attn
 
 
 class MultiHeadedAttention(nn.Module):
     def __init__(self, h, d_model, dropout=0.1):
+        "Take in model size and number of heads."
         super(MultiHeadedAttention, self).__init__()
         assert d_model % h == 0
-        self.d_out = d_model // h
+        # We assume d_v always equals d_k
+        self.d_k = d_model // h
         self.h = h
-        self.linears = nn.ModuleList([nn.Linear(d_model, d_model, bias=False) for _ in range(4)])
-        self.dropout = nn.Dropout(p=dropout)
+        self.linears = clones(nn.Linear(d_model, d_model), 4)
         self.attn = None
+        self.dropout = nn.Dropout(p=dropout)
 
-    def forward(self, query, key=None, value=None, mask=None, pos_emb=None, r_emb=None, r_w_bias=None, r_bias=None):
+    def forward(self, query, key, value, mask=None):
+        "Implements Figure 2"
         if mask is not None:
-            if mask.dim() == 2:  # transform linear mask to square mask
-                mask = mask[:, :, None] * mask[:, None, :]
-            mask = mask.unsqueeze(1)  # apply same mask to all heads
-        n_batches = query.size(0)
-        query, key, value = [l(x).view(n_batches, -1, self.h, self.d_out).transpose(1, 2)
-                             for l, x in zip(self.linears, (query, key, value))]
-        x, weights = full_attn(query, key, value, mask=mask, dropout=self.dropout, pos_emb=pos_emb)
-        self.attn = weights
-        x = x.transpose(1, 2).contiguous().view(n_batches, -1, self.h * self.d_out)
+            # Same mask applied to all h heads.
+            mask = mask.unsqueeze(1)
+        nbatches = query.size(0)
+
+        # 1) Do all the linear projections in batch from d_model => h x d_k
+        query, key, value = \
+            [l(x).view(nbatches, -1, self.h, self.d_k).transpose(1, 2)
+             for l, x in zip(self.linears, (query, key, value))]
+
+        # 2) Apply attention on all the projected vectors in batch.
+        x, self.attn = attention(query, key, value, mask=mask,
+                                 dropout=self.dropout)
+
+        # 3) "Concat" using a view and apply a final linear.
+        x = x.transpose(1, 2).contiguous() \
+            .view(nbatches, -1, self.h * self.d_k)
         return self.linears[-1](x)
 
 
-class FeedForward(nn.Module):
-    def __init__(self, dim, ff_mul, dropout=0.):
-        super().__init__()
-        activation = nn.GELU
-        self.w1 = nn.Linear(dim, dim * ff_mul)
-        self.act = activation()
+class PositionwiseFeedForward(nn.Module):
+    "Implements FFN equation."
+    def __init__(self, d_model, d_ff, dropout=0.1):
+        super(PositionwiseFeedForward, self).__init__()
+        self.w_1 = nn.Linear(d_model, d_ff)
+        self.w_2 = nn.Linear(d_ff, d_model)
         self.dropout = nn.Dropout(dropout)
-        self.w2 = nn.Linear(dim * ff_mul, dim)
 
     def forward(self, x):
-        x = self.w1(x)
-        x = self.act(x)
-        x = self.dropout(x)
-        x = self.w2(x)
-        return x
-
-
-class Residual(nn.Module):
-    def __init__(self, fn):
-        super().__init__()
-        self.fn = fn
-
-    def forward(self, x, **kwargs):
-        out = self.fn(x, **kwargs)
-        out = cast_tuple(out)
-        ret = (out[0] + x), *out[1:]
-        return ret
-
-
-class PreNorm(nn.Module):
-    def __init__(self, dim, fn):
-        super().__init__()
-        self.norm = nn.LayerNorm(dim)
-        self.fn = fn
-
-    def forward(self, x, **kwargs):
-        x = self.norm(x)
-        return self.fn(x, **kwargs)
-
-
-class Norm(nn.Module):
-    def __init__(self, dim, fn):
-        super().__init__()
-        self.norm = nn.LayerNorm(dim)
-        self.fn = fn
-
-    def forward(self, x, **kwargs):
-        x = self.fn(x, **kwargs)
-        return self.norm(x[0]), *x[1:]
-
-
-class Generator(nn.Module):
-    def __init__(self, d_model, vocab):
-        super(Generator, self).__init__()
-        self.proj_drums = nn.Linear(d_model, vocab)
-        self.proj_bass = nn.Linear(d_model, vocab)
-        self.proj_guitar = nn.Linear(d_model, vocab)
-        self.proj_strings = nn.Linear(d_model, vocab)
-
-    def forward(self, x):
-        out_drums = F.log_softmax(self.proj_drums(x[0]), dim=-1)
-        out_bass = F.log_softmax(self.proj_bass(x[1]), dim=-1)
-        out_guitar = F.log_softmax(self.proj_guitar(x[2]), dim=-1)
-        out_strings = F.log_softmax(self.proj_strings(x[3]), dim=-1)
-        out = torch.stack([out_drums, out_bass, out_guitar, out_strings], dim=0)
-        return out
-
-
-class ConvCompress(nn.Module):
-    def __init__(self, dim, ratio=4):
-        super().__init__()
-        self.conv = nn.Conv1d(dim, dim, ratio, stride=ratio)
-
-    def forward(self, mem):
-        mem = mem.transpose(1, 2)
-        compressed_mem = self.conv(mem)
-        return compressed_mem.transpose(1, 2)
+        return self.w_2(self.dropout(F.relu(self.w_1(x))))
 
 
 class Embeddings(nn.Module):
-    def __init__(self, vocab, d_model):
+    def __init__(self, d_model, vocab):
         super(Embeddings, self).__init__()
         self.lut = nn.Embedding(vocab, d_model)
         self.d_model = d_model
 
     def forward(self, x):
-        aux = self.lut(x)
-        return aux * math.sqrt(self.d_model)
-
-
-def full_attn(q, k, v, mask=None, dropout=None, pos_emb=None):
-    *_, dim = q.shape
-    dots = torch.einsum('bhid,bhjd->bhij', q, k) * (dim ** -0.5)  # Q K^T
-
-    if mask is not None:
-        mask = mask[:, :, :dots.shape[2], :]  # during evaluation, must adapt mask to dots size
-        dots = dots.masked_fill(mask == 0, -1e9)  # same mask for all heads
-
-    attn = dots.softmax(dim=-1)
-
-    if dropout is not None:
-        attn = dropout(attn)
-
-    return torch.einsum('bhij,bhjd->bhid', attn, v), attn  # (Q K^T) V
-
-
-def clones(module, N):
-    """ Produce N identical layers."""
-    return nn.ModuleList([copy.deepcopy(module) for _ in range(N)])
-
-
-def shift(x):
-    """
-    It skews the matrix x, as done in Relative Local Attention of Music Transformer
-    0, 0, a     a, 0, 0
-    0, b, c =>  b, c, 0
-    d, e, f     d, e, f
-    """
-    *_, i, j = x.shape  # i=4, j=12
-    zero_pad = torch.zeros((*_, i, i), **to(x))
-    x = torch.cat([x, zero_pad], -1)  # i=4, j=26
-    l = i + j - 1  # 20
-    x = x.view(*_, -1)  #
-    zero_pad = torch.zeros(*_, -x.size(-1) % l, **to(x))
-    shifted = torch.cat([x, zero_pad], -1).view(*_, -1, l)
-    return shifted[..., :i, i - 1:]
-
-
-def to(t):
-    return {'dtype': t.dtype, 'device': t.device}
-
-
-# TODO *****************************************************************************************************************
-# REMOVE USELESS
-# TODO *****************************************************************************************************************
-
-def split_at_index(dim, index, t):
-    pre_slices = (slice(None),) * dim
-    left = (*pre_slices, slice(None, index))
-    right = (*pre_slices, slice(index, None))
-    return t[left], t[right]
-
-
-def cast_tuple(el):
-    return el if isinstance(el, tuple) else (el,)
+        return self.lut(x) * math.sqrt(self.d_model)
 
 
 class PositionalEncoding(nn.Module):
     "Implement the PE function."
 
-    def __init__(self, d_model, dropout=0.1, max_len=5000):
+    def __init__(self, d_model, dropout, max_len=5000):
         super(PositionalEncoding, self).__init__()
         self.dropout = nn.Dropout(p=dropout)
 
@@ -443,90 +245,346 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x)
 
 
-class SublayerConnection(nn.Module):
-    """
-    A residual connection followed by a layer norm.
-    Note for code simplicity the norm is first as opposed to last.
-    """
+def make_model(src_vocab, tgt_vocab, N=6,
+               d_model=512, d_ff=2048, h=8, dropout=0.1):
+    "Helper: Construct a model from hyperparameters."
+    c = copy.deepcopy
+    attn = MultiHeadedAttention(h, d_model)
+    ff = PositionwiseFeedForward(d_model, d_ff, dropout)
+    position = PositionalEncoding(d_model, dropout)
+    model = EncoderDecoder(
+        Encoder(EncoderLayer(d_model, c(attn), c(ff), dropout), N),
+        Decoder(DecoderLayer(d_model, c(attn), c(attn),
+                             c(ff), dropout), N),
+        nn.Sequential(Embeddings(d_model, src_vocab), c(position)),
+        nn.Sequential(Embeddings(d_model, tgt_vocab), c(position)),
+        Generator(d_model, tgt_vocab))
 
-    def __init__(self, size, dropout):
-        super(SublayerConnection, self).__init__()
-        self.norm = nn.LayerNorm(size)
-        self.dropout = nn.Dropout(dropout)
-
-    def forward(self, x, sublayer):
-        "Apply residual connection to any sublayer with the same size."
-        return x + self.dropout(sublayer(self.norm(x)))
-
-
-class PositionalEmbedding(nn.Module):
-    def __init__(self, demb):
-        super(PositionalEmbedding, self).__init__()
-
-        self.demb = demb
-
-        inv_freq = 1 / (10000 ** (torch.arange(0.0, demb, 2.0) / demb))
-        self.register_buffer('inv_freq', inv_freq)
-
-    def forward(self, pos_seq, bsz=None):
-        sinusoid_inp = torch.ger(pos_seq, self.inv_freq)
-        pos_emb = torch.cat([sinusoid_inp.sin(), sinusoid_inp.cos()], dim=-1)
-
-        if bsz is not None:
-            return pos_emb[:, None, :].expand(-1, bsz, -1)
-        else:
-            return pos_emb[:, None, :]
+    # This was important from their code.
+    # Initialize parameters with Glorot / fan_avg.
+    for p in model.parameters():
+        if p.dim() > 1:
+            nn.init.xavier_uniform_(p)
+    return model
 
 
-class MyMemoryAttention(nn.Module):
-    def __init__(self, h, dim, seq_len, mem_len, cmem_len, cmem_ratio, attn_dropout=0.1,
-                 reconstruction_attn_dropout=0.1):
-        super(MyMemoryAttention, self).__init__()
-        assert dim % h == 0
-        self.dim_head = dim // h
-        self.h = h
-        self.seq_len = seq_len
-        self.mem_len = mem_len
-        self.cmem_len = cmem_len
-        self.cmem_ratio = cmem_ratio
-        self.scale = self.dim_head ** (-0.5)  # 1/root(dim_head)
-        self.compress_mem_fn = ConvCompress(dim, cmem_ratio)
-        self.reconstruction_attn_dropout = nn.Dropout(reconstruction_attn_dropout)
-        self.multi_head_attention = MultiHeadedAttention(h, dim, attn_dropout)
-        self.norm1 = nn.LayerNorm(dim)
+class Batch:
+    "Object for holding a batch of data with mask during training."
 
-    def forward(self, h, memories=None, input_mask=None, pos_emb=None):
-        # Prepare mask
-        if input_mask is not None:
-            if input_mask.dim() == 2:  # encoder mask, cover just pad
-                input_mask = input_mask[:, :, None] * input_mask[:, None, :]
-            input_mask = F.pad(input_mask, (self.cmem_len + self.mem_len, 0), value=True)
-        # Algorithm from paper
-        m, cm = memories
-        mem = torch.cat((cm, m, h), dim=1)  # TODO x too?
-        a, weights = self.multi_head_attention(h, key=mem, value=mem, mask=input_mask, pos_emb=pos_emb)
-        a = self.norm1(a + h)
-        old_mem = m[:, :self.seq_len, :]
-        new_cm = self.compress_mem_fn(old_mem)
-        m = torch.cat((m, h), dim=1)[:, -self.mem_len:, :]
-        cm = torch.cat((cm, new_cm), dim=1)[:, -self.cmem_len:, :]
-        h = a
-        # Attention reconstruction
-        h_copy = h.detach().clone()
-        old_mem = torch.detach(old_mem)
-        Q = torch.detach(self.multi_head_attention.linears[0].weight.data)
-        K = torch.detach(self.multi_head_attention.linears[1].weight.data)
-        V = torch.detach(self.multi_head_attention.linears[2].weight.data)
+    def __init__(self, src, trg=None, pad=0):
+        self.src = src
+        self.src_mask = (src != pad).unsqueeze(-2)
+        if trg is not None:
+            self.trg = trg[:, :-1]
+            self.trg_y = trg[:, 1:]
+            self.trg_mask = \
+                self.make_std_mask(self.trg, pad)
+            self.ntokens = (self.trg_y != pad).data.sum()
 
-        def attn(hh, mm):
-            n_batches = hh.shape[0]
-            hQ = torch.matmul(hh, Q).view(n_batches, -1, self.h, self.dim_head).transpose(1, 2)
-            mK = torch.matmul(mm, K).view(n_batches, -1, self.h, self.dim_head).transpose(1, 2)
-            mV = torch.matmul(mm, V).view(n_batches, -1, self.h, self.dim_head).transpose(1, 2)
-            attention, _ = full_attn(hQ, mK, mV, dropout=self.reconstruction_attn_dropout)
-            return attention
+    @staticmethod
+    def make_std_mask(tgt, pad):
+        "Create a mask to hide padding and future words."
+        tgt_mask = (tgt != pad).unsqueeze(-2)
+        tgt_mask = tgt_mask & Variable(
+            subsequent_mask(tgt.size(-1)).type_as(tgt_mask.data))
+        return tgt_mask
 
-        new_cm = self.compress_mem_fn(old_mem)
-        l_attn = F.mse_loss(attn(h_copy, old_mem), attn(h_copy, new_cm))
 
-        return h, m, cm, l_attn, weights
+
+global max_src_in_batch, max_tgt_in_batch
+def batch_size_fn(new, count, sofar):
+    "Keep augmenting batch and calculate total number of tokens + padding."
+    global max_src_in_batch, max_tgt_in_batch
+    if count == 1:
+        max_src_in_batch = 0
+        max_tgt_in_batch = 0
+    max_src_in_batch = max(max_src_in_batch,  len(new.src))
+    max_tgt_in_batch = max(max_tgt_in_batch,  len(new.trg) + 2)
+    src_elements = count * max_src_in_batch
+    tgt_elements = count * max_tgt_in_batch
+    return max(src_elements, tgt_elements)
+
+
+class NoamOpt:
+    "Optim wrapper that implements rate."
+
+    def __init__(self, model_size, factor, warmup, optimizer):
+        self.optimizer = optimizer
+        self._step = 0
+        self.warmup = warmup
+        self.factor = factor
+        self.model_size = model_size
+        self._rate = 0
+
+    def step(self):
+        "Update parameters and rate"
+        self._step += 1
+        rate = self.rate()
+        for p in self.optimizer.param_groups:
+            p['lr'] = rate
+        self._rate = rate
+        self.optimizer.step()
+
+    def rate(self, step=None):
+        "Implement `lrate` above"
+        if step is None:
+            step = self._step
+        return self.factor * \
+               (self.model_size ** (-0.5) *
+                min(step ** (-0.5), step * self.warmup ** (-1.5)))
+
+
+def get_std_opt(model):
+    return NoamOpt(model.src_embed[0].d_model, 2, 4000,
+                   torch.optim.Adam(model.parameters(), lr=0, betas=(0.9, 0.98), eps=1e-9))
+
+
+class LabelSmoothing(nn.Module):
+    "Implement label smoothing."
+
+    def __init__(self, size, padding_idx, smoothing=0.0):
+        super(LabelSmoothing, self).__init__()
+        self.criterion = nn.KLDivLoss(size_average=False)
+        self.padding_idx = padding_idx
+        self.confidence = 1.0 - smoothing
+        self.smoothing = smoothing
+        self.size = size
+        self.true_dist = None
+
+    def forward(self, x, target):
+        assert x.size(1) == self.size
+        true_dist = x.data.clone()
+        true_dist.fill_(self.smoothing / (self.size - 2))
+        true_dist.scatter_(1, target.data.unsqueeze(1), self.confidence)
+        true_dist[:, self.padding_idx] = 0
+        mask = torch.nonzero(target.data == self.padding_idx)
+        if mask.dim() > 0:
+            true_dist.index_fill_(0, mask.squeeze(), 0.0)
+        self.true_dist = true_dist
+        return self.criterion(x, Variable(true_dist, requires_grad=False))
+
+
+def data_gen(V, batch, nbatches):
+    "Generate random data for a src-tgt copy task."
+    for i in range(nbatches):
+        data = torch.from_numpy(np.random.randint(1, V, size=(batch, 10)))
+        data[:, 0] = 1
+        src = torch.LongTensor(data.long())
+        tgt = torch.LongTensor(data.long())
+        yield Batch(src, tgt, 0)
+
+
+def data_gen_2(loader):
+    for batch in loader:
+        src, trg, _, _, _ = batch
+        src = src[:, 0, 0, :]
+        trg = trg[:, 0, 0, :]
+        src = torch.LongTensor(src.long())
+        trg = torch.LongTensor(trg.long())
+        yield Batch(src, trg, config["tokens"]["pad"])
+
+
+class SimpleLossCompute:
+    "A simple loss compute and train function."
+
+    def __init__(self, generator, criterion, opt=None):
+        self.generator = generator
+        self.criterion = criterion
+        self.opt = opt
+
+    def __call__(self, x, y, norm):
+        x = self.generator(x)
+        loss = self.criterion(x.contiguous().view(-1, x.size(-1)),
+                              y.contiguous().view(-1)) / norm
+        loss.backward()
+        if self.opt is not None:
+            self.opt.step()
+            self.opt.optimizer.zero_grad()
+        # compute accuracy
+        pad_mask = y != criterion.padding_idx
+        accuracy = ((torch.max(x, dim=-1).indices == y) & pad_mask).sum().item()
+        accuracy = accuracy / pad_mask.sum().item()
+        return loss.item() * norm, accuracy
+
+
+def run_epoch(data_iter, model, loss_compute):
+    "Standard Training and Logging Function"
+    start = time.time()
+    total_tokens = 0
+    total_loss = 0
+    total_accuracy = 0
+    tokens = 0
+    for i, batch in enumerate(data_iter):
+        out = model.forward(batch.src, batch.trg,
+                            batch.src_mask, batch.trg_mask)
+        loss, accuracy = loss_compute(out, batch.trg_y, batch.ntokens)
+        total_loss += loss
+        total_accuracy += accuracy
+        total_tokens += batch.ntokens
+        tokens += batch.ntokens
+        if i % 50 == 1:
+            elapsed = time.time() - start
+            print("Epoch Step: %d Loss: %f Tokens per Sec: %f" %
+                    (i, loss / batch.ntokens, tokens / elapsed))
+            start = time.time()
+            tokens = 0
+    return total_loss / total_tokens, total_accuracy / (i+1)
+
+# TODO IN ORDER TO WORK
+import os
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
+
+###################
+# TRAINING RANDOM #
+###################
+if True:
+    if __name__ == "__main__":
+        device = config["train"]["device"]
+        # Train the simple copy task.
+        V = 11
+        criterion = LabelSmoothing(size=V, padding_idx=0, smoothing=0.0)
+        model = make_model(V, V, N=2)
+        model_opt = NoamOpt(model.src_embed[0].d_model, 1, 400,
+                            torch.optim.Adam(model.parameters(), lr=0, betas=(0.9, 0.98), eps=1e-9))
+
+        for epoch in range(10):
+            model.train()
+            run_epoch(data_gen(V, 30, 20), model,
+                      SimpleLossCompute(model.generator, criterion, model_opt))
+            model.eval()
+            print(run_epoch(data_gen(V, 30, 5), model,
+                            SimpleLossCompute(model.generator, criterion, None)))
+
+        def greedy_decode(model, src, src_mask, max_len, start_symbol):
+            memory = model.encode(src, src_mask)
+            ys = torch.ones(1, 1).fill_(start_symbol).type_as(src.data)
+            for i in range(max_len-1):
+                out = model.decode(memory, src_mask,
+                                   Variable(ys),
+                                   Variable(subsequent_mask(ys.size(1))
+                                            .type_as(src.data)))
+                prob = model.generator(out[:, -1])
+                _, next_word = torch.max(prob, dim = 1)
+                next_word = next_word.data[0]
+                ys = torch.cat([ys,
+                                torch.ones(1, 1).type_as(src.data).fill_(next_word)], dim=1)
+            return ys
+
+        model.eval()
+        src = Variable(torch.LongTensor([[1,2,3,4,5,6,7,8,9,10]]) )
+        src_mask = Variable(torch.ones(1, 1, 10) )
+        print("Given", src)
+        print("Got", greedy_decode(model, src, src_mask, max_len=10, start_symbol=1))
+
+    ########################################### DRAW ######################################################################
+
+        tgt_sent = [1,2,3,4,5,6,7,8,9,10]
+        sent = [1,2,3,4,5,6,7,8,9,10]
+
+        def draw(data, x, y, ax):
+            seaborn.heatmap(data,
+                            xticklabels=x, square=True, yticklabels=y, vmin=0.0, vmax=1.0,
+                            cbar=False, ax=ax)
+
+
+        for layer in range(1, 2, 2):
+            fig, axs = plt.subplots(1, 4, figsize=(20, 10))
+            print("Encoder Layer", layer + 1)
+            for h in range(4):
+                draw(model.encoder.layers[layer].self_attn.attn[0, h].data,
+                     sent, sent if h == 0 else [], ax=axs[h])
+            plt.show()
+
+        for layer in range(1, 2, 2):
+            fig, axs = plt.subplots(1, 4, figsize=(20, 10))
+            print("Decoder Self Layer", layer + 1)
+            for h in range(4):
+                draw(model.decoder.layers[layer].self_attn.attn[0, h].data[:len(tgt_sent), :len(tgt_sent)],
+                     tgt_sent, tgt_sent if h == 0 else [], ax=axs[h])
+            plt.show()
+            print("Decoder Src Layer", layer + 1)
+            fig, axs = plt.subplots(1, 4, figsize=(20, 10))
+            for h in range(4):
+                draw(model.decoder.layers[layer].src_attn.attn[0, h].data[:len(tgt_sent), :len(sent)],
+                     sent, tgt_sent if h == 0 else [], ax=axs[h])
+            plt.show()
+
+##################
+# TRAINING DRUMS #
+##################
+if False:
+    if __name__ == "__main__":
+        device = config["train"]["device"]
+        dataset = SongIterator(dataset_path=config["paths"]["dataset"],
+                               test_size=config["train"]["test_size"],
+                               batch_size=config["train"]["batch_size"],
+                               n_workers=config["train"]["n_workers"])
+        tr_loader, ts_loader = dataset.get_loaders()
+
+
+        # Train the simple copy task.
+        V = config["tokens"]["vocab_size"]
+        criterion = LabelSmoothing(size=V, padding_idx=config["tokens"]["pad"], smoothing=0.0).to(device)
+        model = make_model(V, V, N=2).to(device)
+        model_opt = NoamOpt(model.src_embed[0].d_model, 1, 400,
+                            torch.optim.Adam(model.parameters(), lr=0, betas=(0.9, 0.98), eps=1e-9))
+
+        for epoch in range(10):
+            model.train()
+            run_epoch(data_gen_2(tr_loader), model, SimpleLossCompute(model.generator, criterion, model_opt))
+            model.eval()
+            print(run_epoch(data_gen_2(ts_loader), model, SimpleLossCompute(model.generator, criterion, None)))
+
+        def greedy_decode(model, src, src_mask, max_len, start_symbol):
+            memory = model.encode(src, src_mask)
+            ys = torch.ones(1, 1).fill_(start_symbol).type_as(src.data)
+            for i in range(max_len-1):
+                out = model.decode(memory, src_mask,
+                                   Variable(ys),
+                                   Variable(subsequent_mask(ys.size(1))
+                                            .type_as(src.data)))
+                prob = model.generator(out[:, -1])
+                _, next_word = torch.max(prob, dim = 1)
+                next_word = next_word.data[0]
+                ys = torch.cat([ys,
+                                torch.ones(1, 1).type_as(src.data).fill_(next_word)], dim=1)
+            return ys
+
+        model.eval()
+        src = Variable(torch.LongTensor([[1,2,3,4,5,6,7,8,9,10]]) )
+        src_mask = Variable(torch.ones(1, 1, 10) )
+        print(src)
+        print(greedy_decode(model, src, src_mask, max_len=10, start_symbol=1))
+
+    ########################################### DRAW ######################################################################
+
+        tgt_sent = [1,2,3,4,5,6,7,8,9,10]
+        sent = [1,2,3,4,5,6,7,8,9,10]
+
+        def draw(data, x, y, ax):
+            seaborn.heatmap(data,
+                            xticklabels=x, square=True, yticklabels=y, vmin=0.0, vmax=1.0,
+                            cbar=False, ax=ax)
+
+
+        for layer in range(1, 2, 2):
+            fig, axs = plt.subplots(1, 4, figsize=(20, 10))
+            print("Encoder Layer", layer + 1)
+            for h in range(4):
+                draw(model.encoder.layers[layer].self_attn.attn[0, h].data,
+                     sent, sent if h == 0 else [], ax=axs[h])
+            plt.show()
+
+        for layer in range(1, 2, 2):
+            fig, axs = plt.subplots(1, 4, figsize=(20, 10))
+            print("Decoder Self Layer", layer + 1)
+            for h in range(4):
+                draw(model.decoder.layers[layer].self_attn.attn[0, h].data[:len(tgt_sent), :len(tgt_sent)],
+                     tgt_sent, tgt_sent if h == 0 else [], ax=axs[h])
+            plt.show()
+            print("Decoder Src Layer", layer + 1)
+            fig, axs = plt.subplots(1, 4, figsize=(20, 10))
+            for h in range(4):
+                draw(model.decoder.layers[layer].src_attn.attn[0, h].data[:len(tgt_sent), :len(sent)],
+                     sent, tgt_sent if h == 0 else [], ax=axs[h])
+            plt.show()

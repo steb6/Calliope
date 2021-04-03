@@ -451,10 +451,6 @@ class Trainer:
                 print("Compressing latents")
             else:
                 print("NOT compressing latents")
-            if config["train"]["use_src_mask"]:
-                print("using src mask")
-            else:
-                print("NOT using src mask")
             if config["train"]["use_rel_pos"]:
                 print("Using relative positional encoding")
             else:
