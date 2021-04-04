@@ -1,17 +1,14 @@
 import torch
 import os
 from config import config
-from utilities import get_memories
 from tqdm import tqdm
 import numpy as np
-from utilities import get_prior
+from utilities import get_prior, Batch
 from iterate_dataset import SongIterator
 from create_bar_dataset import NoteRepresentationManager
-from utilities import create_trg_mask
 from config import remote, n_bars
 import copy
 from loss_computer import compute_accuracy
-from compressive_transformer import Batch
 from torch.autograd import Variable
 from config import max_bar_length
 
@@ -89,31 +86,6 @@ class Tester:
     def ifn(elem, i):
         return None if elem is None else elem[i]
 
-    # def greedy_decode(self, latents, n, desc):
-    #     outs = []
-    #     outs_limited = []
-    #
-    #     for i in tqdm(range(n), position=0, leave=True, desc=desc):
-    #         trg = np.full((4, 1, 1), config["tokens"]["sos"])  # track batch tok
-    #         trg = torch.LongTensor(trg).to(config["train"]["device"])
-    #         for j in range(config["model"]["seq_len"] - 1):  # for each token of each bar
-    #             trg_mask = create_trg_mask(trg.cpu().numpy())
-    #             out = self.decoder(trg, None, trg_mask, latents[i].transpose(0, 1))
-    #             out = torch.max(out, dim=-1).indices
-    #             trg = torch.cat((trg, out[..., -1:]), dim=-1)
-    #
-    #         trg_mask = create_trg_mask(trg.cpu().numpy())
-    #         out = self.decoder(trg, None, trg_mask, latents[i].transpose(0, 1))
-    #         out = torch.max(out, dim=-1).indices
-    #         outs.append(copy.deepcopy(out))
-    #         for t in range(len(out)):  # for each track
-    #             eos_indices = torch.nonzero(out[t] == config["tokens"]["eos"])
-    #             if len(eos_indices) == 0:
-    #                 continue
-    #             eos_index = eos_indices[0][1]  # first occurrence, column index
-    #             out[t][eos_index:] = config["tokens"]["pad"]
-    #         outs_limited.append(copy.deepcopy(out))
-    #     return outs, outs_limited
     @staticmethod
     def subsequent_mask(size):
         "Mask out subsequent positions."
@@ -122,17 +94,41 @@ class Tester:
         return torch.from_numpy(subsequent_mask) == 0
 
     def greedy_decode(self, encoder, decoder, generator, src, src_mask, max_len, start_symbol):
-        memory = encoder.forward(src, src_mask)
+        # TODO deve funzionare multibar anzichè una barra sola er volta per la compressione e decompressione
+        latents = encoder.forward(src, src_mask)
+
+        if config["train"]["compress_latents"]:
+            latent = self.latent_compressor([latents])
+            latents = self.latent_decompressor(latent)
+
         ys = torch.ones(4, 1, 1).fill_(start_symbol).type_as(src.data)
         for i in range(max_len - 1):
             trg_mask = Variable(self.subsequent_mask(ys.size(1)).type_as(src.data)).repeat(4, 1, 1, 1)
-            out = decoder(Variable(ys), memory, src_mask, trg_mask)
+            out = decoder(Variable(ys), latents[0], src_mask, trg_mask)  # TODO MASK
             prob = generator(out[:, :, -1, :])
             _, next_word = torch.max(prob, dim=-1)
             next_word = next_word.unsqueeze(1)
             ys = torch.cat([ys, next_word], dim=-1)
-            # ys = torch.cat([ys, torch.ones(4, 1, 1).type_as(src.data).fill_(next_word)], dim=1)
         return ys
+
+    def greedy_decode2(self, latents, decoder, generator, n_bars=n_bars, src_mask=None):
+
+        if config["train"]["compress_latents"]:
+            latents = self.latent_decompressor(latents)
+
+        outs = []
+        for i in range(n_bars):
+            ys = torch.ones(4, 1, 1).fill_(config["tokens"]["sos"]).type_as(src.data)
+            for i in range(max_bar_length - 1):
+                trg_mask = Variable(self.subsequent_mask(ys.size(1)).type_as(src.data)).repeat(4, 1, 1, 1)
+                out = decoder(Variable(ys), latents[i], src_mask, trg_mask)  # TODO MASK
+                prob = generator(out[:, :, -1, :])
+                _, next_word = torch.max(prob, dim=-1)
+                next_word = next_word.unsqueeze(1)
+                ys = torch.cat([ys, next_word], dim=-1)
+            outs.append(ys)
+        return ys
+
 
     def generate(self, note_manager):  # TODO CHECK THIS
         latent = get_prior((1, config["model"]["d_model"])).to(config["train"]["device"])

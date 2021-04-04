@@ -12,13 +12,13 @@ config = {
     "train": {
         # MODALITIES
         "use_rel_pos": True,
-        "scheduled_sampling": False,
-        "compress_latents": False,
+        "scheduled_sampling": True,
+        "compress_latents": True,
         "verbose": True,
         "make_songs": True,
-        "log_images": True,
+        "log_images": False,
         "do_eval": True,
-        "aae": False,
+        "aae": True,
         "test_losses": True,
         "device": "cuda" if remote else "cuda",
         "batch_size": 8 if remote else 3,  # 128 for 1 layer, 30 for 6 layer

@@ -37,6 +37,7 @@ class MusicDecoder(nn.Module):
         self.strings_decoder = Decoder(c(layers), N, c(emb_pos))
 
     def forward(self, x, memory, src_mask, trg_mask):
+        # src_mask = src_mask[:, :, :-1, :]  # TODO MASK
         z_drums = self.drums_decoder(x[0], memory[0], src_mask[0], trg_mask[0])
         z_guitar = self.guitar_decoder(x[1], memory[1], src_mask[1], trg_mask[1])
         z_bass = self.bass_decoder(x[2], memory[2], src_mask[2], trg_mask[2])
@@ -60,8 +61,6 @@ class Generator(nn.Module):
         out_bass = F.log_softmax(self.proj_bass(x[2]), dim=-1)
         out_strings = F.log_softmax(self.proj_strings(x[3]), dim=-1)
         return torch.stack([out_drums, out_guitar, out_bass, out_strings])
-
-
 
 
 def clones(module, N):
@@ -166,13 +165,6 @@ class DecoderLayer(nn.Module):
         x = self.sublayer[0](x, lambda x: self.self_attn(x, x, x, tgt_mask))
         x = self.sublayer[1](x, lambda x: self.src_attn(x, m, m, src_mask))
         return self.sublayer[2](x, self.feed_forward)
-
-
-def subsequent_mask(size):
-    "Mask out subsequent positions."
-    attn_shape = (1, size, size)
-    subsequent_mask = np.triu(np.ones(attn_shape), k=1).astype('uint8')
-    return torch.from_numpy(subsequent_mask) == 0
 
 
 def attention(query, key, value, mask=None, dropout=None):
@@ -291,29 +283,9 @@ def make_model(src_vocab, tgt_vocab, N=config["model"]["layers"],
                 nn.init.xavier_uniform_(p)
     return encoder, decoder, generator
 
-
-class Batch:
-    "Object for holding a batch of data with mask during training."
-
-    def __init__(self, src, trg=None, pad=0):
-        self.src = src
-        self.src_mask = (src != pad).unsqueeze(-2)
-        if trg is not None:
-            self.trg = trg[..., :-1]
-            self.trg_y = trg[..., 1:]
-            self.trg_mask = \
-                self.make_std_mask(self.trg, pad)
-            self.ntokens = (self.trg_y != pad).data.sum()
-
-    @staticmethod
-    def make_std_mask(tgt, pad):
-        "Create a mask to hide padding and future words."
-        tgt_mask = (tgt != pad).unsqueeze(-2)
-        tgt_mask = tgt_mask & Variable(
-            subsequent_mask(tgt.size(-1)).type_as(tgt_mask.data))
-        return tgt_mask
-
-
+##################################################################################################################
+# TRAINING RANDOM ## TRAINING RANDOM ## TRAINING RANDOM ## TRAINING RANDOM ## TRAINING RANDOM ## TRAINING RANDOM #
+######################################v###########################################################################
 global max_src_in_batch, max_tgt_in_batch
 
 
@@ -328,7 +300,6 @@ def batch_size_fn(new, count, sofar):
     src_elements = count * max_src_in_batch
     tgt_elements = count * max_tgt_in_batch
     return max(src_elements, tgt_elements)
-
 
 class NoamOpt:
     "Optim wrapper that implements rate."
@@ -358,35 +329,9 @@ class NoamOpt:
                (self.model_size ** (-0.5) *
                 min(step ** (-0.5), step * self.warmup ** (-1.5)))
 
-
 def get_std_opt(model):
     return NoamOpt(model.src_embed[0].d_model, 2, 4000,
                    torch.optim.Adam(model.parameters(), lr=0, betas=(0.9, 0.98), eps=1e-9))
-
-
-class LabelSmoothing(nn.Module):
-    "Implement label smoothing."
-
-    def __init__(self, size, padding_idx, smoothing=0.0):
-        super(LabelSmoothing, self).__init__()
-        self.criterion = nn.KLDivLoss(size_average=False)
-        self.padding_idx = padding_idx
-        self.confidence = 1.0 - smoothing
-        self.smoothing = smoothing
-        self.size = size
-        self.true_dist = None
-
-    def forward(self, x, target):
-        assert x.size(1) == self.size
-        true_dist = x.data.clone()
-        true_dist.fill_(self.smoothing / (self.size - 2))
-        true_dist.scatter_(1, target.data.unsqueeze(1), self.confidence)
-        true_dist[:, self.padding_idx] = 0
-        mask = torch.nonzero(target.data == self.padding_idx)
-        if mask.dim() > 0:
-            true_dist.index_fill_(0, mask.squeeze(), 0.0)
-        self.true_dist = true_dist
-        return self.criterion(x, Variable(true_dist, requires_grad=False))
 
 
 def data_gen(V, batch, nbatches):
@@ -407,39 +352,6 @@ def data_gen_2(loader):
         src = torch.LongTensor(src.long()).to(config["train"]["device"])
         trg = torch.LongTensor(trg.long()).to(config["train"]["device"])
         yield Batch(src, trg, config["tokens"]["pad"])
-
-
-class SimpleLossCompute:
-    "A simple loss compute and train function."
-
-    def __init__(self, generator, criterion, enc_opt=None, dec_opt=None):
-        self.generator = generator
-        self.criterion = criterion
-        self.enc_opt = enc_opt
-        self.dec_opt = dec_opt
-
-    def __call__(self, x, y, norm):
-        x = self.generator(x)
-        x = x.transpose(0, 1)
-        y = y.transpose(0, 1)
-        n_batch, n_track, seq_len, d_model = x.shape
-        x = x.reshape(n_batch, n_track*seq_len, d_model)
-        y = y.reshape(n_batch, n_track*seq_len)
-        loss = self.criterion(x.contiguous().view(-1, x.size(-1)),
-                              y.contiguous().view(-1)) / norm
-        if self.generator.training:
-            loss.backward()
-            if self.enc_opt is not None:
-                self.enc_opt.step()
-                self.enc_opt.optimizer.zero_grad()
-            if self.dec_opt is not None:
-                self.dec_opt.step()
-                self.dec_opt.optimizer.zero_grad()
-        # compute accuracy
-        pad_mask = y != self.criterion.padding_idx
-        accuracy = ((torch.max(x, dim=-1).indices == y) & pad_mask).sum().item()
-        accuracy = accuracy / pad_mask.sum().item()
-        return loss.item(), accuracy  #  * norm, accuracy
 
 
 def run_epoch(data_iter, encoder, decoder, loss_compute):
@@ -470,9 +382,6 @@ def run_epoch(data_iter, encoder, decoder, loss_compute):
 import os
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
 
-###################
-# TRAINING RANDOM #
-###################
 if True:
     if __name__ == "__main__":
         device = config["train"]["device"]

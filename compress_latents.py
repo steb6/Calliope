@@ -8,13 +8,13 @@ class LatentCompressor(nn.Module):
     def __init__(self, d_model=config["model"]["d_model"]):
         super(LatentCompressor, self).__init__()
         self.comp_drums = Compressor()
+        self.comp_guitar = Compressor()
         self.comp_bass = Compressor()
         self.comp_strings = Compressor()
-        self.comp_guitar = Compressor()
 
-        self.compressor3 = nn.Linear(d_model*4, d_model)
-        self.norm3 = nn.LayerNorm(d_model)
-        self.compressor_simple = nn.Linear(d_model*n_bars, d_model)
+        self.compress_bar = nn.Linear(d_model*4, d_model)
+        self.norm = nn.LayerNorm(d_model)
+        self.compress_bars = nn.Linear(d_model*n_bars, d_model)
 
         for p in self.parameters():
             if p.dim() > 1:
@@ -26,22 +26,22 @@ class LatentCompressor(nn.Module):
         :return: n_batch d_model
         # """
         out_latents = []
-        n_batch, n_track, seq_len, d_model = latents[0].shape  # out: 1 4 200 256
+        n_track, n_batch, seq_len, d_model = latents[0].shape  # out: 1 4 200 256
 
         for latent in latents:
-            latent = latent.transpose(0, 1)  # out: 4 1 200 256
+            # latent = latent.transpose(0, 1)  # out: 4 1 200 256
 
             z_drum = self.comp_drums(latent[0])  # out 1 256
-            z_bass = self.comp_bass(latent[1])  # out 1 256
-            z_guitar = self.comp_guitar(latent[2])  # out 1 256
+            z_guitar = self.comp_guitar(latent[1])  # out 1 256
+            z_bass = self.comp_bass(latent[2])  # out 1 256
             z_strings = self.comp_strings(latent[3])  # out 1 256
 
-            latent = torch.stack([z_drum, z_bass, z_guitar, z_strings], dim=1)  # 1 4 256
+            latent = torch.stack([z_drum, z_guitar, z_bass, z_strings], dim=1)  # 1 4 256
 
             latent = latent.reshape(n_batch, d_model*4)  # out: 1 1024
 
-            latent = self.compressor3(latent)  # out: 1 256
-            latent = self.norm3(latent)
+            latent = self.compress_bar(latent)  # out: 1 256
+            latent = self.norm(latent)
             latent = F.leaky_relu(latent)
 
             out_latents.append(latent)
@@ -49,7 +49,7 @@ class LatentCompressor(nn.Module):
         latents = torch.stack(out_latents, dim=1)
         latents = latents.reshape(n_batch, -1)  # out: 1 1024
 
-        latent = self.compressor_simple(latents)  # out: 1 256
+        latent = self.compress_bars(latents)  # out: 1 256
         return latent
 
 
@@ -119,9 +119,9 @@ class LatentDecompressor(nn.Module):
         self.decomp_guitar = Decompressor()
         self.decomp_strings = Decompressor()
 
-        self.norm2 = nn.LayerNorm(d_model*4)
-        self.decompressor3 = nn.Linear(d_model, d_model*4)
-        self.decompressor_simple = nn.Linear(d_model, d_model*n_bars)
+        self.norm = nn.LayerNorm(d_model*4)
+        self.decompress_bar = nn.Linear(d_model, d_model*4)
+        self.decompressor_bars = nn.Linear(d_model, d_model*n_bars)
 
     def forward(self, latent):  # 1 1000
         """
@@ -132,7 +132,7 @@ class LatentDecompressor(nn.Module):
         n_batch = latent.shape[0]  # 1 256
         out_latents = []
 
-        latents = self.decompressor_simple(latent)  # 1 1024
+        latents = self.decompressor_bars(latent)  # 1 1024
         latents = F.leaky_relu(latents)
 
         latents = latents.reshape(n_batch, n_bars, self.d_model)  # 1 4 256
@@ -140,8 +140,8 @@ class LatentDecompressor(nn.Module):
 
         for latent in latents:
 
-            latent = self.decompressor3(latent)  # out: 1 1024
-            latent = self.norm2(latent)
+            latent = self.decompress_bar(latent)  # out: 1 1024
+            latent = self.norm(latent)
             latent = F.leaky_relu(latent)
 
             latent = latent.reshape(n_batch, 4, self.d_model)  # out: 1 4 256
@@ -149,11 +149,11 @@ class LatentDecompressor(nn.Module):
             latent = latent.transpose(0, 1)  # out 4 1 256
 
             z_drums = self.decomp_drums(latent[0])  # out 1 200 256
-            z_bass = self.decomp_bass(latent[1])  # out 1 200 256
-            z_guitar = self.decomp_guitar(latent[2])  # out 1 200 256
+            z_guitar = self.decomp_guitar(latent[1])  # out 1 200 256
+            z_bass = self.decomp_bass(latent[2])  # out 1 200 256
             z_strings = self.decomp_strings(latent[3])  # out 1 200 256
 
-            latent = torch.stack([z_drums, z_bass, z_guitar, z_strings], dim=1)  # 1 4 200 256
+            latent = torch.stack([z_drums, z_guitar, z_bass, z_strings])  # 1 4 200 256
 
             out_latents.append(latent)
 

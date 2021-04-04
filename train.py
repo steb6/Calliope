@@ -5,21 +5,19 @@ from tqdm.auto import tqdm
 from config import config, remote
 from iterate_dataset import SongIterator
 from optimizer import CTOpt
-# from loss_computer import SimpleLossCompute, compute_accuracy, LabelSmoothing
+from loss_computer import SimpleLossCompute, LabelSmoothing
 from create_bar_dataset import NoteRepresentationManager
 import wandb
-from compressive_transformer import make_model, Batch, SimpleLossCompute, LabelSmoothing
 from compress_latents import LatentCompressor, LatentDecompressor
 from logger import Logger
 from discriminator import Discriminator
 from loss_computer import calc_gradient_penalty
 from config import set_freer_gpu, n_bars
 import time
-from utilities import get_prior
+from utilities import get_prior, Batch
 from test import Tester
 import dill
-import seaborn
-import matplotlib.pyplot as plt
+from compressive_transformer import make_model
 
 
 class Trainer:
@@ -113,21 +111,20 @@ class Trainer:
                 self.tf_prob = 0.5
 
                 predicted = []
-                for trg, src_mask, trg_mask, latent in zip(trgs, src_masks, trg_masks, latents):
-                    # src_mask = trg != config["tokens"]["pad"]
-                    # src_mask = src_mask.repeat([1, 1, src_mask.shape[-1]])
-                    # src_mask = src_mask.reshape(trg_mask.shape).transpose(-1, -2)
-                    out = self.decoder(trg, src_mask, trg_mask, latent.transpose(0, 1))
-                    predicted.append(torch.max(out, dim=-1).indices)
+                for batch, latent in zip(batches, latents):
+                    out = self.decoder(batch.trg, latent, batch.src_mask, batch.trg_mask)
+                    prob = self.generator(out)
+                    prob = torch.max(prob, dim=-1).indices
+                    predicted.append(prob)
 
                 # add sos at beginning and cut last token
-                predicted = torch.stack(predicted)
-                sos = torch.full_like(predicted, config["tokens"]["sos"])[..., :1].to(predicted.device)
-                predicted = torch.cat((sos, predicted), dim=-1)[..., :-1]
-                # create mixed trg
-                mixed_prob = torch.rand(trgs.shape, dtype=torch.float32).to(trgs.device)
-                mixed_prob = mixed_prob < self.tf_prob
-                trgs = trgs.where(mixed_prob, predicted)
+                for i in range(n_bars):
+                    sos = torch.full_like(predicted[i], config["tokens"]["sos"])[..., :1].to(predicted[i].device)
+                    pred = torch.cat((sos, predicted[i]), dim=-1)[..., :-1]
+                    # create mixed trg
+                    mixed_prob = torch.rand(batches[i].trg.shape, dtype=torch.float32).to(trgs.device)
+                    mixed_prob = mixed_prob < self.tf_prob
+                    batches[i].trg = batches[i].trg.where(mixed_prob, pred)
 
         outs = []
         for batch, latent in zip(batches, latents):
@@ -139,9 +136,7 @@ class Trainer:
 
         # Compute loss and accuracy
         trg_ys = torch.stack([batch.trg_y for batch in batches])
-
         bars, n_track, n_batch, seq_len, d_model = outs.shape
-
         outs = outs.permute(1, 2, 0, 3, 4).reshape(n_track, n_batch, bars*seq_len, d_model)
         trg_ys = trg_ys.permute(1, 2, 0, 3).reshape(n_track, n_batch, bars*seq_len)
         
@@ -149,7 +144,7 @@ class Trainer:
                                            self.encoder_optimizer, self.decoder_optimizer)(outs,
                                                                                            trg_ys,
                                                                                            batch.ntokens)
-        losses = (loss, accuracy, 0, 0, 0, 0, 0, 0)  #*loss_items)
+        losses = (loss, accuracy, 0, 0, 0, 0)  #*loss_items)
 
         # LOG IMAGES
         if True and self.encoder.training and config["train"]["log_images"] and \
@@ -293,8 +288,8 @@ class Trainer:
                     p.requires_grad = True
 
                 latents = []
-                for src, src_mask in zip(srcs, src_masks):
-                    latent = self.encoder(src, src_mask)
+                for batch in batches:
+                    latent = self.encoder(batch.src, batch.src_mask)
                     latents.append(latent)
                 latent = self.latent_compressor(latents)
 
@@ -327,8 +322,8 @@ class Trainer:
                     p.requires_grad = False  # to avoid computation
 
                 latents = []
-                for src, src_mask in zip(srcs, src_masks):
-                    latent = self.encoder(src, src_mask)
+                for batch in batches:
+                    latent = self.encoder(batch.src, batch.src_mask)
                     latents.append(latent)
                 latent = self.latent_compressor(latents)
 
@@ -574,6 +569,7 @@ class Trainer:
                     torch.save(self.latent_decompressor, os.path.join(full_path,
                                                                       "latent_decompressor.pt"), pickle_module=dill)
                     torch.save(self.decoder, os.path.join(full_path, "decoder.pt"), pickle_module=dill)
+                    torch.save(self.generator, os.path.join(full_path, "generator.pt"), pickle_module=dill)
                     if config["train"]["aae"]:
                         torch.save(self.discriminator, os.path.join(full_path, "discriminator.pt"), pickle_module=dill)
                     print("Model saved")
