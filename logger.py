@@ -65,7 +65,7 @@ class Logger:
 
     @staticmethod
     def log_attn_heatmap(enc_self_weights, dec_self_weights, dec_src_weights):
-        instruments = ["drums", "guitar", "bass", "strings"]
+        instruments = ["drums" , "guitar", "bass", "strings"]
         weights = [enc_self_weights, dec_self_weights, dec_src_weights]
         weights_name = ["encoder self attention", "decoder self attention", "decoder source weights"]
 
@@ -81,9 +81,6 @@ class Logger:
                                   'picture': weight[i][c1][c2].detach().cpu().numpy(),
                                   })
                 df = pd.DataFrame(T)
-                # true_height = weight[0][0][0].detach().cpu().numpy()
-                # true_width = weight.shape[-1]
-                # aspect = true_width/true_height
                 if w != 2:
                     grid = sns.FacetGrid(df, row='layer', col='head',  # aspect=aspect,
                                          row_order=list(reversed(range(config["model"]["layers"]))))

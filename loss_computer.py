@@ -113,7 +113,7 @@ def calc_gradient_penalty(model, real_data, gen_data):
         grad_outputs=torch.ones(score_interpolates.size()).to(device),
         create_graph=True,
         retain_graph=True,
-        # only_inputs=True
+        only_inputs=True
     )[0]
 
     gradients = gradients.view(batch_size, -1)

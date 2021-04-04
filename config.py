@@ -15,9 +15,9 @@ config = {
         "scheduled_sampling": False,
         "compress_latents": False,
         "verbose": True,
-        "make_songs": False,
+        "make_songs": True,
         "log_images": True,
-        "do_eval": False,
+        "do_eval": True,
         "aae": False,
         "test_losses": True,
         "device": "cuda" if remote else "cuda",
@@ -63,7 +63,7 @@ config = {
         "d_model": 256,
         "heads": 4,
         "ff_mul": 2,
-        "layers": 6 if remote else 2,  # 3 GB each
+        "layers": 2 if remote else 2,  # 3 GB each
         "mem_len": max_bar_length,  # keep last 2 seq
         "cmem_len": max_bar_length,  # keep 4 compression
         "cmem_ratio": 4,
