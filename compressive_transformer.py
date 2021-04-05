@@ -13,12 +13,12 @@ seaborn.set_context(context="talk")
 
 
 class MusicEncoder(nn.Module):
-    def __init__(self, layers, N, emb_pos):
+    def __init__(self, layers, N, emb, pos):
         super(MusicEncoder, self).__init__()
-        self.drums_encoder = Encoder(c(layers), N, c(emb_pos))
-        self.guitar_encoder = Encoder(c(layers), N, c(emb_pos))
-        self.bass_encoder = Encoder(c(layers), N, c(emb_pos))
-        self.strings_encoder = Encoder(c(layers), N, c(emb_pos))
+        self.drums_encoder = Encoder(c(layers), N, c(emb), c(pos))
+        self.guitar_encoder = Encoder(c(layers), N, c(emb), c(pos))
+        self.bass_encoder = Encoder(c(layers), N, c(emb), c(pos))
+        self.strings_encoder = Encoder(c(layers), N, c(emb), c(pos))
 
     def forward(self, x, mask):
         z_drums = self.drums_encoder(x[0], mask[0])
@@ -29,12 +29,12 @@ class MusicEncoder(nn.Module):
 
 
 class MusicDecoder(nn.Module):
-    def __init__(self, layers, N, emb_pos):
+    def __init__(self, layers, N, emb, pos):
         super(MusicDecoder, self).__init__()
-        self.drums_decoder = Decoder(c(layers), N, c(emb_pos))
-        self.guitar_decoder = Decoder(c(layers), N, c(emb_pos))
-        self.bass_decoder = Decoder(c(layers), N, c(emb_pos))
-        self.strings_decoder = Decoder(c(layers), N, c(emb_pos))
+        self.drums_decoder = Decoder(c(layers), N, c(emb), c(pos))
+        self.guitar_decoder = Decoder(c(layers), N, c(emb), c(pos))
+        self.bass_decoder = Decoder(c(layers), N, c(emb), c(pos))
+        self.strings_decoder = Decoder(c(layers), N, c(emb), c(pos))
 
     def forward(self, x, memory, src_mask, trg_mask):
         # src_mask = src_mask[:, :, :-1, :]  # TODO MASK
@@ -43,6 +43,192 @@ class MusicDecoder(nn.Module):
         z_bass = self.bass_decoder(x[2], memory[2], src_mask[2], trg_mask[2])
         z_strings = self.strings_decoder(x[3], memory[3], src_mask[3], trg_mask[3])
         return torch.stack([z_drums, z_guitar, z_bass, z_strings])
+
+
+class Encoder(nn.Module):
+    "Core encoder is a stack of N layers"
+
+    def __init__(self, layer, N, emb, pos):
+        super(Encoder, self).__init__()
+        self.layers = clones(layer, N)
+        self.norm = LayerNorm(layer.size)
+        self.emb = emb
+        self.pos = pos
+        max_klen = config["model"]["seq_len"]
+        n_head = config["model"]["heads"]
+        d_head = config["model"]["d_model"] // config["model"]["heads"]
+        self.r_emb = nn.Parameter(torch.Tensor(N, n_head, max_klen, d_head))
+        self.r_w_bias = nn.Parameter(torch.Tensor(N, n_head, d_head))
+        self.r_bias = nn.Parameter(torch.Tensor(N, n_head, max_klen))
+
+    def forward(self, x, mask):
+        "Pass the input (and mask) through each layer in turn."
+        x = self.emb(x)
+        if not config["train"]["use_rel_pos"]:
+            x = self.pos(x)
+        for i, layer in enumerate(self.layers):
+            x = layer(x, mask, self.r_emb[i], self.r_w_bias[i], self.r_bias[i])
+        return self.norm(x)
+
+
+class Decoder(nn.Module):
+    "Generic N layer decoder with masking."
+
+    def __init__(self, layer, N, emb, pos):
+        super(Decoder, self).__init__()
+        self.layers = clones(layer, N)
+        self.norm = LayerNorm(layer.size)
+        self.emb = emb
+        self.pos = pos
+        max_klen = config["model"]["seq_len"]
+        n_head = config["model"]["heads"]
+        d_head = config["model"]["d_model"] // config["model"]["heads"]
+        self.r_emb = nn.Parameter(torch.Tensor(N, n_head, max_klen, d_head))
+        self.r_w_bias = nn.Parameter(torch.Tensor(N, n_head, d_head))
+        self.r_bias = nn.Parameter(torch.Tensor(N, n_head, max_klen))
+
+    def forward(self, x, memory, src_mask, tgt_mask):
+        x = self.emb(x)
+        if not config["train"]["use_rel_pos"]:
+            x = self.pos(x)
+        for i, layer in enumerate(self.layers):
+            x = layer(x, memory, src_mask, tgt_mask, self.r_emb[i], self.r_w_bias[i], self.r_bias[i])
+        return self.norm(x)
+
+
+class EncoderLayer(nn.Module):
+    "Encoder is made up of self-attn and feed forward (defined below)"
+
+    def __init__(self, size, self_attn, feed_forward, dropout):
+        super(EncoderLayer, self).__init__()
+        self.self_attn = self_attn
+        self.feed_forward = feed_forward
+        self.sublayer = clones(SublayerConnection(size, dropout), 2)
+        self.size = size
+
+    def forward(self, x, mask, r_emb, r_w_bias, r_bias):
+        "Follow Figure 1 (left) for connections."
+        x = self.sublayer[0](x, lambda x: self.self_attn(x, x, x, mask, r_emb, r_w_bias, r_bias))
+        return self.sublayer[1](x, self.feed_forward)
+
+
+class DecoderLayer(nn.Module):
+    "Decoder is made of self-attn, src-attn, and feed forward (defined below)"
+
+    def __init__(self, size, self_attn, src_attn, feed_forward, dropout):
+        super(DecoderLayer, self).__init__()
+        self.size = size
+        self.self_attn = self_attn
+        self.src_attn = src_attn
+        self.feed_forward = feed_forward
+        self.sublayer = clones(SublayerConnection(size, dropout), 3)
+
+    def forward(self, x, memory, src_mask, tgt_mask, r_emb, r_w_bias, r_bias):
+        "Follow Figure 1 (right) for connections."
+        m = memory
+        x = self.sublayer[0](x, lambda x: self.self_attn(x, x, x, tgt_mask, r_emb, r_w_bias, r_bias))
+        x = self.sublayer[1](x, lambda x: self.src_attn(x, m, m, src_mask))
+        return self.sublayer[2](x, self.feed_forward)
+
+
+class MultiHeadedAttention(nn.Module):
+    def __init__(self, h, d_model, dropout=0.1):
+        "Take in model size and number of heads."
+        super(MultiHeadedAttention, self).__init__()
+        assert d_model % h == 0
+        # We assume d_v always equals d_k
+        self.d_k = d_model // h
+        self.h = h
+        self.linears = clones(nn.Linear(d_model, d_model), 4)
+        self.attn = None
+        self.dropout = nn.Dropout(p=dropout)
+
+    def forward(self, query, key, value, mask=None, r_emb=None, r_w_bias=None, r_bias=None):  # to preserve signature
+        "Implements Figure 2"
+        if mask is not None:
+            # Same mask applied to all h heads.
+            mask = mask.unsqueeze(1)
+        nbatches = query.size(0)
+
+        # 1) Do all the linear projections in batch from d_model => h x d_k
+        query, key, value = \
+            [l(x).view(nbatches, -1, self.h, self.d_k).transpose(1, 2)
+             for l, x in zip(self.linears, (query, key, value))]
+
+        # 2) Apply attention on all the projected vectors in batch.
+        x, self.attn = attention(query, key, value, mask=mask,
+                                 dropout=self.dropout)
+
+        # 3) "Concat" using a view and apply a final linear.
+        x = x.transpose(1, 2).contiguous() \
+            .view(nbatches, -1, self.h * self.d_k)
+        return self.linears[-1](x)
+
+
+class RelMultiHeadedAttention(nn.Module):
+    """
+    https://github.com/kimiyoung/transformer-xl/blob/44781ed21dbaec88b280f74d9ae2877f52b492a5/pytorch/mem_transformer.py#L293
+    """
+
+    def __init__(self, h, d_model, dropout=0.1):
+        super(RelMultiHeadedAttention, self).__init__()
+        assert d_model % h == 0
+        self.d_out = d_model // h
+        self.h = h
+        self.linears = nn.ModuleList([nn.Linear(d_model, d_model, bias=False) for _ in range(4)])
+        self.dropout = nn.Dropout(p=dropout)
+        self.scale = 1 / (h ** 0.5)
+        self.attn = None
+
+    def forward(self, query, key=None, value=None, mask=None, r_emb=None, r_w_bias=None, r_bias=None):
+        """
+        :param memories:
+        :param query: batch_size x q_len x d_model
+        :param key: batch_size x k_len x d_model
+        :param value: batch_size x v_len x d_model
+        :param mask: batch_size x q_len ( x v_len)
+        :param r_emb: n_head x max_klen x d_head
+        :param r_w_bias: n_head x d_head
+        :param r_bias: n_head x max_klen
+        :return: batch_size x q_len x d_model
+        """
+        n_batches = query.size(0)
+
+        k_len = key.size(1)
+
+        # batch_size x n_head x seq_len x d_head
+        q, k, v = [l(x).view(n_batches, -1, self.h, self.d_out).transpose(1, 2)
+                   for l, x in zip(self.linears, (query, key, value))]
+
+        r_emb = r_emb[:, -k_len:, :]  # TODO try this (first or last?)
+        r_bias = r_bias[:, -k_len:]  # TODO try this (first or last?)
+
+        r_query = q + r_w_bias[None, :, None, :]
+
+        AC = torch.einsum('bnid,bnjd->bnij', r_query, k)
+        B_ = torch.einsum('bnid,njd->bnij', q, r_emb)  # r_emb_pe must be 3 4 200
+        D_ = r_bias[None, :, None]
+        BD = shift(B_ + D_)  # TODO place original shift
+
+        attn_score = AC + BD
+        attn_score.mul_(self.scale)
+
+        if mask is not None:  # TODO expand mask
+            if mask.dim() == 2:  # transform linear mask to square mask
+                mask = mask[:, :, None] * mask[:, None, :]
+            mask = mask.unsqueeze(1)  # apply same mask to all heads
+            attn_score = attn_score.masked_fill(~mask, -1e9)  # TODO empty row becomes 0.005 is it good?
+
+        attn_prob = F.softmax(attn_score, dim=-1)
+        attn_prob = self.dropout(attn_prob)
+        self.attn = attn_prob.detach()
+
+        attn_vec = torch.einsum('bnij,bnjd->bnid', attn_prob, v)
+        attn_vec = attn_vec.transpose(1, 2).contiguous().view(n_batches, -1, self.h * self.d_out)
+
+        attn_out = self.linears[-1](attn_vec)
+
+        return attn_out
 
 
 class Generator(nn.Module):
@@ -61,28 +247,6 @@ class Generator(nn.Module):
         out_bass = F.log_softmax(self.proj_bass(x[2]), dim=-1)
         out_strings = F.log_softmax(self.proj_strings(x[3]), dim=-1)
         return torch.stack([out_drums, out_guitar, out_bass, out_strings])
-
-
-def clones(module, N):
-    "Produce N identical layers."
-    return nn.ModuleList([copy.deepcopy(module) for _ in range(N)])
-
-
-class Encoder(nn.Module):
-    "Core encoder is a stack of N layers"
-
-    def __init__(self, layer, N, emb_pos):
-        super(Encoder, self).__init__()
-        self.layers = clones(layer, N)
-        self.norm = LayerNorm(layer.size)
-        self.emb_pos = emb_pos
-
-    def forward(self, x, mask):
-        "Pass the input (and mask) through each layer in turn."
-        x = self.emb_pos(x)
-        for layer in self.layers:
-            x = layer(x, mask)
-        return self.norm(x)
 
 
 class LayerNorm(nn.Module):
@@ -116,55 +280,9 @@ class SublayerConnection(nn.Module):
         return x + self.dropout(sublayer(self.norm(x)))
 
 
-class EncoderLayer(nn.Module):
-    "Encoder is made up of self-attn and feed forward (defined below)"
-
-    def __init__(self, size, self_attn, feed_forward, dropout):
-        super(EncoderLayer, self).__init__()
-        self.self_attn = self_attn
-        self.feed_forward = feed_forward
-        self.sublayer = clones(SublayerConnection(size, dropout), 2)
-        self.size = size
-
-    def forward(self, x, mask):
-        "Follow Figure 1 (left) for connections."
-        x = self.sublayer[0](x, lambda x: self.self_attn(x, x, x, mask))
-        return self.sublayer[1](x, self.feed_forward)
-
-
-class Decoder(nn.Module):
-    "Generic N layer decoder with masking."
-
-    def __init__(self, layer, N, emb_pos):
-        super(Decoder, self).__init__()
-        self.layers = clones(layer, N)
-        self.norm = LayerNorm(layer.size)
-        self.emb_pos = emb_pos
-
-    def forward(self, x, memory, src_mask, tgt_mask):
-        x = self.emb_pos(x)
-        for layer in self.layers:
-            x = layer(x, memory, src_mask, tgt_mask)
-        return self.norm(x)
-
-
-class DecoderLayer(nn.Module):
-    "Decoder is made of self-attn, src-attn, and feed forward (defined below)"
-
-    def __init__(self, size, self_attn, src_attn, feed_forward, dropout):
-        super(DecoderLayer, self).__init__()
-        self.size = size
-        self.self_attn = self_attn
-        self.src_attn = src_attn
-        self.feed_forward = feed_forward
-        self.sublayer = clones(SublayerConnection(size, dropout), 3)
-
-    def forward(self, x, memory, src_mask, tgt_mask):
-        "Follow Figure 1 (right) for connections."
-        m = memory
-        x = self.sublayer[0](x, lambda x: self.self_attn(x, x, x, tgt_mask))
-        x = self.sublayer[1](x, lambda x: self.src_attn(x, m, m, src_mask))
-        return self.sublayer[2](x, self.feed_forward)
+def clones(module, N):
+    "Produce N identical layers."
+    return nn.ModuleList([copy.deepcopy(module) for _ in range(N)])
 
 
 def attention(query, key, value, mask=None, dropout=None):
@@ -180,38 +298,25 @@ def attention(query, key, value, mask=None, dropout=None):
     return torch.matmul(p_attn, value), p_attn
 
 
-class MultiHeadedAttention(nn.Module):
-    def __init__(self, h, d_model, dropout=0.1):
-        "Take in model size and number of heads."
-        super(MultiHeadedAttention, self).__init__()
-        assert d_model % h == 0
-        # We assume d_v always equals d_k
-        self.d_k = d_model // h
-        self.h = h
-        self.linears = clones(nn.Linear(d_model, d_model), 4)
-        self.attn = None
-        self.dropout = nn.Dropout(p=dropout)
+def shift(x):
+    """
+    It skews the matrix x, as done in Relative Local Attention of Music Transformer
+    0, 0, a     a, 0, 0
+    0, b, c =>  b, c, 0
+    d, e, f     d, e, f
+    """
+    *_, i, j = x.shape  # i=4, j=12
+    zero_pad = torch.zeros((*_, i, i), **to(x))
+    x = torch.cat([x, zero_pad], -1)  # i=4, j=26
+    l = i + j - 1  # 20
+    x = x.view(*_, -1)  #
+    zero_pad = torch.zeros(*_, -x.size(-1) % l, **to(x))
+    shifted = torch.cat([x, zero_pad], -1).view(*_, -1, l)
+    return shifted[..., :i, i - 1:]
 
-    def forward(self, query, key, value, mask=None):
-        "Implements Figure 2"
-        if mask is not None:
-            # Same mask applied to all h heads.
-            mask = mask.unsqueeze(1)
-        nbatches = query.size(0)
 
-        # 1) Do all the linear projections in batch from d_model => h x d_k
-        query, key, value = \
-            [l(x).view(nbatches, -1, self.h, self.d_k).transpose(1, 2)
-             for l, x in zip(self.linears, (query, key, value))]
-
-        # 2) Apply attention on all the projected vectors in batch.
-        x, self.attn = attention(query, key, value, mask=mask,
-                                 dropout=self.dropout)
-
-        # 3) "Concat" using a view and apply a final linear.
-        x = x.transpose(1, 2).contiguous() \
-            .view(nbatches, -1, self.h * self.d_k)
-        return self.linears[-1](x)
+def to(t):
+    return {'dtype': t.dtype, 'device': t.device}
 
 
 class PositionwiseFeedForward(nn.Module):
@@ -265,14 +370,19 @@ def make_model(src_vocab, tgt_vocab, N=config["model"]["layers"],
                h=config["model"]["heads"], dropout=0.1, device=config["train"]["device"]):
     "Helper: Construct a model from hyperparameters."
     c = copy.deepcopy
-    attn = MultiHeadedAttention(h, d_model).to(device)
-    ff = PositionwiseFeedForward(d_model, d_ff, dropout).to(device)
-    position = PositionalEncoding(d_model, dropout).to(device)
 
-    enc_emb_pos = nn.Sequential(Embeddings(d_model, src_vocab), c(position)).to(device)
-    encoder = MusicEncoder(EncoderLayer(d_model, c(attn), c(ff), dropout), N, enc_emb_pos).to(device)
-    dec_emb_pos = nn.Sequential(Embeddings(d_model, tgt_vocab).to(device), c(position)).to(device)
-    decoder = MusicDecoder(DecoderLayer(d_model, c(attn), c(attn), c(ff), dropout), N, dec_emb_pos).to(device)
+    if config["train"]["use_rel_pos"]:
+        self_attn = MultiHeadedAttention(h, d_model).to(device)
+    else:
+        self_attn = RelMultiHeadedAttention(h, d_model).to(device)
+
+    src_attn = MultiHeadedAttention(h, d_model).to(device)
+    ff = PositionwiseFeedForward(d_model, d_ff, dropout).to(device)
+    pos = PositionalEncoding(d_model, dropout).to(device)
+    emb = Embeddings(d_model, src_vocab)
+
+    encoder = MusicEncoder(EncoderLayer(d_model, c(self_attn), c(ff), dropout), N, c(emb), c(pos)).to(device)
+    decoder = MusicDecoder(DecoderLayer(d_model, c(self_attn), c(src_attn), c(ff), dropout), N, c(emb), c(pos)).to(device)
     generator = Generator(d_model, tgt_vocab).to(device)
 
     # This was important from their code.

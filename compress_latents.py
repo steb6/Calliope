@@ -83,8 +83,8 @@ class Compressor(nn.Module):
 class Decompressor(nn.Module):
     def __init__(self, d_model=config["model"]["d_model"]):
         super(Decompressor, self).__init__()
-        self.decompressor1 = nn.Linear(d_model, max_bar_length*(d_model//8))
-        self.norm1 = nn.LayerNorm(max_bar_length*(d_model//8))
+        self.decompressor1 = nn.Linear(d_model, (max_bar_length//10)*(d_model//8))
+        self.norm1 = nn.LayerNorm((max_bar_length//10)*(d_model//8))
         self.decompressor2 = nn.Linear(d_model//8, d_model)
         self.norm2 = nn.LayerNorm(d_model)
 
@@ -95,13 +95,13 @@ class Decompressor(nn.Module):
         """
         n_batch, d_model = latent.shape  # 1 256
 
-        latent = self.decompressor1(latent)  # out: 1 6400
+        latent = self.decompressor1(latent)  # out: 1 640
         latent = self.norm1(latent)
         latent = F.leaky_relu(latent)
 
-        latent = latent.reshape(n_batch, max_bar_length, (d_model // 8))  # out: 1 200 32
+        latent = latent.reshape(n_batch, max_bar_length//10, (d_model // 8))  # out: 1 20 32
 
-        latent = self.decompressor2(latent)  # out: 1 200 256
+        latent = self.decompressor2(latent)  # out: 1 20 256
         latent = self.norm2(latent)
         latent = F.leaky_relu(latent)
 

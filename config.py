@@ -12,11 +12,11 @@ config = {
     "train": {
         # MODALITIES
         "use_rel_pos": True,
-        "scheduled_sampling": True,
+        "scheduled_sampling": False,
         "compress_latents": True,
         "verbose": True,
         "make_songs": True,
-        "log_images": False,
+        "log_images": True,
         "do_eval": True,
         "aae": True,
         "test_losses": True,

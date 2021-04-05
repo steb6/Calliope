@@ -18,6 +18,7 @@ from utilities import get_prior, Batch
 from test import Tester
 import dill
 from compressive_transformer import make_model
+import copy
 
 
 class Trainer:
@@ -94,6 +95,7 @@ class Trainer:
         ############
         # COMPRESS #
         ############
+        old_batches = copy.deepcopy(batches)
         if config["train"]["compress_latents"]:
             latent = self.latent_compressor(latents)  # in: 3, 4, 200, 256, out: 3, 256
 
@@ -101,6 +103,8 @@ class Trainer:
 
         if config["train"]["compress_latents"]:
             latents = self.latent_decompressor(latent)  # in 3, 256, out: 3, 4, 200, 256
+            for i in range(n_bars):
+                batches[i].src_mask = batches[i].src_mask.fill_(True)[:, :, :, :20]
 
         ############
         # DECODING #
@@ -288,7 +292,7 @@ class Trainer:
                     p.requires_grad = True
 
                 latents = []
-                for batch in batches:
+                for batch in old_batches:
                     latent = self.encoder(batch.src, batch.src_mask)
                     latents.append(latent)
                 latent = self.latent_compressor(latents)
@@ -322,7 +326,7 @@ class Trainer:
                     p.requires_grad = False  # to avoid computation
 
                 latents = []
-                for batch in batches:
+                for batch in old_batches:
                     latent = self.encoder(batch.src, batch.src_mask)
                     latents.append(latent)
                 latent = self.latent_compressor(latents)
@@ -373,7 +377,7 @@ class Trainer:
                                        (config["train"]["lr_min"], config["train"]["lr_max"]),
                                        config["train"]["decay_steps"], config["train"]["minimum_lr"]
                                        )
-        dec_params = list(self.latent_decompressor.parameters()) + list(self.decoder.parameters())
+        dec_params = list(self.latent_decompressor.parameters()) + list(self.decoder.parameters()) + list(self.generator.parameters())
         self.decoder_optimizer = CTOpt(torch.optim.Adam(dec_params, lr=0,
                                                         betas=(0., 0.9)),
                                        config["train"]["warmup_steps"],
@@ -603,20 +607,20 @@ class Trainer:
                     if config["train"]["aae"]:
                         # GENERATION
                         with torch.no_grad():
-                            generated, limited = self.tester.generate(note_manager)  # generation
+                            generated = self.tester.generate(note_manager)  # generation
                         self.logger.log_songs(os.path.join(wandb.run.dir, prefix),
-                                              [generated, limited],
-                                              ["generated", "limited"],
+                                              [generated],
+                                              ["generated"],
                                               "generated")
 
                         # INTERPOLATION
                         with torch.no_grad():
-                            first, interpolation, limited, second = self.tester.interpolation(note_manager, first_batch,
+                            first, interpolation, second = self.tester.interpolation(note_manager, first_batch,
                                                                                               second_batch)
 
                         self.logger.log_songs(os.path.join(wandb.run.dir, prefix),
-                                              [first, interpolation, limited, second],
-                                              ["first", "interpolation", "limited", "second"],
+                                              [first, interpolation, second],
+                                              ["first", "interpolation", "second"],
                                               "interpolation")
                     # end test
                     self.encoder.train()
