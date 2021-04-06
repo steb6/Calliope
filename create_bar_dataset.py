@@ -220,8 +220,9 @@ class NoteRepresentationManager:
         """
         # download raw dataset if needed
         if not os.path.exists(os.path.join(config["paths"]["raw_midi"], "lmd_matched")):
-            print("Downloading Lakh Dataset into " + config["paths"]["raw_midi"])
-            muspy.LakhMIDIMatchedDataset(config["paths"]["raw_midi"], download_and_extract=True)
+            print("DOWNLOAD AND EXTRACT DATASET INSIDE lmd_matched DIRECTORY IN RAW MIDI PATH")
+            # print("Downloading Lakh Dataset into " + config["paths"]["raw_midi"])
+            # muspy.LakhMIDIMatchedDataset(config["paths"]["raw_midi"], download_and_extract=True)
         # counting songs if needed for progbar
         print("Converting Lakh Dataset from " + config["paths"]["raw_midi"] + " in " + config["paths"]["dataset"])
         raw_midi = config["paths"]["raw_midi"] + os.sep + "lmd_matched"

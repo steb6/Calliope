@@ -200,8 +200,8 @@ class RelMultiHeadedAttention(nn.Module):
         q, k, v = [l(x).view(n_batches, -1, self.h, self.d_out).transpose(1, 2)
                    for l, x in zip(self.linears, (query, key, value))]
 
-        r_emb = r_emb[:, -k_len:, :]  # TODO try this (first or last?)
-        r_bias = r_bias[:, -k_len:]  # TODO try this (first or last?)
+        r_emb = r_emb[:, :k_len, :]  # TODO try this (first or last?)
+        r_bias = r_bias[:, :k_len]  # TODO try this (first or last?)
 
         r_query = q + r_w_bias[None, :, None, :]
 
@@ -214,8 +214,8 @@ class RelMultiHeadedAttention(nn.Module):
         attn_score.mul_(self.scale)
 
         if mask is not None:  # TODO expand mask
-            if mask.dim() == 2:  # transform linear mask to square mask
-                mask = mask[:, :, None] * mask[:, None, :]
+            # if mask.dim() == 2:  # transform linear mask to square mask
+            #     mask = mask[:, :, None] * mask[:, None, :]
             mask = mask.unsqueeze(1)  # apply same mask to all heads
             attn_score = attn_score.masked_fill(~mask, -1e9)  # TODO empty row becomes 0.005 is it good?
 
