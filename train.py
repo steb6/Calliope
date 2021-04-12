@@ -19,6 +19,7 @@ from test import Tester
 import dill
 from compressive_transformer import make_model
 import copy
+import pickle
 
 
 class Trainer:
@@ -42,6 +43,7 @@ class Trainer:
         # Optimizers
         self.encoder_optimizer = None
         self.decoder_optimizer = None
+        self.criterion = None
         if config["train"]["aae"]:
             self.disc_optimizer = None
             self.gen_optimizer = None
@@ -53,23 +55,23 @@ class Trainer:
             self.beta = -0.1  # so it become 0 at first iteration
             self.reg_optimizer = None
 
-    def test_losses(self, loss, e_attn_losses, d_attn_losses):
-        losses = [loss, e_attn_losses, d_attn_losses]
-        names = ["loss", "e_att_losses", "d_attn_losses"]
+    def test_losses(self, loss):
+        losses = [loss]
+        names = ["loss"]
         for ls, name in zip(losses, names):
             print("********************** Optimized by " + name)
-            self.encoder_optimizer.optimizer.zero_grad(set_to_none=True)
+            self.encoder_optimizer.zero_grad(set_to_none=True)
             self.decoder_optimizer.zero_grad(set_to_none=True)
             ls.backward(retain_graph=True)
-            for model in [self.encoder, self.latent_compressor, self.decoder]:  # removed latent compressor
+            for model in [self.encoder, self.latent_compressor, self.latent_decompressor, self.decoder, self.generator]:  # removed latent compressor
                 for module_name, parameter in model.named_parameters():
                     if parameter.grad is not None:
                         print(module_name)
-        self.encoder_optimizer.optimizer.zero_grad(set_to_none=True)
+        self.encoder_optimizer.zero_grad(set_to_none=True)
         self.decoder_optimizer.zero_grad(set_to_none=True)
-        (losses[0] + losses[1] + losses[2]).backward(retain_graph=True)
+        (losses[0]).backward(retain_graph=True)
         print("********************** NOT OPTIMIZED BY NOTHING")
-        for model in [self.encoder, self.latent_compressor, self.decoder]:  # removed latent compressor
+        for model in [self.encoder, self.latent_compressor, self.latent_decompressor, self.decoder, self.generator]:  # removed latent compressor
             for module_name, parameter in model.named_parameters():
                 if parameter.grad is None:
                     print(module_name)
@@ -138,21 +140,39 @@ class Trainer:
         # Format results
         outs = torch.stack(outs, dim=0)
 
-        # Compute loss and accuracy
+        #####################
+        # LOSS AND ACCURACY #
+        #####################
         trg_ys = torch.stack([batch.trg_y for batch in batches])
         bars, n_track, n_batch, seq_len, d_model = outs.shape
-        outs = outs.permute(1, 2, 0, 3, 4).reshape(n_track, n_batch, bars*seq_len, d_model)
+        outs = outs.permute(1, 2, 0, 3, 4).reshape(n_track, n_batch, bars*seq_len, d_model)  # join bars
         trg_ys = trg_ys.permute(1, 2, 0, 3).reshape(n_track, n_batch, bars*seq_len)
         
-        loss, accuracy = SimpleLossCompute(self.generator, self.criterion,
-                                           self.encoder_optimizer, self.decoder_optimizer)(outs,
-                                                                                           trg_ys,
-                                                                                           batch.ntokens)
-        losses = (loss, accuracy, 0, 0, 0, 0)  #*loss_items)
+        loss, accuracy = SimpleLossCompute(self.generator, self.criterion)(outs, trg_ys, batch.ntokens)  # join instr
+
+        # if self.encoder.training:
+        #     self.test_losses(loss)
+
+        if self.generator.training:
+            self.encoder_optimizer.zero_grad()
+            self.decoder_optimizer.zero_grad()
+
+            # if n_bars == 16:
+            #     torch.nn.utils.clip_grad_norm_(self.encoder.parameters(), 0.1)
+            #     torch.nn.utils.clip_grad_norm_(self.latent_compressor.parameters(), 0.1)
+            #     torch.nn.utils.clip_grad_norm_(self.latent_decompressor.parameters(), 0.1)
+            #     torch.nn.utils.clip_grad_norm_(self.decoder.parameters(), 0.1)
+            #     torch.nn.utils.clip_grad_norm_(self.generator.parameters(), 0.1)
+
+            loss.backward()
+            self.encoder_optimizer.step()
+            self.decoder_optimizer.step()
+
+        losses = (loss.item(), accuracy, 0, 0, 0, 0)  #*loss_items)
 
         # LOG IMAGES
         if True and self.encoder.training and config["train"]["log_images"] and \
-                self.step % config["train"]["after_steps_log_images"] == 0:
+                self.step % config["train"]["after_steps_log_images"] == 0 and self.step>0:
 
             # # ENCODER SELF
             drums_encoder_attn = []
@@ -246,30 +266,14 @@ class Trainer:
 
             src_attention = [drums_src_attn, guitar_src_attn, bass_src_attn, strings_src_attn]
             print("Logging images...")
-            # self.logger.log_latent(self.latent)
+            if config["train"]["compress_latents"]:
+                self.logger.log_latent(self.latent)
             self.logger.log_attn_heatmap(enc_attention, dec_attention, src_attention)
             self.logger.log_examples(srcs, trgs)
-
 
         ####################
         # UPDATE GENERATOR #
         ####################
-        # if self.encoder.training:
-        #     self.encoder.zero_grad()
-        #     self.latent_compressor.zero_grad()
-        #     self.latent_decompressor.zero_grad()
-        #     self.decoder.zero_grad()
-        #
-        #     loss.backward()
-        #
-        #     # torch.nn.utils.clip_grad_norm_(self.encoder.parameters(), 0.1)
-        #     # torch.nn.utils.clip_grad_norm_(self.latent_compressor.parameters(), 0.1)
-        #     # torch.nn.utils.clip_grad_norm_(self.latent_decompressor.parameters(), 0.1)
-        #     # torch.nn.utils.clip_grad_norm_(self.decoder.parameters(), 0.1)
-        #
-        #     self.encoder_optimizer.step()
-        #     self.decoder_optimizer.step()
-
         if config["train"]["aae"] and self.encoder.training and self.step > config["train"]["after_steps_train_aae"]:
 
             if self.step % config["train"]["increase_beta_every"] == 0 and self.beta < config["train"]["max_beta"]:
@@ -336,8 +340,8 @@ class Trainer:
                 loss_gen = -torch.mean(G)
                 loss_gen = loss_gen * self.beta
 
-                self.encoder.zero_grad()
-                self.latent_compressor.zero_grad()
+                self.gen_optimizer.zero_grad()
+
                 loss_gen.backward()
 
                 self.gen_optimizer.step(lr=self.encoder_optimizer.lr)
@@ -363,7 +367,8 @@ class Trainer:
         self.latent_decompressor = LatentDecompressor(config["model"]["d_model"]).to(config["train"]["device"])
         voc_size = config["tokens"]["vocab_size"]
         device = config["train"]["device"]
-        self.encoder, self.decoder, self.generator = make_model(voc_size, voc_size, N=2, device=device)
+        self.encoder, self.decoder, self.generator = make_model(voc_size, voc_size, N=config["model"]["layers"],
+                                                                device=device)
 
         if config["train"]["aae"]:
             self.discriminator = Discriminator(config["model"]["d_model"],
@@ -372,38 +377,31 @@ class Trainer:
         # Create optimizers
         enc_params = list(self.encoder.parameters()) + list(self.latent_compressor.parameters())
         self.encoder_optimizer = CTOpt(torch.optim.Adam(enc_params, lr=0,
-                                                        betas=(0., 0.9)),
+                                                        betas=(0.9, 0.98)),
                                        config["train"]["warmup_steps"],
                                        (config["train"]["lr_min"], config["train"]["lr_max"]),
                                        config["train"]["decay_steps"], config["train"]["minimum_lr"]
                                        )
         dec_params = list(self.latent_decompressor.parameters()) + list(self.decoder.parameters()) + list(self.generator.parameters())
         self.decoder_optimizer = CTOpt(torch.optim.Adam(dec_params, lr=0,
-                                                        betas=(0., 0.9)),
+                                                        betas=(0.9, 0.98)),
                                        config["train"]["warmup_steps"],
                                        (config["train"]["lr_min"], config["train"]["lr_max"]),
                                        config["train"]["decay_steps"], config["train"]["minimum_lr"])
 
         if config["train"]["aae"]:
             self.disc_optimizer = CTOpt(torch.optim.Adam([{"params": self.discriminator.parameters()}], lr=0,
-                                                         betas=(0., 0.9)),
+                                                         betas=(0.9, 0.98)),
                                         config["train"]["warmup_steps"],
                                         (config["train"]["lr_min"], config["train"]["lr_max"]),
                                         config["train"]["decay_steps"], config["train"]["minimum_lr"]
                                         )
             self.gen_optimizer = CTOpt(torch.optim.Adam(enc_params, lr=0,
-                                                        betas=(0., 0.9)),
+                                                        betas=(0.9, 0.98)),
                                        config["train"]["warmup_steps"],
                                        (config["train"]["lr_min"], config["train"]["lr_max"]),
                                        config["train"]["decay_steps"], config["train"]["minimum_lr"]
                                        )
-        # Loss computer
-        # criterion = LabelSmoothing(size=config["tokens"]["vocab_size"],
-        #                            padding_idx=config["tokens"]["pad"],
-        #                            smoothing=config["train"]["label_smoothing"],
-        #                            device=config["train"]["device"])
-        # criterion.to(config["train"]["device"])
-        # self.loss_computer = SimpleLossCompute(criterion)
         self.criterion = LabelSmoothing(size=config["tokens"]["vocab_size"], padding_idx=0, smoothing=0.1).to(device)
 
         # Load dataset
@@ -412,6 +410,8 @@ class Trainer:
                                batch_size=config["train"]["batch_size"],
                                n_workers=config["train"]["n_workers"])
         tr_loader, ts_loader = dataset.get_loaders()
+        with open(self.save_path + os.sep + "test_set_indices.pickle", "wb") as f:
+            pickle.dump(dataset.final_set, f)
 
         # Init WANDB
         self.logger = Logger()
@@ -445,11 +445,14 @@ class Trainer:
             else:
                 print("NOT logging images")
             if config["train"]["make_songs"]:
-                print("making songs")
+                print("Making songs every", config["train"]["after_steps_make_songs"])
             else:
                 print("NOT making songs")
             if config["train"]["do_eval"]:
-                print("doing evaluation")
+                if config["train"]["eval_after_epoch"]:
+                    print("Doing evaluation after each epoch")
+                else:
+                    print("Doing evaluation after", config["train"]["after_steps_do_eval"])
             else:
                 print("NOT DOING evaluation")
             if config["train"]["scheduled_sampling"]:
@@ -464,6 +467,7 @@ class Trainer:
                 print("Using relative positional encoding")
             else:
                 print("NOT using relative positional encoding")
+            print("Save model every", config["train"]["after_steps_save_model"])
             if remote:
                 wandb.save("compress_latents.py")
                 wandb.save("train.py")
@@ -483,7 +487,10 @@ class Trainer:
         if config["train"]["aae"]:
             self.discriminator.train()
         desc = "Train epoch " + str(self.epoch) + ", mb " + str(0)
-        train_progress = tqdm(total=config["train"]["steps_before_eval"], position=0, leave=True, desc=desc)
+        if config["train"]["eval_after_epoch"]:
+            train_progress = tqdm(total=len(tr_loader), position=0, leave=True, desc=desc)
+        else:
+            train_progress = tqdm(total=config["train"]["steps_before_eval"], position=0, leave=True, desc=desc)
         self.step = 0  # -1 to do eval in first step
         first_batch = None
 
@@ -515,7 +522,10 @@ class Trainer:
                 ########
                 # EVAL #
                 ########
-                if self.step % config["train"]["steps_before_eval"] == 0 and config["train"]["do_eval"]:
+                eae = config["train"]["eval_after_epoch"]
+                do_eval = config["train"]["do_eval"]
+                sbe = config["train"]["steps_before_eval"]
+                if ((eae and song_it == 0) or (not eae and self.step % sbe == 0)) and do_eval and self.step > 0:
                     print("Evaluation")
                     train_progress.close()
                     ts_losses = []
@@ -557,13 +567,16 @@ class Trainer:
                     if config["train"]["aae"]:
                         self.discriminator.train()
                     desc = "Train epoch " + str(self.epoch) + ", mb " + str(song_it)
-                    train_progress = tqdm(total=config["train"]["steps_before_eval"], position=0, leave=True,
-                                          desc=desc)
+                    if config["train"]["eval_after_epoch"]:
+                        train_progress = tqdm(total=len(tr_loader), position=0, leave=True, desc=desc)
+                    else:
+                        train_progress = tqdm(total=config["train"]["steps_before_eval"], position=0, leave=True,
+                                              desc=desc)
 
                 ##############
                 # SAVE MODEL #
                 ##############
-                if (self.step % config["train"]["after_steps_save_model"]) == 0:
+                if (self.step % config["train"]["after_steps_save_model"]) == 0 and self.step > 0:
                     full_path = self.save_path + os.sep + str(self.step)
                     os.makedirs(full_path)
                     print("Saving last model in " + full_path + ", DO NOT INTERRUPT")
@@ -581,7 +594,8 @@ class Trainer:
                 ########
                 # TEST #
                 ########
-                if (self.step % config["train"]["after_steps_make_songs"]) == 0 and config["train"]["make_songs"]:
+                if (self.step % config["train"]["after_steps_make_songs"]) == 0 and config["train"]["make_songs"] \
+                        and self.step > 0:
                     print("Making songs")
                     self.encoder.eval()
                     self.latent_compressor.eval()

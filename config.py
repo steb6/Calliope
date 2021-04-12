@@ -6,7 +6,7 @@ import numpy as np
 remote = os.getcwd() != 'C:\\Users\\berti\\PycharmProjects\\MusAE'
 
 max_bar_length = 200  # for preprocessing, seq_len, mem_len e cmem_len
-n_bars = 1
+n_bars = 2
 
 config = {
     "train": {
@@ -16,25 +16,26 @@ config = {
         "compress_latents": True,
         "verbose": True,
         "make_songs": True,
-        "log_images": False,
+        "log_images": True,
         "do_eval": True,
-        "aae": False,
+        "aae": True if remote else False,
         "test_losses": True,
         "device": "cuda" if remote else "cuda",
-        "batch_size": 8 if remote else 3,  # 128 for 1 layer, 30 for 6 layer
-        "test_size": 0.001 if remote else 0.1,  # 0.00001
-        "final_size": 0.1,
+        "batch_size": (20 if n_bars == 2 else 2) if remote else 3,  # 128 for 1 layer, 30 for 6 layer
+        "test_size": 0.1,  # 0.00001
+        "final_size": 0.2,
         "n_workers": 0,
         "n_epochs": 25000,
         # LOGS AND GENERATIONS
-        "label_smoothing": 0.1,
+        "eval_after_epoch": True,
         "steps_before_eval": 1000 if remote else 500,  # if >= early_stopping, happens at each epoch
-        "after_steps_save_model": 1000 if remote else 500,
-        "after_steps_make_songs": 1000 if remote else 250,
-        "after_steps_log_images": 1000 if remote else 500,
-        "generated_iterations": 1 if remote else 1,
-        "interpolation_timesteps": 3,  # intermediate timesteps excluding first and second (with 3: 0 (1 2 3) 4)
-        "interpolation_timesteps_length": 1,  # number of bar for each timesteps
+        "after_steps_save_model": 10000 if remote else 500,
+        "after_steps_make_songs": 1000 if remote else 23,
+        "after_steps_log_images": 10000 if remote else 500,
+        "generated_iterations": n_bars,
+        "interpolation_timesteps": 7 if n_bars == 2 else 1,  # excluding first and second (with 3: 0 (1 2 3) 4)
+        "interpolation_timesteps_length": n_bars,  # number of bar for each timesteps
+        "label_smoothing": 0.1,
         # "test_loss": False,
         # LR SCHEDULE
         "warmup_steps": 2500,
@@ -42,10 +43,10 @@ config = {
         "lr_max": 3e-4,
         "decay_steps": 100000,
         "minimum_lr": 1e-6,  # USE ONLY THIS  # 5e-5 or 1e-5
-        "lr": 1e-4,
+        "lr": 1e-4 if n_bars == 2 else 5e-5,
         # SCHEDULING
-        "after_steps_mix_sequences": 50000 if remote else 500,
-        "after_steps_train_aae": 100000 if remote else 1000,
+        "after_steps_mix_sequences": 50000 if remote else 0,
+        "after_steps_train_aae": 500000 if remote else 0,
         # AAE PART
         "train_aae_after_steps": 0,
         "increase_beta_every": 1 if remote else 1,  # was 4000
@@ -63,7 +64,7 @@ config = {
         "d_model": 256,
         "heads": 4,
         "ff_mul": 2,
-        "layers": 2 if remote else 2,  # 3 GB each
+        "layers": 6 if remote else 2,  # 3 GB each
         "mem_len": max_bar_length,  # keep last 2 seq
         "cmem_len": max_bar_length,  # keep 4 compression
         "cmem_ratio": 4,
@@ -79,7 +80,7 @@ config = {
         "max_bars": 200,
         "use_velocity": False,
         "reconstruction_programs": [0, 0, 32, 40],
-        "early_stop": 0 if remote else 100,  # set this to 0 to disable early stop
+        "early_stop": 100 if remote else 100,  # set this to 0 to disable early stop
         "resolution": 24,
         "tempo": 120,
         "velocities_total": (0, 127),  # using min max scaling, limits are inclusive

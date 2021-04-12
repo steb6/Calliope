@@ -19,8 +19,6 @@ class SongIterator(torch.utils.data.Dataset):
         ts_length = int(len(songs) * test_size)
         final_length = int(len(songs) * config["train"]["final_size"])
         self.final_set = self.songs[0:final_length]
-        with open("test_set_indices.pickle", "wb") as f:
-            pickle.dump(self.final_set, f)
         self.ts_set = self.songs[final_length:(ts_length + final_length)]
         self.tr_set = self.songs[(ts_length + final_length):]
         self.batch_size = batch_size

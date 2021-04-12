@@ -3,6 +3,7 @@ from config import config
 from torch import autograd
 from torch import nn
 from torch.autograd import Variable
+from config import n_bars
 
 
 class LabelSmoothing(nn.Module):
@@ -48,19 +49,12 @@ class SimpleLossCompute:
         y = y.reshape(n_batch, n_track*seq_len)
         loss = self.criterion(x.contiguous().view(-1, x.size(-1)),
                               y.contiguous().view(-1)) / norm
-        if self.generator.training:
-            loss.backward()
-            if self.enc_opt is not None:
-                self.enc_opt.step()
-                self.enc_opt.optimizer.zero_grad()
-            if self.dec_opt is not None:
-                self.dec_opt.step()
-                self.dec_opt.optimizer.zero_grad()
+        loss = loss / n_bars
         # compute accuracy
         pad_mask = y != self.criterion.padding_idx
         accuracy = ((torch.max(x, dim=-1).indices == y) & pad_mask).sum().item()
         accuracy = accuracy / pad_mask.sum().item()
-        return loss.item(), accuracy  #  * norm, accuracy
+        return loss, accuracy  #  * norm, accuracy
 
 
 def compute_accuracy(x, y, pad):  # TODO remove pad

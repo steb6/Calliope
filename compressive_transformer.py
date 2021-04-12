@@ -200,15 +200,15 @@ class RelMultiHeadedAttention(nn.Module):
         q, k, v = [l(x).view(n_batches, -1, self.h, self.d_out).transpose(1, 2)
                    for l, x in zip(self.linears, (query, key, value))]
 
-        r_emb = r_emb[:, :k_len, :]  # TODO try this (first or last?)
-        r_bias = r_bias[:, :k_len]  # TODO try this (first or last?)
+        r_emb = r_emb[:, -k_len:, :]  # TODO try this (first or last?)
+        r_bias = r_bias[:, -k_len:]  # TODO try this (first or last?)
 
         r_query = q + r_w_bias[None, :, None, :]
 
         AC = torch.einsum('bnid,bnjd->bnij', r_query, k)
         B_ = torch.einsum('bnid,njd->bnij', q, r_emb)  # r_emb_pe must be 3 4 200
         D_ = r_bias[None, :, None]
-        BD = shift(B_ + D_)  # TODO place original shift
+        BD = shift(B_ + D_)
 
         attn_score = AC + BD
         attn_score.mul_(self.scale)
@@ -315,6 +315,22 @@ def shift(x):
     return shifted[..., :i, i - 1:]
 
 
+def _rel_shift(x, zero_triu=False):
+    zero_pad = torch.zeros((x.size(0), 1, *x.size()[2:]),
+                           device=x.device, dtype=x.dtype)
+    x_padded = torch.cat([zero_pad, x], dim=1)
+
+    x_padded = x_padded.view(x.size(1) + 1, x.size(0), *x.size()[2:])
+
+    x = x_padded[1:].view_as(x)
+
+    if zero_triu:
+        ones = torch.ones((x.size(0), x.size(1)))
+        x = x * torch.tril(ones, x.size(1) - x.size(0))[:,:,None,None]
+
+    return x
+
+
 def to(t):
     return {'dtype': t.dtype, 'device': t.device}
 
@@ -371,7 +387,7 @@ def make_model(src_vocab, tgt_vocab, N=config["model"]["layers"],
     "Helper: Construct a model from hyperparameters."
     c = copy.deepcopy
 
-    if config["train"]["use_rel_pos"]:
+    if not config["train"]["use_rel_pos"]:
         self_attn = MultiHeadedAttention(h, d_model).to(device)
     else:
         self_attn = RelMultiHeadedAttention(h, d_model).to(device)

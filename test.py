@@ -148,14 +148,15 @@ class Tester:
 
         outs = self.greedy_decode2(latents, len(srcs), "reconstruct")  # TODO careful
 
-        accuracy = compute_accuracy(outs[0, :, :, 1:], batch.trg_y, config["tokens"]["pad"]).item()
+        trg_y = torch.stack([b.trg_y for b in batches])
+        accuracy = compute_accuracy(outs[..., 1:], trg_y, config["tokens"]["pad"]).item()
         print("Reconstruction accuracy:", accuracy)
 
-        # outs = outs.transpose(0, 2)[0].cpu().numpy()[0]  # invert bars and batch and select first batch
-        # srcs = srcs.transpose(0, 2)[0].cpu().numpy()
+        outs = outs.transpose(0, 2)[0].cpu().numpy()  # invert bars and batch and select first batch
+        srcs = srcs.transpose(0, 2)[0].cpu().numpy()
 
-        original = note_manager.reconstruct_music(srcs[0].cpu().numpy())
-        reconstructed = note_manager.reconstruct_music(outs[0].cpu().numpy())
+        original = note_manager.reconstruct_music(srcs)
+        reconstructed = note_manager.reconstruct_music(outs)
         return original, reconstructed, accuracy
 
 

@@ -189,6 +189,8 @@ class NoteRepresentationManager:
                 bar_time = 0
                 # track.notes.append(muspy.Note(time=time, pitch=60, duration=12, velocity=127))  # bar sound
                 while len(bar) > (4 if use_velocity else 3):
+                    if bar[0] == config["tokens"]["eos"]:
+                        break
                     if self.it_is_a_note(bar[0], bar[1], bar[2], (bar[3] if use_velocity else 0)):
                         velocity = 100  # default one
                         if use_velocity:  # use the encoded one
