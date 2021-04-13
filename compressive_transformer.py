@@ -66,6 +66,7 @@ class Encoder(nn.Module):
         x = self.emb(x)
         if not config["train"]["use_rel_pos"]:
             x = self.pos(x)
+
         for i, layer in enumerate(self.layers):
             x = layer(x, mask, self.r_emb[i], self.r_w_bias[i], self.r_bias[i])
         return self.norm(x)
@@ -91,6 +92,7 @@ class Decoder(nn.Module):
         x = self.emb(x)
         if not config["train"]["use_rel_pos"]:
             x = self.pos(x)
+
         for i, layer in enumerate(self.layers):
             x = layer(x, memory, src_mask, tgt_mask, self.r_emb[i], self.r_w_bias[i], self.r_bias[i])
         return self.norm(x)
@@ -285,11 +287,20 @@ def clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for _ in range(N)])
 
 
-def attention(query, key, value, mask=None, dropout=None):
+def attention(query, key, value, mask=None, dropout=None, pos_emb=None):
     "Compute 'Scaled Dot Product Attention'"
     d_k = query.size(-1)
     scores = torch.matmul(query, key.transpose(-2, -1)) \
              / math.sqrt(d_k)
+
+    if pos_emb is not None:
+        kv_len = key.shape[2]
+        scale = query.shape[-1] ** (-0.5)
+        pos_emb = pos_emb[:, -kv_len:].type(query.dtype)
+        pos_dots = torch.einsum('bhid,hjd->bhij', query, pos_emb) * scale
+        pos_dots = shift(pos_dots)
+        scores = scores + pos_dots
+
     if mask is not None:
         scores = scores.masked_fill(mask == 0, -1e9)
     p_attn = F.softmax(scores, dim=-1)

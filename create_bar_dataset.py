@@ -10,6 +10,7 @@ from config import config
 import shutil
 import time
 from utilities import min_max_scaling
+import random
 
 
 # 100'000 songs take 400 GB
@@ -238,6 +239,9 @@ class NoteRepresentationManager:
         progbar = tqdm(total=dataset_length, leave=True, position=0, desc="Dataset creation")
         self.count = 0
         os.makedirs(config["paths"]["dataset"])
+        os.makedirs(config["paths"]["dataset"] + os.sep + "train")
+        os.makedirs(config["paths"]["dataset"] + os.sep + "eval")
+        os.makedirs(config["paths"]["dataset"] + os.sep + "test")
         # setting up log file
         self.log = open(self.log_file, "w")
         self.log.write("Log of dataset_converter, to check if it is working right\n")
@@ -284,6 +288,13 @@ class NoteRepresentationManager:
                 while (tensor_song[0, 1:, :] == 0).all():
                     tensor_song = tensor_song[1:, ...]
                 # divide song into sequence of bars and save them
+                p = random.uniform(0, 1)
+                if p < 0.7:
+                    dest = config["paths"]["dataset"] + os.sep + "train"
+                elif 0.7 < p < 0.8:
+                    dest = config["paths"]["dataset"] + os.sep + "eval"
+                else:
+                    dest = config["paths"]["dataset"] + os.sep + "test"
                 while True:
                     candidate = tensor_song[:config["data"]["bars"], ...]
                     if len(candidate) < config["data"]["bars"]:
@@ -293,7 +304,7 @@ class NoteRepresentationManager:
                         tensor_song = tensor_song[1:]  # there was empty track, skip first bar and retry
                         continue
                     else:
-                        with open(os.path.join(config["paths"]["dataset"], str(self.count) + '.pickle'), 'wb') as f:
+                        with open(os.path.join(dest, str(self.count) + '.pickle'), 'wb') as f:
                             candidate = np.swapaxes(candidate, 0, 1)
                             # self.reconstruct_music(candidate).write_midi("test.mid")  # TODO remove test
                             pickle.dump(candidate, f)

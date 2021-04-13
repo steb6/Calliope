@@ -63,7 +63,8 @@ class Trainer:
             self.encoder_optimizer.zero_grad(set_to_none=True)
             self.decoder_optimizer.zero_grad(set_to_none=True)
             ls.backward(retain_graph=True)
-            for model in [self.encoder, self.latent_compressor, self.latent_decompressor, self.decoder, self.generator]:  # removed latent compressor
+            for model in [self.encoder, self.latent_compressor, self.latent_decompressor, self.decoder,
+                          self.generator]:  # removed latent compressor
                 for module_name, parameter in model.named_parameters():
                     if parameter.grad is not None:
                         print(module_name)
@@ -71,19 +72,18 @@ class Trainer:
         self.decoder_optimizer.zero_grad(set_to_none=True)
         (losses[0]).backward(retain_graph=True)
         print("********************** NOT OPTIMIZED BY NOTHING")
-        for model in [self.encoder, self.latent_compressor, self.latent_decompressor, self.decoder, self.generator]:  # removed latent compressor
+        for model in [self.encoder, self.latent_compressor, self.latent_decompressor, self.decoder,
+                      self.generator]:  # removed latent compressor
             for module_name, parameter in model.named_parameters():
                 if parameter.grad is None:
                     print(module_name)
 
     def run_mb(self, batch):
         # SETUP VARIABLES
-        srcs, trgs, src_masks, trg_masks, trg_ys = batch
+        srcs, trgs = batch
         srcs = torch.LongTensor(srcs.long()).to(config["train"]["device"]).transpose(0, 2)
         trgs = torch.LongTensor(trgs.long()).to(config["train"]["device"]).transpose(0, 2)  # invert batch and bars
-        src_masks = torch.BoolTensor(src_masks).to(config["train"]["device"]).transpose(0, 2)
-        trg_masks = torch.BoolTensor(trg_masks).to(config["train"]["device"]).transpose(0, 2)
-        trg_ys = torch.LongTensor(trg_ys.long()).to(config["train"]["device"]).transpose(0, 2)
+
         latent = None
         batches = [Batch(srcs[i], trgs[i], config["tokens"]["pad"]) for i in range(n_bars)]
         ############
@@ -145,9 +145,9 @@ class Trainer:
         #####################
         trg_ys = torch.stack([batch.trg_y for batch in batches])
         bars, n_track, n_batch, seq_len, d_model = outs.shape
-        outs = outs.permute(1, 2, 0, 3, 4).reshape(n_track, n_batch, bars*seq_len, d_model)  # join bars
-        trg_ys = trg_ys.permute(1, 2, 0, 3).reshape(n_track, n_batch, bars*seq_len)
-        
+        outs = outs.permute(1, 2, 0, 3, 4).reshape(n_track, n_batch, bars * seq_len, d_model)  # join bars
+        trg_ys = trg_ys.permute(1, 2, 0, 3).reshape(n_track, n_batch, bars * seq_len)
+
         loss, accuracy = SimpleLossCompute(self.generator, self.criterion)(outs, trg_ys, batch.ntokens)  # join instr
 
         # if self.encoder.training:
@@ -168,11 +168,11 @@ class Trainer:
             self.encoder_optimizer.step()
             self.decoder_optimizer.step()
 
-        losses = (loss.item(), accuracy, 0, 0, 0, 0)  #*loss_items)
+        losses = (loss.item(), accuracy, 0, 0, 0, 0)  # *loss_items)
 
         # LOG IMAGES
         if True and self.encoder.training and config["train"]["log_images"] and \
-                self.step % config["train"]["after_steps_log_images"] == 0 and self.step>0:
+                self.step % config["train"]["after_steps_log_images"] == 0 and self.step > 0:
 
             # # ENCODER SELF
             drums_encoder_attn = []
@@ -382,7 +382,8 @@ class Trainer:
                                        (config["train"]["lr_min"], config["train"]["lr_max"]),
                                        config["train"]["decay_steps"], config["train"]["minimum_lr"]
                                        )
-        dec_params = list(self.latent_decompressor.parameters()) + list(self.decoder.parameters()) + list(self.generator.parameters())
+        dec_params = list(self.latent_decompressor.parameters()) + list(self.decoder.parameters()) + list(
+            self.generator.parameters())
         self.decoder_optimizer = CTOpt(torch.optim.Adam(dec_params, lr=0,
                                                         betas=(0.9, 0.98)),
                                        config["train"]["warmup_steps"],
@@ -405,13 +406,12 @@ class Trainer:
         self.criterion = LabelSmoothing(size=config["tokens"]["vocab_size"], padding_idx=0, smoothing=0.1).to(device)
 
         # Load dataset
-        dataset = SongIterator(dataset_path=config["paths"]["dataset"],
-                               test_size=config["train"]["test_size"],
-                               batch_size=config["train"]["batch_size"],
-                               n_workers=config["train"]["n_workers"])
-        tr_loader, ts_loader = dataset.get_loaders()
-        with open(self.save_path + os.sep + "test_set_indices.pickle", "wb") as f:
-            pickle.dump(dataset.final_set, f)
+        tr_loader = SongIterator(dataset_path=config["paths"]["dataset"] + os.sep + "train",
+                                 batch_size=config["train"]["batch_size"],
+                                 n_workers=config["train"]["n_workers"]).get_loader()
+        ts_loader = SongIterator(dataset_path=config["paths"]["dataset"] + os.sep + "eval",
+                                 batch_size=config["train"]["batch_size"],
+                                 n_workers=config["train"]["n_workers"]).get_loader()
 
         # Init WANDB
         self.logger = Logger()
@@ -429,7 +429,7 @@ class Trainer:
         time.sleep(1.)  # sleep for one second to let the machine connect to wandb
         if config["train"]["verbose"]:
             print("Giving", len(tr_loader), "training samples and", len(ts_loader), "test samples")
-            print("Final set has size", len(dataset.final_set))
+            # print("Final set has size", len(dataset.final_set))
             print("Model has", config["model"]["layers"], "layers")
             print("Batch size is", config["train"]["batch_size"])
             print("d_model is", config["model"]["d_model"])
@@ -490,7 +490,7 @@ class Trainer:
         if config["train"]["eval_after_epoch"]:
             train_progress = tqdm(total=len(tr_loader), position=0, leave=True, desc=desc)
         else:
-            train_progress = tqdm(total=config["train"]["steps_before_eval"], position=0, leave=True, desc=desc)
+            train_progress = tqdm(total=config["train"]["after_steps_do_eval"], position=0, leave=True, desc=desc)
         self.step = 0  # -1 to do eval in first step
         first_batch = None
 
@@ -524,7 +524,7 @@ class Trainer:
                 ########
                 eae = config["train"]["eval_after_epoch"]
                 do_eval = config["train"]["do_eval"]
-                sbe = config["train"]["steps_before_eval"]
+                sbe = config["train"]["after_steps_do_eval"]
                 if ((eae and song_it == 0) or (not eae and self.step % sbe == 0)) and do_eval and self.step > 0:
                     print("Evaluation")
                     train_progress.close()
@@ -570,7 +570,7 @@ class Trainer:
                     if config["train"]["eval_after_epoch"]:
                         train_progress = tqdm(total=len(tr_loader), position=0, leave=True, desc=desc)
                     else:
-                        train_progress = tqdm(total=config["train"]["steps_before_eval"], position=0, leave=True,
+                        train_progress = tqdm(total=config["train"]["after_steps_do_eval"], position=0, leave=True,
                                               desc=desc)
 
                 ##############
@@ -630,7 +630,7 @@ class Trainer:
                         # INTERPOLATION
                         with torch.no_grad():
                             first, interpolation, second = self.tester.interpolation(note_manager, first_batch,
-                                                                                              second_batch)
+                                                                                     second_batch)
 
                         self.logger.log_songs(os.path.join(wandb.run.dir, prefix),
                                               [first, interpolation, second],

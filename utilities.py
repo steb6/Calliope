@@ -10,7 +10,7 @@ import copy
 
 
 def get_prior(shape):
-    return Variable(torch.randn(*shape) * .5).to(config["train"]["device"])  # single gaussian
+    return Variable(torch.randn(*shape) * 1.).to(config["train"]["device"])  # single gaussian
 
 
 class Batch:

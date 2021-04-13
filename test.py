@@ -23,25 +23,24 @@ class Tester:
 
     def interpolation(self, note_manager, first, second):
         # Encode first
-        srcs, _, src_masks, _, _ = first
-
-        srcs = torch.LongTensor(srcs.long()).to(config["train"]["device"])[:1].transpose(0, 2)
-        src_masks = torch.BoolTensor(src_masks).to(config["train"]["device"])[:1].transpose(0, 2)
+        f, _ = first
+        f = torch.LongTensor(f.long()).to(config["train"]["device"]).transpose(0, 2)
+        fs = [Batch(f[i], None, config["tokens"]["pad"]) for i in range(n_bars)]
 
         first_latents = []
-        for src, src_mask in zip(srcs, src_masks):
-            latent = self.encoder(src, src_mask)
+        for f in fs:
+            latent = self.encoder(f.src, f.src_mask)
             first_latents.append(latent)
         first_latent = self.latent_compressor(first_latents)
 
         # Encode second
-        srcs, _, src_masks, _, _ = second
-        srcs = torch.LongTensor(srcs.long()).to(config["train"]["device"])[:1].transpose(0, 2)
-        src_masks = torch.BoolTensor(src_masks).to(config["train"]["device"])[:1].transpose(0, 2)
+        s, _ = second
+        s = torch.LongTensor(s.long()).to(config["train"]["device"]).transpose(0, 2)
+        ss = [Batch(s[i], None, config["tokens"]["pad"]) for i in range(n_bars)]
 
         second_latents = []
-        for src, src_mask in zip(srcs, src_masks):
-            latent = self.encoder(src, src_mask)
+        for s in ss:
+            latent = self.encoder(s.src, s.src_mask)
             second_latents.append(latent)
         second_latent = self.latent_compressor(second_latents)
 
@@ -69,9 +68,9 @@ class Tester:
         outs = outs.transpose(0, 1).cpu().numpy()  # invert bars and instruments
 
         # src of batch, first batch, first bar
-        one = note_manager.reconstruct_music(first[0][0, :, :1, :].detach().cpu().numpy())
+        one = note_manager.reconstruct_music(first[0][0, :, :, :].detach().cpu().numpy())
         full = note_manager.reconstruct_music(outs)
-        two = note_manager.reconstruct_music(second[0][0, :, :1, :].detach().cpu().numpy())
+        two = note_manager.reconstruct_music(second[0][0, :, :, :].detach().cpu().numpy())
 
         return one, full, two
 
@@ -131,7 +130,7 @@ class Tester:
         return note_manager.reconstruct_music(outs)
 
     def reconstruct(self, batch, note_manager):
-        srcs, trgs, _, _, _ = batch
+        srcs, trgs = batch
         srcs = torch.LongTensor(srcs.long()).to(config["train"]["device"])[:1].transpose(0, 2)  # out: bar, 4, batch, t
         trgs = torch.LongTensor(trgs.long()).to(config["train"]["device"])[:1].transpose(0, 2)
 
