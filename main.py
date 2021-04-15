@@ -6,6 +6,7 @@ import shutil
 
 # TO COPY: scp -r C:\Users\berti\PycharmProjects\MusAE\*.py berti@131.114.137.168:MusAE
 # TO CONNECT: ssh berti@131.114.137.168
+# TO GET: scp -r berti@c4130-v100:/data/musae3.0/musae_model_checkpoints_2/2021-04-13_14-27-34/90000 C:\Users\berti\PycharmProjects\MusAE\remote
 # TO ATTACH TO TMUX: tmux attach -t Training
 # TO RESIZE TMUX: tmux attach -d -t Training
 # TO SWITCH WINDOW ctrl+b 0-1-2

@@ -11,6 +11,8 @@ import copy
 from loss_computer import compute_accuracy
 from torch.autograd import Variable
 from config import max_bar_length
+import matplotlib.pyplot as plt
+import dill
 
 
 class Tester:
@@ -21,28 +23,34 @@ class Tester:
         self.decoder = decoder.eval()
         self.generator = generator.eval()
 
-    def interpolation(self, note_manager, first, second):
+    def interpolation(self, note_manager, first=None, second=None):
         # Encode first
-        f, _ = first
-        f = torch.LongTensor(f.long()).to(config["train"]["device"]).transpose(0, 2)
-        fs = [Batch(f[i], None, config["tokens"]["pad"]) for i in range(n_bars)]
+        if first is not None:
+            f, _ = first
+            f = torch.LongTensor(f.long()).to(config["train"]["device"])[:1].transpose(0, 2)
+            fs = [Batch(f[i], None, config["tokens"]["pad"]) for i in range(n_bars)]
 
-        first_latents = []
-        for f in fs:
-            latent = self.encoder(f.src, f.src_mask)
-            first_latents.append(latent)
-        first_latent = self.latent_compressor(first_latents)
+            first_latents = []
+            for f in fs:
+                latent = self.encoder(f.src, f.src_mask)
+                first_latents.append(latent)
+            first_latent = self.latent_compressor(first_latents)
+        else:
+            first_latent = get_prior((1, 256))
 
         # Encode second
-        s, _ = second
-        s = torch.LongTensor(s.long()).to(config["train"]["device"]).transpose(0, 2)
-        ss = [Batch(s[i], None, config["tokens"]["pad"]) for i in range(n_bars)]
+        if second is not None:
+            s, _ = second
+            s = torch.LongTensor(s.long()).to(config["train"]["device"])[:1].transpose(0, 2)
+            ss = [Batch(s[i], None, config["tokens"]["pad"]) for i in range(n_bars)]
 
-        second_latents = []
-        for s in ss:
-            latent = self.encoder(s.src, s.src_mask)
-            second_latents.append(latent)
-        second_latent = self.latent_compressor(second_latents)
+            second_latents = []
+            for s in ss:
+                latent = self.encoder(s.src, s.src_mask)
+                second_latents.append(latent)
+            second_latent = self.latent_compressor(second_latents)
+        else:
+            second_latent = get_prior((1, 256))
 
         # Create interpolation
         latents = []
@@ -67,10 +75,16 @@ class Tester:
         outs = outs[:, :, 0, :]  # select first batch
         outs = outs.transpose(0, 1).cpu().numpy()  # invert bars and instruments
 
-        # src of batch, first batch, first bar
-        one = note_manager.reconstruct_music(first[0][0, :, :, :].detach().cpu().numpy())
+        # src of batch, first batch
+        if first is not None:
+            one = note_manager.reconstruct_music(first[0][0, :, :, :].detach().cpu().numpy())
+        else:
+            one = note_manager.reconstruct_music(outs[:, :2, :])
         full = note_manager.reconstruct_music(outs)
-        two = note_manager.reconstruct_music(second[0][0, :, :, :].detach().cpu().numpy())
+        if second is not None:
+            two = note_manager.reconstruct_music(second[0][0, :, :, :].detach().cpu().numpy())
+        else:
+            two = note_manager.reconstruct_music(outs[:, -2:, :])
 
         return one, full, two
 
@@ -162,37 +176,61 @@ class Tester:
 if __name__ == "__main__":
     # load models
     print("Loading models")
-    run_name = "remote" if not remote else "/data/musae3.0/musae_model_checkpoints_8/2021-03-03_12-23-00"
-    run_batch = "9000" if not remote else "9000"
-
-    checkpoint_name = os.path.join("musae_model_checkpoints_8", run_name, run_batch)
+    import wandb
+    wandb.init()
+    wandb.unwatch()
+    checkpoint_name = os.path.join("remote", "90000")
 
     tester = Tester(torch.load(checkpoint_name + os.sep + "encoder.pt"),
                     torch.load(checkpoint_name + os.sep + "latent_compressor.pt"),
-                    torch.load(checkpoint_name + os.sep + "decoder.pt"))
+                    torch.load(checkpoint_name + os.sep + "latent_decompressor.pt"),
+                    torch.load(checkpoint_name + os.sep + "decoder.pt"),
+                    torch.load(checkpoint_name + os.sep + "generator.pt"))
 
     # load songs
     print("Creating iterator")
-    dataset = SongIterator(dataset_path=config["paths"]["dataset"],
-                           test_size=0.3,
+    dataset = SongIterator(dataset_path=config["paths"]["dataset"] + os.sep + "test",
                            batch_size=config["train"]["batch_size"],
                            n_workers=config["train"]["n_workers"])
-    tr_loader, ts_loader = dataset.get_loaders()
+    tr_loader = dataset.get_loader()
 
     print("tr_loader_length", len(tr_loader))
-    print("ts_loader_length", len(ts_loader))
 
     song1 = tr_loader.__iter__().__next__()
     song2 = tr_loader.__iter__().__next__()
+    while torch.eq(song1[0], song2[0]).all():
+        song2 = tr_loader.__iter__().__next__()
 
-    # load representation manager
     nm = NoteRepresentationManager()
 
-    print("Reconstructing")
+    # print("Reconstructing")
+    # with torch.no_grad():
+    #     origin, recon, accuracy = tester.reconstruct(song1, nm)
+    #     origin.write_midi("results" + os.sep + "original.mid")
+    #     recon.write_midi("results" + os.sep + "reconstructed.mid")
+    #
+    # print("Generating")
+    # with torch.no_grad():
+    #     gen = tester.generate(nm)
+    #     gen.write_midi("results" + os.sep + "generated.mid")
+    #
+    # print("Interpolating")
+    # with torch.no_grad():
+    #     first, full, second = tester.interpolation(nm, song1, song2)
+    #     first.write_midi("results" + os.sep + "first.mid")
+    #     full.write_midi("results" + os.sep + "full.mid")
+    #     second.write_midi("results" + os.sep + "second.mid")
+    #
+    print("Random interpolating")
     with torch.no_grad():
-        origin, recon = tester.reconstruct(song1, nm)
-        # gen = tester.generate(nm)
+        first, full, second = tester.interpolation(nm)
+        first.write_midi("results" + os.sep + "first.mid")
+        full.write_midi("results" + os.sep + "full.mid")
+        second.write_midi("results" + os.sep + "second.mid")
 
-    # gen.write_midi("test" + os.sep + "generated.mid")
-    origin.write_midi("test" + os.sep + "original.mid")
-    recon.write_midi("test" + os.sep + "reconstructed.mid")
+    # for i, instrument in zip(range(4), ["drums", "guitar", "bass", "strings"]):
+    #     track = copy.deepcopy(origin)
+    #     track.tracks = [track.tracks[i]]
+    #     track.resolution = track.resolution * n_bars
+    #     track.show_score(figsize=(30, 30), clef="bass" if instrument == "bass" else "treble")
+    #     plt.savefig("results" + os.sep + "gen_" + instrument + "_spreadsheet")
