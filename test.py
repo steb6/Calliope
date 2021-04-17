@@ -176,6 +176,9 @@ class Tester:
         accuracy = compute_accuracy(outs[..., 1:], trg_y, config["tokens"]["pad"]).item()
         print("Reconstruction accuracy:", accuracy)
 
+        if note_manager is None:
+            return trg_y, outs[..., 1:], accuracy
+
         outs = outs.transpose(0, 2)[0].cpu().numpy()  # invert bars and batch and select first batch
         srcs = srcs.transpose(0, 2)[0].cpu().numpy()
 

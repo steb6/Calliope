@@ -11,7 +11,7 @@ n_bars = 2
 config = {
     "train": {
         # MODALITIES
-        "use_rel_pos": False,
+        "use_rel_pos": True,
         "scheduled_sampling": True,
         "compress_latents": True,
         "verbose": True,
@@ -27,8 +27,8 @@ config = {
         "n_workers": 0,
         "n_epochs": 25000,
         # LOGS AND GENERATIONS
-        "eval_after_epoch": True if remote else False,
-        "after_steps_do_eval": 1000 if remote else 500,  # if >= early_stopping, happens at each epoch
+        "eval_after_epoch": False if remote else False,
+        "after_steps_do_eval": 10000 if remote else 500,
         "after_steps_save_model": 10000 if remote else 500,
         "after_steps_make_songs": 2500 if remote else 250,
         "after_steps_log_images": 10000 if remote else 500,
@@ -80,7 +80,7 @@ config = {
         "max_bars": 200,
         "use_velocity": False,
         "reconstruction_programs": [0, 0, 32, 40],
-        "early_stop": 1000 if remote else 1000,  # set this to 0 to disable early stop
+        "early_stop": 0 if remote else 1000,  # set this to 0 to disable early stop
         "resolution": 24,
         "tempo": 120,
         "velocities_total": (0, 127),  # using min max scaling, limits are inclusive
