@@ -249,7 +249,7 @@ if __name__ == "__main__":
         plt.savefig("results" + os.sep + "INT_first_pianoroll")
 
         full.write_midi("results" + os.sep + "INT_full.mid")
-        plt.figure(figsize=(40, 10))
+        plt.figure(figsize=(80, 10))
         full.show_pianoroll(preset="plain")
         plt.savefig("results" + os.sep + "INT_full_pianoroll")
 
@@ -268,7 +268,7 @@ if __name__ == "__main__":
         plt.savefig("results" + os.sep + "INTGEN_first_pianoroll")
 
         full.write_midi("results" + os.sep + "INTGEN_full.mid")
-        plt.figure(figsize=(40, 10))
+        plt.figure(figsize=(80, 10))
         full.show_pianoroll(preset="plain")
         plt.savefig("results" + os.sep + "INTGEN_full_pianoroll")
 

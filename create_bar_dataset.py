@@ -205,7 +205,8 @@ class NoteRepresentationManager:
                                               bar[2] - config["tokens"]["duration_first"],
                                               velocity
                                               )
-                            track.append(note)
+                            if note not in track:
+                                track.append(note)
                             bar_time = note_time
                         bar = bar[(4 if use_velocity else 3):]
                     else:

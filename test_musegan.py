@@ -50,7 +50,7 @@ if __name__ == "__main__":
     eight_sixteen_notes = 0
 
     with torch.no_grad():
-        for _ in tqdm(list(range(5))):
+        for _ in tqdm(list(range(50))):
             gen = tester.generate(nm)
             # EB
             if len(gen[0]) == 0:

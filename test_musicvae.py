@@ -74,8 +74,6 @@ if __name__ == "__main__":
             total_strings_acc += strings_acc.item()
             total_accuracies += accuracy
             i += 1
-            if i == 5:
-                break
 
     print("Total accuracy:", total_accuracies/i)
     print("Drums accuracy:", total_drums_acc/i)

@@ -21,7 +21,7 @@ config = {
         "aae": True,
         "test_losses": True,
         "device": "cuda" if remote else "cuda",
-        "batch_size": (20 if n_bars == 2 else 2) if remote else 3,  # 128 for 1 layer, 30 for 6 layer
+        "batch_size": (20 if (n_bars == 2 or n_bars == 1) else 2) if remote else 3,  # 128 for 1 layer, 30 for 6 layer
         "test_size": 0.1,
         "final_size": 0.2,
         "n_workers": 0,
@@ -43,7 +43,7 @@ config = {
         "lr_max": 3e-4,
         "decay_steps": 100000,
         "minimum_lr": 1e-6,  # USE ONLY THIS  # 5e-5 or 1e-5
-        "lr": 1e-4 if n_bars == 2 else 5e-5,
+        "lr": 1e-4 if (n_bars == 2 or n_bars == 1) else 5e-5,
         # SCHEDULING
         "after_steps_mix_sequences": (25000 if n_bars == 2 else 12500) if remote else 500,
         "after_steps_train_aae": (50000 if n_bars == 2 else 25000) if remote else 5000,

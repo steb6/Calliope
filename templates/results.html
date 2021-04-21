@@ -1,0 +1,68 @@
+<html>
+<head>
+    <script src="https://cdn.jsdelivr.net/combine/npm/tone@14.7.58,npm/@magenta/music@1.21.0/es6/core.js,npm/focus-visible@5,npm/html-midi-player@1.1.1"></script>
+	<link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+<h1>Interpolation between generated songs</h1>
+<div class="row" id="row2">
+    <div class="big-column" id="column3">
+    <midi-visualizer src="../results/INTGEN_full.mid">
+    </midi-visualizer>
+    <midi-player src="../results/INTGEN_full.mid" sound-font visualizer="#column3 midi-visualizer">
+    </midi-player>
+    </div>
+</div>
+<div class="row" id="row1">
+    <div class="column" id="column1">
+    <midi-visualizer src="../results/INTGEN_first.mid">
+    </midi-visualizer>
+    <midi-player src="../results/INTGEN_first.mid" sound-font visualizer="#column1 midi-visualizer">
+    </midi-player>
+    </div>
+
+    <div class="column" id="column2">
+    <midi-visualizer src="../results/INTGEN_second.mid">
+    </midi-visualizer>
+    <midi-player src="../results/INTGEN_second.mid" sound-font visualizer="#column2 midi-visualizer">
+    </midi-player>
+    </div>
+</div>
+
+<h1>Generated song</h1>
+<div class="row" id="row3">
+    <div class="big-column" id="column4">
+    <midi-visualizer src="../results/GEN_generated.mid">
+    </midi-visualizer>
+    <midi-player src="../results/GEN_generated.mid" sound-font visualizer="#column4 midi-visualizer">
+    </midi-player>
+    </div>
+</div>
+
+<h1>Interpolation between given songs</h1>
+<div class="row" id="row4">
+    <div class="big-column" id="column5">
+    <midi-visualizer src="../results/INT_full.mid">
+    </midi-visualizer>
+    <midi-player src="../results/INT_full.mid" sound-font visualizer="#column5 midi-visualizer">
+    </midi-player>
+    </div>
+</div>
+<div class="row" id="row5">
+    <div class="column" id="column6">
+    <midi-visualizer src="../results/INT_first.mid">
+    </midi-visualizer>
+    <midi-player src="../results/INT_first.mid" sound-font visualizer="#column6 midi-visualizer">
+    </midi-player>
+    </div>
+
+    <div class="column" id="column7">
+    <midi-visualizer src="../results/INT_second.mid">
+    </midi-visualizer>
+    <midi-player src="../results/INT_second.mid" sound-font visualizer="#column7 midi-visualizer">
+    </midi-player>
+    </div>
+</div>
+</body>
+</html>
