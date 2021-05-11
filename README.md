@@ -1,6 +1,8 @@
 # Calliope: Adversarial Transformer Autoencoder
 ![The model](imgs/full_model.png)
 This repository contains the implementation of Calliope, an Adversarial Transformer Autoencoder for music generation and latent space interpolation.
+Some examples of the ability of the model can be found [here](https://stefanoberti.github.io/musae).
+It is also possible to generate new bars [here](https://stefanoberti.github.io/gen).
 
 ## Dataset
 In order to create the dataset, it is necessary to choose the desired number of bars n_bars from the config file, the number of songs to generate (early_stop, if it is zero then all the songs found in the raw dataset are converted) and then launch:
