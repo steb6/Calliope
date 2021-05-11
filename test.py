@@ -134,14 +134,6 @@ class Tester:
                 prob = self.generator(out[:, :, -1, :])
                 _, next_word = torch.max(prob, dim=-1)
 
-                # for e in range(4):
-                #     eos[e] = True if next_word[e].item() == config["tokens"]["eos"] else eos[e]
-                # if all(eos):
-                #     pad = torch.full((4, 1, 200-ys.shape[-1]), config["tokens"]["pad"],
-                #                      device=ys.device, dtype=ys.dtype)
-                #     ys = torch.cat([ys, pad], dim=-1)
-                #     break
-
                 next_word = next_word.unsqueeze(1)
                 ys = torch.cat([ys, next_word], dim=-1)
             outs.append(ys)
@@ -153,6 +145,10 @@ class Tester:
         outs = self.greedy_decode2(latent, n_bars, "generate")  # TODO careful
         outs = outs.transpose(0, 2)[0].cpu().numpy()
         return note_manager.reconstruct_music(outs)
+
+    @staticmethod
+    def polyphonic_accuracy(x, y):
+        return 0
 
     def reconstruct(self, batch, note_manager):
         srcs, trgs = batch
@@ -172,18 +168,19 @@ class Tester:
 
         outs = self.greedy_decode2(latents, len(srcs), "reconstruct")  # TODO careful
 
-        trg_y = torch.stack([b.trg_y for b in batches])
-        accuracy = compute_accuracy(outs[..., 1:], trg_y, config["tokens"]["pad"]).item()
-        print("Reconstruction accuracy:", accuracy)
-
         if note_manager is None:
-            return trg_y, outs[..., 1:], accuracy
+            raise Exception("Note manager must be provided to compute accuracy")
+            # return trg_y, outs[..., 1:], accuracy
 
         outs = outs.transpose(0, 2)[0].cpu().numpy()  # invert bars and batch and select first batch
         srcs = srcs.transpose(0, 2)[0].cpu().numpy()
 
         original = note_manager.reconstruct_music(srcs)
         reconstructed = note_manager.reconstruct_music(outs)
+
+        # POLYPHONIC ACCURACY
+        accuracy = 0
+
         return original, reconstructed, accuracy
 
 
@@ -193,7 +190,7 @@ if __name__ == "__main__":
     import wandb
     wandb.init()
     wandb.unwatch()
-    checkpoint_name = os.path.join("remote", "fix")
+    checkpoint_name = os.path.join("pretrained", str(n_bars)+"-bar")
 
     tester = Tester(torch.load(checkpoint_name + os.sep + "encoder.pt"),
                     torch.load(checkpoint_name + os.sep + "latent_compressor.pt"),
@@ -223,20 +220,25 @@ if __name__ == "__main__":
 
         origin.write_midi("results" + os.sep + "REC_original.mid")
         plt.figure(figsize=(20, 10))
-        origin.show_pianoroll(yticklabel="off", xticklabel="off", label="off")
+        origin.show_pianoroll(preset="plain")
         plt.savefig("results" + os.sep + "REC_origin_pianoroll")
 
         recon.write_midi("results" + os.sep + "REC_reconstructed.mid")
         plt.figure(figsize=(20, 10))
-        recon.show_pianoroll(yticklabel="off", xticklabel="off", label="off")
+        recon.show_pianoroll(preset="plain")
         plt.savefig("results" + os.sep + "REC_recon_pianoroll")
 
     print("Generating")
     with torch.no_grad():
         gen = tester.generate(nm)
+        # MAKE DRUM NOTES LONGER
+        for note in gen[0]:
+            if note.duration < 3:
+                note.duration = 3
+        # END
         gen.write_midi("results" + os.sep + "GEN_generated.mid")
         plt.figure(figsize=(20, 10))
-        gen.show_pianoroll(yticklabel="off", xticklabel="off", label="off")
+        gen.show_pianoroll(preset="plain")
         plt.savefig("results" + os.sep + "GEN_gen_pianoroll")
 
     print("Interpolating")
@@ -245,7 +247,7 @@ if __name__ == "__main__":
 
         first.write_midi("results" + os.sep + "INT_first.mid")
         plt.figure(figsize=(20, 10))
-        first.show_pianoroll(yticklabel="off", xticklabel="off", label="off")
+        first.show_pianoroll(preset="plain")
         plt.savefig("results" + os.sep + "INT_first_pianoroll")
 
         full.write_midi("results" + os.sep + "INT_full.mid")
@@ -255,7 +257,7 @@ if __name__ == "__main__":
 
         second.write_midi("results" + os.sep + "INT_second.mid")
         plt.figure(figsize=(20, 10))
-        second.show_pianoroll(yticklabel="off", xticklabel="off", label="off")
+        second.show_pianoroll(preset="plain")
         plt.savefig("results" + os.sep + "INT_second_pianoroll")
 
     print("Random interpolating")
@@ -264,7 +266,7 @@ if __name__ == "__main__":
 
         first.write_midi("results" + os.sep + "INTGEN_first.mid")
         plt.figure(figsize=(20, 10))
-        first.show_pianoroll(yticklabel="off", xticklabel="off", label="off")
+        first.show_pianoroll(preset="plain")
         plt.savefig("results" + os.sep + "INTGEN_first_pianoroll")
 
         full.write_midi("results" + os.sep + "INTGEN_full.mid")
@@ -274,12 +276,5 @@ if __name__ == "__main__":
 
         second.write_midi("results" + os.sep + "INTGEN_second.mid")
         plt.figure(figsize=(20, 10))
-        second.show_pianoroll(yticklabel="off", xticklabel="off", label="off")
+        second.show_pianoroll(preset="plain")
         plt.savefig("results" + os.sep + "INTGEN_second_pianoroll")
-
-    # for i, instrument in zip(range(4), ["drums", "guitar", "bass", "strings"]):
-    #     track = copy.deepcopy(gen)
-    #     track.tracks = [track.tracks[i]]
-    #     track.resolution = track.resolution
-    #     track.show_score(figsize=(40, 10), clef="bass" if instrument == "bass" else "treble")
-    #     plt.savefig("results" + os.sep + "gen_" + instrument + "_spreadsheet")

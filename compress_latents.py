@@ -29,8 +29,6 @@ class LatentCompressor(nn.Module):
         n_track, n_batch, seq_len, d_model = latents[0].shape  # out: 1 4 200 256
 
         for latent in latents:
-            # latent = latent.transpose(0, 1)  # out: 4 1 200 256
-
             z_drum = self.comp_drums(latent[0])  # out 1 256
             z_guitar = self.comp_guitar(latent[1])  # out 1 256
             z_bass = self.comp_bass(latent[2])  # out 1 256

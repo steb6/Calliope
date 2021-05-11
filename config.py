@@ -101,11 +101,6 @@ config = {
         "duration_first": 4 + 128*2,
         "velocity_first": 4 + 128*3,
         "vocab_size": 4 + 128*3,
-        # now event tokens
-        "event_pad": 388,  # TODO WAS 0
-        "event_sos": 389,
-        "event_eos": 390,
-        "event_vocab_size": 391
     },
     "paths": {
         "raw_midi": "/data/musae3.0/" if remote else "D:",

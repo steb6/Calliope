@@ -15,7 +15,8 @@ if __name__ == "__main__":
 
     wandb.init()
     wandb.unwatch()
-    checkpoint_name = os.path.join("remote", "fix")
+    # BEST MODEL 1 BAR
+    checkpoint_name = "/data/musae3.0/musae_model_checkpoints_1/2021-04-20_00-50-29/280000"
 
     tester = Tester(torch.load(checkpoint_name + os.sep + "encoder.pt"),
                     torch.load(checkpoint_name + os.sep + "latent_compressor.pt"),
@@ -50,7 +51,7 @@ if __name__ == "__main__":
     eight_sixteen_notes = 0
 
     with torch.no_grad():
-        for _ in tqdm(list(range(50))):
+        for _ in tqdm(list(range(20000))):
             gen = tester.generate(nm)
             # EB
             if len(gen[0]) == 0:
@@ -92,6 +93,22 @@ if __name__ == "__main__":
             total_notes_strings += len(gen[3])
 
             i += 1
+
+            if i % 1000 == 0:
+                print("EB drums", (empty_drums_bar / i) * 100)
+                print("EB guitar", (empty_guitar_bar / i) * 100)
+                print("EB bass", (empty_bass_bar / i) * 100)
+                print("EB strings", (empty_strings_bar / i) * 100)
+
+                print("UPC guitar", upc_guitar / i)
+                print("UPC bass", upc_bass / i)
+                print("UPC strings", upc_strings / i)
+
+                print("QN guitar", (qn_guitar / total_notes_guitar) * 100)
+                print("QN bass", (qn_bass / total_notes_bass) * 100)
+                print("QN strings", (qn_strings / total_notes_strings) * 100)
+
+                print("DP", (eight_sixteen_notes / total_notes_drums) * 100)
 
     print("EB drums", (empty_drums_bar/i)*100)
     print("EB guitar", (empty_guitar_bar/i)*100)
